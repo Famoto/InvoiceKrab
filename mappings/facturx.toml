@@ -1,0 +1,18 @@
+# Factur-X / ZUGFeRD reference spoke — the French-German hybrid e-invoice, a CIUS
+# of EN 16931 over the UN/CEFACT `CrossIndustryInvoice` (CII) syntax.
+#
+# The XML tree is identical to `cii.toml`, so this spoke *inherits* it
+# (`inherits = "cii-invoice:en16931"`) and adds nothing but its own identity and
+# auto-detection markers. Every node comes from the CII base unchanged, so
+# Factur-X documents round-trip through the shared hub with every other spoke.
+[meta]
+doc_format = "facturx-invoice"
+format_version = "1.0"
+mapping_version = "1.0"
+source_model = "facturx-invoice:1.0"
+canonical_model = "canonical-invoice:1.0"
+root = "CrossIndustryInvoice"
+inherits = "cii-invoice:en16931"
+# Factur-X (FR) and ZUGFeRD (DE) are the same syntax; both guideline ids carry
+# one of these substrings, letting auto-detection prefer this CIUS over base CII.
+detect = ["factur-x", "zugferd"]

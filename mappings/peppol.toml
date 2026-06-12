@@ -1,0 +1,21 @@
+# Peppol BIS Billing 3.0 reference spoke — a CIUS of EN 16931 over UBL syntax.
+#
+# Peppol BIS Billing documents are UBL `Invoice`s carrying the full EN 16931
+# semantic model, so this spoke *inherits* `ubl.toml` (`inherits =
+# "ubl-invoice:2.1"`) and adds only its own identity and detection marker. Every
+# node comes from the UBL base unchanged (previously this spoke stubbed just a
+# handful of header keys, all of which were byte-identical to the base), so Peppol
+# documents round-trip through the shared hub with every other spoke.
+[meta]
+doc_format = "peppol-bis-billing"
+format_version = "3.0"
+mapping_version = "1.0"
+source_model = "peppol-bis-billing:3.0"
+canonical_model = "canonical-invoice:1.0"
+root = "Invoice"
+inherits = "ubl-invoice:2.1"
+# A Peppol BIS document is also valid UBL; this marker lets source
+# auto-detection prefer this CIUS over the base UBL format. Matched
+# case-insensitively against the document's CustomizationID (BT-24), which for
+# Peppol BIS Billing carries `...:peppol.eu:2017:poacc:billing:3.0`.
+detect = ["peppol"]

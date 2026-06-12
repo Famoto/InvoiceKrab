@@ -1,0 +1,716 @@
+# UN/CEFACT Cross Industry Invoice (CII) reference spoke — the full EN 16931
+# semantic data model (business terms BT-1…BT-163, groups BG-1…BG-32) bound to the
+# UN/CEFACT `CrossIndustryInvoice` (rsm) tree instead of the OASIS UBL `Invoice`
+# tree. It is the CII-syntax peer of `ubl.toml`: every canonical hub key that the
+# UBL spokes define is mapped here onto its `ram:`-local element path, so a
+# document in either syntax round-trips through the shared hub. This tree is
+# inherit-only (`disabled = true`): Factur-X/ZUGFeRD inherit it; plain CII emits no
+# spoke of its own.
+#
+# Each node's dotted id IS its XML element path under `[meta].root`
+# (`CrossIndustryInvoice`); the compiler synthesizes the typed source struct from
+# those ids and infers interior elements (`SupplyChainTradeTransaction`,
+# `SellerTradeParty`, `PostalTradeAddress`, …) from their leaf descendants — never
+# written as tables. XML local names (no `ram:`/`rsm:`/`udt:` prefix) match
+# quick-xml's namespace-local serde layer, so the same mapping reads real
+# namespaced CII (and Factur-X/ZUGFeRD) documents and bare-name fixtures alike.
+#
+# CII conventions, shared with the UBL-syntax spokes (see crates/einvoice-dsl):
+#   * Dates live in a `DateTimeString` element; the sibling `format` attribute
+#     (102 / 616) is not modelled.
+#   * Amounts map as scale-preserving decimals; their `@currencyID` attribute is
+#     modelled only for the shared `PayableAmount`/`TaxTotalAmount` currency keys.
+#   * Document- and line-level `SpecifiedTradeAllowanceCharge` are single
+#     collections carrying `ChargeIndicator/Indicator` (true = charge BG-21/BG-28,
+#     false = allowance BG-20/BG-27), so allowance vs charge is preserved as data.
+#   * Two EN 16931 terms are intentionally NOT mapped because CII models them as
+#     predicate-discriminated siblings of an element already mapped, which the DSL
+#     forbids (model as a collection instead, not a predicate split):
+#       - BT-7 Tax point date — lives per `ApplicableTradeTax`, no header scalar.
+#       - BT-17 Tender or lot reference — a `TypeCode`-tagged sibling of the
+#         `AdditionalReferencedDocument` elements captured by `SupportingDocuments`.
+[meta]
+doc_format = "cii-invoice"
+format_version = "16931"
+mapping_version = "1.0"
+source_model = "cii-invoice:en16931"
+canonical_model = "canonical-invoice:1.0"
+root = "CrossIndustryInvoice"
+# Inherit-only base: Factur-X/ZUGFeRD inherit this tree; plain CII emits no spoke.
+disabled = true
+# CII is the base cross-industry syntax (Factur-X/ZUGFeRD are its CIUS profiles);
+# it declares no discriminator and acts as the fallback for the CII tree.
+detect = []
+
+# ===========================================================================
+# PROCESS CONTROL (BG-2) — ExchangedDocumentContext
+# ===========================================================================
+[CrossIndustryInvoice.ExchangedDocumentContext.GuidelineSpecifiedDocumentContextParameter.ID]
+type = "identifier"
+canonical_key = "SpecificationId"
+normalize = ["trim"]
+
+[CrossIndustryInvoice.ExchangedDocumentContext.BusinessProcessSpecifiedDocumentContextParameter.ID]
+type = "identifier"
+canonical_key = "BusinessProcessType"
+normalize = ["trim"]
+
+# ===========================================================================
+# HEADER (ExchangedDocument) — BT-1, BT-3, BT-2, BG-1
+# ===========================================================================
+[CrossIndustryInvoice.ExchangedDocument.ID]
+type = "identifier"
+canonical_key = "InvoiceNumber"
+required = true
+normalize = ["trim", "empty_as_missing"]
+
+[CrossIndustryInvoice.ExchangedDocument.TypeCode]
+type = "string"
+canonical_key = "InvoiceTypeCode"
+
+# BT-2 issue date: the text of `IssueDateTime/DateTimeString` (format 102).
+[CrossIndustryInvoice.ExchangedDocument.IssueDateTime.DateTimeString]
+type = "date"
+canonical_key = "IssueDate"
+
+# BG-1 INVOICE NOTE — the subject-code prefix (BT-21) is carried alongside in
+# CII's `IncludedNote/SubjectCode`; only the note text (BT-22) is modelled.
+[CrossIndustryInvoice.ExchangedDocument.IncludedNote.Content]
+type = "string"
+canonical_key = "InvoiceNote"
+
+# ===========================================================================
+# HEADER TRADE AGREEMENT — references (BT-10…BT-14), SELLER (BG-4/5/6),
+# BUYER (BG-7/8/9), SELLER TAX REPRESENTATIVE (BG-11/12), SUPPORTING DOCS (BG-24)
+# ===========================================================================
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerReference]
+type = "identifier"
+canonical_key = "BuyerReference"
+normalize = ["trim", "empty_as_missing"]
+
+# Document references (BT-13/14/12/11).
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerOrderReferencedDocument.IssuerAssignedID]
+type = "identifier"
+canonical_key = "PurchaseOrderReference"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerOrderReferencedDocument.IssuerAssignedID]
+type = "identifier"
+canonical_key = "SalesOrderReference"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.ContractReferencedDocument.IssuerAssignedID]
+type = "identifier"
+canonical_key = "ContractReference"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SpecifiedProcuringProject.ID]
+type = "identifier"
+canonical_key = "ProjectReference"
+
+# --- SELLER (BG-4) + POSTAL ADDRESS (BG-5) + CONTACT (BG-6) ---
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.ID]
+type = "identifier"
+canonical_key = "SellerIdentifier"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.Name]
+type = "string"
+canonical_key = "SellerName"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.Description]
+type = "string"
+canonical_key = "SellerAdditionalLegalInformation"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.SpecifiedLegalOrganization.ID]
+type = "identifier"
+canonical_key = "SellerLegalRegistrationIdentifier"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.SpecifiedLegalOrganization.TradingBusinessName]
+type = "string"
+canonical_key = "SellerTradingName"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.URIUniversalCommunication.URIID]
+type = "identifier"
+canonical_key = "SellerElectronicAddress"
+
+# BT-31 seller VAT: `SpecifiedTaxRegistration/ID` (schemeID VA; a second FC scheme
+# would need a predicate — not modelled, matching the UBL spoke's simplification).
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.SpecifiedTaxRegistration.ID]
+type = "identifier"
+canonical_key = "SellerVatIdentifier"
+normalize = ["trim"]
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.PostalTradeAddress.LineOne]
+type = "string"
+canonical_key = "SellerAddressLine1"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.PostalTradeAddress.LineTwo]
+type = "string"
+canonical_key = "SellerAddressLine2"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.PostalTradeAddress.LineThree]
+type = "string"
+canonical_key = "SellerAddressLine3"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.PostalTradeAddress.CityName]
+type = "string"
+canonical_key = "SellerCity"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.PostalTradeAddress.PostcodeCode]
+type = "string"
+canonical_key = "SellerPostCode"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.PostalTradeAddress.CountrySubDivisionName]
+type = "string"
+canonical_key = "SellerCountrySubdivision"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.PostalTradeAddress.CountryID]
+type = "string"
+canonical_key = "SellerCountryCode"
+normalize = ["trim", "uppercase"]
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.DefinedTradeContact.PersonName]
+type = "string"
+canonical_key = "SellerContactPoint"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.DefinedTradeContact.TelephoneUniversalCommunication.CompleteNumber]
+type = "string"
+canonical_key = "SellerContactTelephone"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.DefinedTradeContact.EmailURIUniversalCommunication.URIID]
+type = "string"
+canonical_key = "SellerContactEmail"
+
+# --- BUYER (BG-7) + POSTAL ADDRESS (BG-8) + CONTACT (BG-9) ---
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.ID]
+type = "identifier"
+canonical_key = "BuyerIdentifier"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.Name]
+type = "string"
+canonical_key = "BuyerName"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.SpecifiedLegalOrganization.ID]
+type = "identifier"
+canonical_key = "BuyerLegalRegistrationIdentifier"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.SpecifiedLegalOrganization.TradingBusinessName]
+type = "string"
+canonical_key = "BuyerTradingName"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.URIUniversalCommunication.URIID]
+type = "identifier"
+canonical_key = "BuyerElectronicAddress"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.SpecifiedTaxRegistration.ID]
+type = "identifier"
+canonical_key = "BuyerVatIdentifier"
+normalize = ["trim"]
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.PostalTradeAddress.LineOne]
+type = "string"
+canonical_key = "BuyerAddressLine1"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.PostalTradeAddress.LineTwo]
+type = "string"
+canonical_key = "BuyerAddressLine2"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.PostalTradeAddress.LineThree]
+type = "string"
+canonical_key = "BuyerAddressLine3"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.PostalTradeAddress.CityName]
+type = "string"
+canonical_key = "BuyerCity"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.PostalTradeAddress.PostcodeCode]
+type = "string"
+canonical_key = "BuyerPostCode"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.PostalTradeAddress.CountrySubDivisionName]
+type = "string"
+canonical_key = "BuyerCountrySubdivision"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.PostalTradeAddress.CountryID]
+type = "string"
+canonical_key = "BuyerCountryCode"
+normalize = ["trim", "uppercase"]
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.DefinedTradeContact.PersonName]
+type = "string"
+canonical_key = "BuyerContactPoint"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.DefinedTradeContact.TelephoneUniversalCommunication.CompleteNumber]
+type = "string"
+canonical_key = "BuyerContactTelephone"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.BuyerTradeParty.DefinedTradeContact.EmailURIUniversalCommunication.URIID]
+type = "string"
+canonical_key = "BuyerContactEmail"
+
+# --- SELLER TAX REPRESENTATIVE (BG-11) + POSTAL ADDRESS (BG-12) ---
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTaxRepresentativeTradeParty.Name]
+type = "string"
+canonical_key = "SellerTaxRepresentativeName"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTaxRepresentativeTradeParty.SpecifiedTaxRegistration.ID]
+type = "identifier"
+canonical_key = "SellerTaxRepresentativeVatIdentifier"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTaxRepresentativeTradeParty.PostalTradeAddress.LineOne]
+type = "string"
+canonical_key = "TaxRepresentativeAddressLine1"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTaxRepresentativeTradeParty.PostalTradeAddress.LineTwo]
+type = "string"
+canonical_key = "TaxRepresentativeAddressLine2"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTaxRepresentativeTradeParty.PostalTradeAddress.CityName]
+type = "string"
+canonical_key = "TaxRepresentativeCity"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTaxRepresentativeTradeParty.PostalTradeAddress.PostcodeCode]
+type = "string"
+canonical_key = "TaxRepresentativePostCode"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTaxRepresentativeTradeParty.PostalTradeAddress.CountrySubDivisionName]
+type = "string"
+canonical_key = "TaxRepresentativeCountrySubdivision"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTaxRepresentativeTradeParty.PostalTradeAddress.CountryID]
+type = "string"
+canonical_key = "TaxRepresentativeCountryCode"
+normalize = ["trim", "uppercase"]
+
+# --- ADDITIONAL SUPPORTING DOCUMENTS (BG-24) — collection over
+# AdditionalReferencedDocument. TypeCode (50 tender / 130 object / 916 supporting)
+# is not modelled, so all such references round-trip through this one collection.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.AdditionalReferencedDocument]
+type = "collection"
+canonical_key = "SupportingDocuments"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.AdditionalReferencedDocument.IssuerAssignedID]
+type = "identifier"
+canonical_key = "SupportingDocumentReference"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.AdditionalReferencedDocument.Name]
+type = "string"
+canonical_key = "SupportingDocumentDescription"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.AdditionalReferencedDocument.URIID]
+type = "string"
+canonical_key = "ExternalDocumentLocation"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.AdditionalReferencedDocument.AttachmentBinaryObject]
+type = "string"
+canonical_key = "AttachedDocument"
+
+# ===========================================================================
+# HEADER TRADE DELIVERY (BG-13) — ACTUAL DELIVERY (BT-72),
+# DELIVER TO (BG-15/BT-70/71), DESPATCH/RECEIVING ADVICE (BT-16/BT-15)
+# ===========================================================================
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.ActualDeliverySupplyChainEvent.OccurrenceDateTime.DateTimeString]
+type = "date"
+canonical_key = "ActualDeliveryDate"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.ShipToTradeParty.Name]
+type = "string"
+canonical_key = "DeliverToPartyName"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.ShipToTradeParty.ID]
+type = "identifier"
+canonical_key = "DeliverToLocationIdentifier"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.ShipToTradeParty.PostalTradeAddress.LineOne]
+type = "string"
+canonical_key = "DeliverToAddressLine1"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.ShipToTradeParty.PostalTradeAddress.LineTwo]
+type = "string"
+canonical_key = "DeliverToAddressLine2"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.ShipToTradeParty.PostalTradeAddress.LineThree]
+type = "string"
+canonical_key = "DeliverToAddressLine3"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.ShipToTradeParty.PostalTradeAddress.CityName]
+type = "string"
+canonical_key = "DeliverToCity"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.ShipToTradeParty.PostalTradeAddress.PostcodeCode]
+type = "string"
+canonical_key = "DeliverToPostCode"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.ShipToTradeParty.PostalTradeAddress.CountrySubDivisionName]
+type = "string"
+canonical_key = "DeliverToCountrySubdivision"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.ShipToTradeParty.PostalTradeAddress.CountryID]
+type = "string"
+canonical_key = "DeliverToCountryCode"
+normalize = ["trim", "uppercase"]
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.DespatchAdviceReferencedDocument.IssuerAssignedID]
+type = "identifier"
+canonical_key = "DespatchAdviceReference"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.ReceivingAdviceReferencedDocument.IssuerAssignedID]
+type = "identifier"
+canonical_key = "ReceivingAdviceReference"
+
+# ===========================================================================
+# HEADER TRADE SETTLEMENT — currency (BT-5/6), PAYEE (BG-10), PAYMENT (BG-16…19),
+# PRECEDING INVOICE (BG-3), BILLING PERIOD (BG-14), ALLOWANCES/CHARGES (BG-20/21),
+# VAT BREAKDOWN (BG-23), PAYMENT TERMS (BT-9/20), TOTALS (BG-22)
+# ===========================================================================
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.InvoiceCurrencyCode]
+type = "currency"
+canonical_key = "DocumentCurrency"
+normalize = ["trim", "uppercase"]
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.TaxCurrencyCode]
+type = "currency"
+canonical_key = "TaxCurrency"
+normalize = ["trim", "uppercase"]
+
+# BT-83 remittance information: header-level `PaymentReference`.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.PaymentReference]
+type = "string"
+canonical_key = "RemittanceInformation"
+
+# BT-19 buyer accounting reference.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.ReceivableSpecifiedTradeAccountingAccount.ID]
+type = "string"
+canonical_key = "BuyerAccountingReference"
+
+# --- PAYEE (BG-10) ---
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.PayeeTradeParty.Name]
+type = "string"
+canonical_key = "PayeeName"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.PayeeTradeParty.ID]
+type = "identifier"
+canonical_key = "PayeeIdentifier"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.PayeeTradeParty.SpecifiedLegalOrganization.ID]
+type = "identifier"
+canonical_key = "PayeeLegalRegistrationIdentifier"
+
+# --- PAYMENT MEANS (BG-16) + CREDIT TRANSFER (BG-17) + CARD (BG-18)
+#     + DIRECT DEBIT (BG-19). Modelled as a scalar interior (mirrors the UBL
+#     spoke's single PaymentMeans), so the first occurrence's leaves are mapped.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementPaymentMeans.TypeCode]
+type = "string"
+canonical_key = "PaymentMeansTypeCode"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementPaymentMeans.PayeePartyCreditorFinancialAccount.IBANID]
+type = "identifier"
+canonical_key = "PaymentAccountIdentifier"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementPaymentMeans.PayeePartyCreditorFinancialAccount.AccountName]
+type = "string"
+canonical_key = "PaymentAccountName"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementPaymentMeans.PayeeSpecifiedCreditorFinancialInstitution.BICID]
+type = "identifier"
+canonical_key = "PaymentServiceProviderIdentifier"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementPaymentMeans.ApplicableTradeSettlementFinancialCard.ID]
+type = "string"
+canonical_key = "PaymentCardPrimaryAccountNumber"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementPaymentMeans.ApplicableTradeSettlementFinancialCard.CardholderName]
+type = "string"
+canonical_key = "PaymentCardHolderName"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementPaymentMeans.PayerPartyDebtorFinancialAccount.IBANID]
+type = "identifier"
+canonical_key = "DebitedAccountIdentifier"
+
+# --- VAT BREAKDOWN (BG-23) — ApplicableTradeTax collection ---
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.ApplicableTradeTax]
+type = "collection"
+canonical_key = "VatBreakdown"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.ApplicableTradeTax.CalculatedAmount]
+type = "decimal"
+canonical_key = "VatCategoryTaxAmount"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.ApplicableTradeTax.BasisAmount]
+type = "decimal"
+canonical_key = "VatCategoryTaxableAmount"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.ApplicableTradeTax.CategoryCode]
+type = "string"
+canonical_key = "VatCategoryCode"
+normalize = ["trim", "uppercase"]
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.ApplicableTradeTax.RateApplicablePercent]
+type = "decimal"
+canonical_key = "VatCategoryRate"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.ApplicableTradeTax.ExemptionReason]
+type = "string"
+canonical_key = "VatExemptionReasonText"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.ApplicableTradeTax.ExemptionReasonCode]
+type = "string"
+canonical_key = "VatExemptionReasonCode"
+
+# --- BILLING PERIOD (BG-14) ---
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.BillingSpecifiedPeriod.StartDateTime.DateTimeString]
+type = "date"
+canonical_key = "InvoicingPeriodStart"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.BillingSpecifiedPeriod.EndDateTime.DateTimeString]
+type = "date"
+canonical_key = "InvoicingPeriodEnd"
+
+# --- DOCUMENT LEVEL ALLOWANCES / CHARGES (BG-20 / BG-21) — one collection,
+# discriminated by ChargeIndicator/Indicator (true = charge, false = allowance).
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeAllowanceCharge]
+type = "collection"
+canonical_key = "DocumentAllowanceCharges"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeAllowanceCharge.ChargeIndicator.Indicator]
+type = "boolean"
+canonical_key = "ChargeIndicator"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeAllowanceCharge.ActualAmount]
+type = "decimal"
+canonical_key = "AllowanceChargeAmount"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeAllowanceCharge.BasisAmount]
+type = "decimal"
+canonical_key = "AllowanceChargeBaseAmount"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeAllowanceCharge.CalculationPercent]
+type = "decimal"
+canonical_key = "AllowanceChargePercentage"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeAllowanceCharge.Reason]
+type = "string"
+canonical_key = "AllowanceChargeReason"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeAllowanceCharge.ReasonCode]
+type = "string"
+canonical_key = "AllowanceChargeReasonCode"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeAllowanceCharge.CategoryTradeTax.CategoryCode]
+type = "string"
+canonical_key = "AllowanceChargeVatCategoryCode"
+normalize = ["trim", "uppercase"]
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeAllowanceCharge.CategoryTradeTax.RateApplicablePercent]
+type = "decimal"
+canonical_key = "AllowanceChargeVatRate"
+
+# --- PAYMENT TERMS (BT-20), DUE DATE (BT-9), MANDATE (BT-89) ---
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradePaymentTerms.Description]
+type = "string"
+canonical_key = "PaymentTerms"
+
+# BT-9 due date.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradePaymentTerms.DueDateDateTime.DateTimeString]
+type = "date"
+canonical_key = "DueDate"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradePaymentTerms.DirectDebitMandateID]
+type = "identifier"
+canonical_key = "MandateReferenceIdentifier"
+
+# --- PRECEDING INVOICE REFERENCE (BG-3) ---
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.InvoiceReferencedDocument.IssuerAssignedID]
+type = "identifier"
+canonical_key = "PrecedingInvoiceReference"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.InvoiceReferencedDocument.FormattedIssueDateTime.DateTimeString]
+type = "date"
+canonical_key = "PrecedingInvoiceIssueDate"
+
+# --- DOCUMENT TOTALS (BG-22) — monetary summation ---
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.LineTotalAmount]
+type = "decimal"
+canonical_key = "SumOfInvoiceLineNetAmount"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.ChargeTotalAmount]
+type = "decimal"
+canonical_key = "SumOfChargesDocumentLevel"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.AllowanceTotalAmount]
+type = "decimal"
+canonical_key = "SumOfAllowancesDocumentLevel"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.TaxBasisTotalAmount]
+type = "decimal"
+canonical_key = "InvoiceTotalWithoutVat"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.GrandTotalAmount]
+type = "decimal"
+canonical_key = "InvoiceTotalWithVat"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.TotalPrepaidAmount]
+type = "decimal"
+canonical_key = "PaidAmount"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.RoundingAmount]
+type = "decimal"
+canonical_key = "RoundingAmount"
+
+# BT-110 tax total (and its optional currency attribute).
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.TaxTotalAmount]
+type = "decimal"
+canonical_key = "TaxTotalAmount"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.TaxTotalAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+canonical_key = "TaxTotalAmountCurrency"
+
+# BT-115 payable amount (and its optional currency attribute).
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.DuePayableAmount]
+type = "decimal"
+canonical_key = "PayableAmount"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.DuePayableAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+canonical_key = "PayableAmountCurrency"
+
+# ===========================================================================
+# INVOICE LINE (BG-25) — collection — with ITEM (BG-31), PRICE (BG-29),
+# LINE VAT (BG-30), line allowances/charges (BG-27/28) and item attributes (BG-32)
+# ===========================================================================
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem]
+type = "collection"
+canonical_key = "InvoiceLines"
+required = true
+min_items = 1
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.AssociatedDocumentLineDocument.LineID]
+type = "identifier"
+canonical_key = "LineId"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.AssociatedDocumentLineDocument.IncludedNote.Content]
+type = "string"
+canonical_key = "LineNote"
+
+# --- ITEM INFORMATION (BG-31) ---
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedTradeProduct.Name]
+type = "string"
+canonical_key = "ItemName"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedTradeProduct.Description]
+type = "string"
+canonical_key = "ItemDescription"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedTradeProduct.SellerAssignedID]
+type = "identifier"
+canonical_key = "ItemSellerIdentifier"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedTradeProduct.BuyerAssignedID]
+type = "identifier"
+canonical_key = "ItemBuyerIdentifier"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedTradeProduct.GlobalID]
+type = "identifier"
+canonical_key = "ItemStandardIdentifier"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedTradeProduct.DesignatedProductClassification.ClassCode]
+type = "string"
+canonical_key = "ItemClassificationIdentifier"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedTradeProduct.OriginTradeCountry.ID]
+type = "string"
+canonical_key = "ItemCountryOfOrigin"
+normalize = ["trim", "uppercase"]
+
+# --- ITEM ATTRIBUTES (BG-32) — nested collection ---
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedTradeProduct.ApplicableProductCharacteristic]
+type = "collection"
+canonical_key = "ItemAttributes"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedTradeProduct.ApplicableProductCharacteristic.Description]
+type = "string"
+canonical_key = "ItemAttributeName"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedTradeProduct.ApplicableProductCharacteristic.Value]
+type = "string"
+canonical_key = "ItemAttributeValue"
+
+# --- LINE TRADE AGREEMENT — PRICE (BG-29), order line ref (BT-132) ---
+# BT-146 net price + BT-149 base quantity.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeAgreement.NetPriceProductTradePrice.ChargeAmount]
+type = "decimal"
+canonical_key = "ItemNetPrice"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeAgreement.NetPriceProductTradePrice.BasisQuantity]
+type = "decimal"
+canonical_key = "ItemPriceBaseQuantity"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeAgreement.BuyerOrderReferencedDocument.LineID]
+type = "identifier"
+canonical_key = "LineOrderReference"
+
+# --- LINE TRADE DELIVERY — billed quantity (BT-129) ---
+# The `@unitCode` attribute is not modelled here.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeDelivery.BilledQuantity]
+type = "decimal"
+canonical_key = "Quantity"
+
+# --- LINE TRADE SETTLEMENT — LINE VAT (BG-30), period (BT-134/135),
+# net amount (BT-131), object id (BT-128), accounting ref (BT-133),
+# line allowances/charges (BG-27/28) ---
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.ApplicableTradeTax.CategoryCode]
+type = "string"
+canonical_key = "LineVatCategoryCode"
+normalize = ["trim", "uppercase"]
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.ApplicableTradeTax.RateApplicablePercent]
+type = "decimal"
+canonical_key = "LineVatRate"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.BillingSpecifiedPeriod.StartDateTime.DateTimeString]
+type = "date"
+canonical_key = "LinePeriodStart"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.BillingSpecifiedPeriod.EndDateTime.DateTimeString]
+type = "date"
+canonical_key = "LinePeriodEnd"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.SpecifiedTradeSettlementLineMonetarySummation.LineTotalAmount]
+type = "decimal"
+canonical_key = "LineNetAmount"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.AdditionalReferencedDocument.IssuerAssignedID]
+type = "identifier"
+canonical_key = "LineObjectIdentifier"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.ReceivableSpecifiedTradeAccountingAccount.ID]
+type = "string"
+canonical_key = "LineBuyerAccountingReference"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.SpecifiedTradeAllowanceCharge]
+type = "collection"
+canonical_key = "LineAllowanceCharges"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.SpecifiedTradeAllowanceCharge.ChargeIndicator.Indicator]
+type = "boolean"
+canonical_key = "LineChargeIndicator"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.SpecifiedTradeAllowanceCharge.ActualAmount]
+type = "decimal"
+canonical_key = "LineAllowanceChargeAmount"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.SpecifiedTradeAllowanceCharge.BasisAmount]
+type = "decimal"
+canonical_key = "LineAllowanceChargeBaseAmount"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.SpecifiedTradeAllowanceCharge.CalculationPercent]
+type = "decimal"
+canonical_key = "LineAllowanceChargePercentage"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.SpecifiedTradeAllowanceCharge.Reason]
+type = "string"
+canonical_key = "LineAllowanceChargeReason"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.SpecifiedTradeAllowanceCharge.ReasonCode]
+type = "string"
+canonical_key = "LineAllowanceChargeReasonCode"

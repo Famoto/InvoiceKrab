@@ -1,0 +1,79 @@
+# FatturaPA reference spoke — the mandatory Italian e-invoice (Sistema di
+# Interscambio). FatturaPA predates EN 16931 and uses its own `FatturaElettronica`
+# tree with Italian element names, so it shares no syntax with the UBL/CII spokes.
+# It still maps onto the *same* canonical keys, so an Italian invoice round-trips
+# through the shared hub with every other format.
+#
+# Each node's dotted id IS its XML element path under `[meta].root`
+# (`FatturaElettronica`); the compiler synthesizes the typed source struct from
+# those ids. A real file may repeat `FatturaElettronicaBody` (a batch) and the
+# summary/payment groups; this minimal spoke models the common single-invoice
+# shape and reads the first occurrence of each.
+#
+# FatturaPA has no per-amount currency attribute (the currency is the
+# document-level `Divisa`), so this spoke does not carry the `*Currency` or
+# `BuyerReference` canonical keys the EN 16931 spokes add.
+[meta]
+doc_format = "fatturapa"
+format_version = "1.2.2"
+mapping_version = "1.0"
+source_model = "fatturapa:1.2.2"
+canonical_model = "canonical-invoice:1.0"
+root = "FatturaElettronica"
+# FatturaPA carries no EN 16931 CustomizationID; its distinct root element is what
+# distinguishes it, so it declares no CustomizationID-based marker.
+detect = []
+
+# --- General document data (DatiGeneraliDocumento) -----------------------------
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Numero]
+type = "identifier"
+canonical_key = "InvoiceNumber"
+required = true
+normalize = ["trim", "empty_as_missing"]
+
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Data]
+type = "date"
+canonical_key = "IssueDate"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Divisa]
+type = "currency"
+canonical_key = "DocumentCurrency"
+normalize = ["trim", "uppercase"]
+
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.TipoDocumento]
+type = "string"
+canonical_key = "InvoiceTypeCode"
+
+# BT-115 equivalent: the document grand total.
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.ImportoTotaleDocumento]
+type = "decimal"
+canonical_key = "PayableAmount"
+
+# Payment due date (first DettaglioPagamento).
+[FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento.DataScadenzaPagamento]
+type = "date"
+canonical_key = "DueDate"
+
+# VAT summary tax amount (first DatiRiepilogo).
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DatiRiepilogo.Imposta]
+type = "decimal"
+canonical_key = "TaxTotalAmount"
+
+# --- Invoice lines (DettaglioLinee) --------------------------------------------
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee]
+type = "collection"
+canonical_key = "InvoiceLines"
+required = true
+min_items = 1
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.NumeroLinea]
+type = "identifier"
+canonical_key = "LineId"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.Descrizione]
+type = "string"
+canonical_key = "ItemName"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.Quantita]
+type = "decimal"
+canonical_key = "Quantity"

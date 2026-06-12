@@ -1,0 +1,35 @@
+# XRechnung 3.0.2 — full CIUS of EN 16931 over UBL `Invoice` syntax.
+#
+# XRechnung shares the entire UBL Invoice element tree, so this spoke *inherits*
+# `ubl.toml` (`inherits = "ubl-invoice:2.1"`) and only restates what the CIUS
+# changes. The base's ~150 nodes are folded in ancestor-first at build time; the
+# tables below fully replace the matching base nodes (inheritance overrides are
+# whole-node replacements, not field merges).
+#
+# CIUS deltas over the UBL base:
+#   * `[meta]` identity: its own doc_format/format_version/source_model, plus the
+#     `detect` marker (matched case-insensitively against CustomizationID, BT-24,
+#     which for the CIUS carries `...:xrechnung_3.0`).
+#   * `CustomizationID` (BT-24) is mandatory under the CIUS — `required = true`.
+#
+# Everything else (BT-1…BT-163, BG-1…BG-32, all collections and nesting) comes
+# from `ubl.toml` unchanged; see it for the DSL conventions and per-node docs.
+[meta]
+doc_format = "xrechnung-invoice"
+format_version = "3.0.2"
+mapping_version = "2.0"
+source_model = "xrechnung-invoice:3.0.2"
+canonical_model = "canonical-invoice:1.0"
+root = "Invoice"
+inherits = "ubl-invoice:2.1"
+# Matched case-insensitively against the document's CustomizationID (BT-24),
+# which for the CIUS carries `...:xrechnung_3.0`.
+detect = ["xrechnung"]
+
+# Overrides the base UBL node: the CIUS makes CustomizationID mandatory. A
+# whole-node replacement, so every field is restated, not just `required`.
+[Invoice.CustomizationID]
+type = "identifier"
+canonical_key = "SpecificationId"
+required = true
+normalize = ["trim"]

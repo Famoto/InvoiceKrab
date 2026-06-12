@@ -1,0 +1,17 @@
+[package]
+name = "einvoice-dsl"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# The compiler is pure: it depends on no runtime crate. The source model is
+# synthesized from the mapping nodes, and codegen emits text the runtime targets.
+# Also ships the `xtask` dev CLI (`cargo run -p einvoice-dsl -- check|report`).
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rstest = { workspace = true }
+serde_json = { workspace = true }
+insta = { workspace = true }

@@ -1,0 +1,26 @@
+[package]
+name = "einvoice-interfaces"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Runtime the generated mappers link against.
+einvoice-transformator = { workspace = true }
+# Generated source structs + the MainKey hub use these directly.
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+quick-xml = { workspace = true, features = ["serde", "serialize"] }
+thiserror = { workspace = true }
+
+[build-dependencies]
+# The compiler: build.rs runs the DSL pipeline and codegen at build time.
+einvoice-dsl = { workspace = true }
+
+[dev-dependencies]
+rstest = { workspace = true }
+pretty_assertions = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "transformation"
+harness = false
