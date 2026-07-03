@@ -417,10 +417,7 @@ mod tests {
             canonical_key = "Lines""#,
         );
         let (_, diags) = derive_hub(&[a, b]);
-        assert!(
-            diags.iter().any(|d| d.code == "E012"),
-            "{diags:?}"
-        );
+        assert!(diags.iter().any(|d| d.code == "E012"), "{diags:?}");
     }
 
     #[test]
@@ -440,10 +437,7 @@ mod tests {
             canonical_key = "FooBar""#,
         );
         let (_, diags) = derive_hub(&[a, b]);
-        assert!(
-            diags.iter().any(|d| d.code == "E012"),
-            "{diags:?}"
-        );
+        assert!(diags.iter().any(|d| d.code == "E012"), "{diags:?}");
     }
 
     #[test]

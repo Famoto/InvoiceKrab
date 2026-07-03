@@ -198,7 +198,9 @@ mod tests {
         // so absent elements parse (required is a reader diagnostic).
         assert!(out.contains("pub struct Invoice {"), "{out}");
         assert!(
-            out.contains("#[serde(rename = \"ID\", default, skip_serializing_if = \"Option::is_none\")]"),
+            out.contains(
+                "#[serde(rename = \"ID\", default, skip_serializing_if = \"Option::is_none\")]"
+            ),
             "{out}"
         );
         // The optional currencyID attribute also carries `default`/skip attrs.
