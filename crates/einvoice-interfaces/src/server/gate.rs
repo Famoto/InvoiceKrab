@@ -12,10 +12,12 @@
 //! - Reservations within the free budget succeed immediately; requests run in
 //!   parallel as long as budget remains.
 //! - When the budget is exhausted, `acquire` blocks until a `Guard` drops.
-//! - Waiters are admitted FIFO (an internal admission lock): a large blocked
-//!   reservation cannot be starved by a stream of small ones. The price is
-//!   head-of-line blocking, which only occurs once the budget is already
-//!   exhausted.
+//! - Waiters are admitted one at a time (an internal admission lock): while a
+//!   blocked reservation waits, later callers queue behind it, so a large
+//!   blocked reservation cannot be starved by a stream of small ones. The
+//!   order in which queued waiters are admitted is the mutex's wake order,
+//!   not strictly FIFO. The price is head-of-line blocking, which only occurs
+//!   once the budget is already exhausted.
 //!
 //! # Invariants
 //!
@@ -62,8 +64,9 @@ pub struct MemGate {
     budget: u64,
     free: Mutex<u64>,
     freed: Condvar,
-    /// Serializes waiters so admission is FIFO; held only while acquiring,
-    /// never while a reservation is in use.
+    /// Serializes waiters so only one contends for budget at a time; held
+    /// only while acquiring, never while a reservation is in use. No FIFO
+    /// guarantee (`std` mutexes are unfair), but the holder cannot be starved.
     admission: Mutex<()>,
 }
 
@@ -112,8 +115,9 @@ impl MemGate {
                 budget: self.budget,
             });
         }
-        // FIFO: only the front waiter contends for budget; later callers queue
-        // here, so a large blocked reservation cannot be starved.
+        // Only the ticket holder contends for budget; later callers queue
+        // here, so a large blocked reservation cannot be starved. Wake order
+        // among queued callers is unspecified (not strict FIFO).
         let _ticket = lock_ignoring_poison(&self.admission);
         let mut free = lock_ignoring_poison(&self.free);
         while *free < bytes {

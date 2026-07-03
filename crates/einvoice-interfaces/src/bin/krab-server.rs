@@ -51,7 +51,15 @@ fn main() -> ExitCode {
                 // `recv` fails only when the listener is gone; the process is
                 // done at that point.
                 while let Ok(request) = server.recv() {
-                    serve_one(request, &gate, blowup);
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        serve_one(request, &gate, blowup)
+                    }))
+                    .is_err()
+                    {
+                        eprintln!(
+                            "krab-server: worker recovered from a panic while serving a request"
+                        );
+                    }
                 }
             })
         })
@@ -147,12 +155,33 @@ fn serve_one(mut request: Request, gate: &MemGate, blowup: u64) {
     let _ = request.respond(response);
 }
 
-/// Binds `addr` with `TCP_NODELAY` set on the listener (accepted sockets
-/// inherit it on Linux). tiny_http never sets it, and Nagle + delayed ACK
-/// otherwise adds ~40 ms to every request on a kept-alive connection.
+/// Binds `addr` with `TCP_NODELAY` and TCP keepalive set on the listener
+/// (accepted sockets inherit both on Linux). tiny_http never sets
+/// `TCP_NODELAY`, and Nagle + delayed ACK otherwise adds ~40 ms to every
+/// request on a kept-alive connection.
+///
+/// Keepalive bounds how long a *dead* peer (crashed client, dropped NAT
+/// mapping) can pin a worker mid-body-read together with its memory
+/// reservation: after ~2 min of unanswered probes the kernel resets the
+/// connection, the blocked read errors, and `serve_one`'s error path
+/// releases the reservation. `SO_RCVTIMEO` would bound live-but-silent
+/// peers too, but on a listener it also times out `accept()`, which
+/// tiny_http treats as fatal — so keepalive is the strongest in-process
+/// bound available.
+// ponytail: dead peers only — a live client that stalls its upload still
+// pins one worker indefinitely; tiny_http 0.12 has no request timeout, so
+// that case needs a fronting proxy (or a different HTTP layer).
 fn listen(addr: &str) -> Result<Server, Box<dyn std::error::Error + Send + Sync>> {
     let listener = std::net::TcpListener::bind(addr)?;
-    socket2::SockRef::from(&listener).set_nodelay(true)?;
+    let sock = socket2::SockRef::from(&listener);
+    sock.set_nodelay(true)?;
+    // Probe count stays at the kernel default (9 on Linux); overriding it
+    // needs socket2's `all` feature for one knob that barely matters.
+    sock.set_tcp_keepalive(
+        &socket2::TcpKeepalive::new()
+            .with_time(std::time::Duration::from_secs(30))
+            .with_interval(std::time::Duration::from_secs(10)),
+    )?;
     Server::from_listener(listener, None)
 }
 
