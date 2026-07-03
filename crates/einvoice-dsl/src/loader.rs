@@ -271,10 +271,7 @@ mod tests {
 
     #[test]
     fn test_load_dir_duplicate_mapping_id_is_error() {
-        let dir = dir_with(&[
-            ("a", &meta("same-fmt", "")),
-            ("b", &meta("same-fmt", "")),
-        ]);
+        let dir = dir_with(&[("a", &meta("same-fmt", "")), ("b", &meta("same-fmt", ""))]);
         let err = load_dir(&dir).unwrap_err();
         assert!(err.message.contains("same mapping id"), "{}", err.message);
     }

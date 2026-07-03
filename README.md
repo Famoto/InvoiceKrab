@@ -25,7 +25,8 @@ deltas — XRechnung and Peppol are a handful of lines on top of UBL.
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Bundled mappings](#bundled-mappings)
-- [The `krab-invoice` CLI](#the-krab-invoice-cli)
+- [The `krab-cli` CLI](#the-krab-cli-cli)
+- [The `krab-server` HTTP API](#the-krab-server-http-api)
 - [Library usage](#library-usage)
 - [Features](#features)
 - [Authoring a DSL mapping (TOML)](#authoring-a-dsl-mapping-toml)
@@ -57,16 +58,16 @@ KrabInvoice is a Rust workspace. You need a recent stable Rust toolchain
 cargo build --release -p einvoice-interfaces
 
 # The binary lands at:
-./target/release/krab-invoice
+./target/release/krab-cli
 ```
 
 Or run it straight from the workspace without installing:
 
 ```bash
-cargo run --release -p einvoice-interfaces --bin krab-invoice -- --help
+cargo run --release -p einvoice-interfaces --bin krab-cli -- --help
 ```
 
-The examples below assume `krab-invoice` is on your `PATH`.
+The examples below assume `krab-cli` is on your `PATH`.
 
 ---
 
@@ -74,16 +75,16 @@ The examples below assume `krab-invoice` is on your `PATH`.
 
 ```bash
 # Convert a UBL invoice to XRechnung (source format auto-detected)
-krab-invoice invoice.xml xrechnung-invoice --out invoice-xr.xml
+krab-cli invoice.xml xrechnung-invoice --out invoice-xr.xml
 
 # List every format this build knows about
-krab-invoice --list
+krab-cli --list
 
 # See, without any input document, which conversions lose data
-krab-invoice --analyze
+krab-cli --analyze
 
 # Inspect the canonical key vocabulary while writing mappings
-krab-invoice --keys
+krab-cli --keys
 ```
 
 ---
@@ -91,7 +92,7 @@ krab-invoice --keys
 ## Bundled mappings
 
 The exact list is generated from [mappings/](mappings/) at build time and can be
-checked with `krab-invoice --list`. This workspace currently ships:
+checked with `krab-cli --list`. This workspace currently ships:
 
 | Display name | Mapping file | Inherits | Notes |
 |--------------|--------------|----------|-------|
@@ -108,15 +109,15 @@ Factur-X/ZUGFeRD and emits no spoke of its own, so it does not appear in
 
 ---
 
-## The `krab-invoice` CLI
+## The `krab-cli` CLI
 
 ```
 USAGE:
-    krab-invoice <INPUT> <TARGET-FORMAT> [--from <SOURCE-FORMAT>] [--out <FILE>]
-    krab-invoice --analyze [SOURCE-FORMAT]
-    krab-invoice --keys [FORMAT]
-    krab-invoice --list
-    krab-invoice --help
+    krab-cli <INPUT> <TARGET-FORMAT> [--from <SOURCE-FORMAT>] [--out <FILE>]
+    krab-cli --analyze [SOURCE-FORMAT]
+    krab-cli --keys [FORMAT]
+    krab-cli --list
+    krab-cli --help
 
 ARGS:
     <INPUT>            Source XML file, or `-` to read stdin
@@ -136,13 +137,13 @@ OPTIONS:
 
 ```bash
 # File in, file out, source auto-detected
-krab-invoice in.xml ubl-invoice --out out.xml
+krab-cli in.xml ubl-invoice --out out.xml
 
 # Pin the source format explicitly (skips auto-detection)
-krab-invoice in.xml xrechnung-invoice --from ubl-invoice
+krab-cli in.xml xrechnung-invoice --from ubl-invoice
 
 # Pipe through stdin/stdout (use `-` for the input)
-cat in.xml | krab-invoice - ubl-invoice > out.xml
+cat in.xml | krab-cli - ubl-invoice > out.xml
 ```
 
 Format names are **case-insensitive** and accept either the full versioned
@@ -156,7 +157,7 @@ partial output is emitted and the process exits non-zero.
 ### List formats
 
 ```bash
-krab-invoice --list
+krab-cli --list
 ```
 
 Prints every format compiled into this build (one per `mappings/*.toml`).
@@ -168,11 +169,11 @@ target formats can represent everything a source carries, and which would drop
 fields — *without* needing an actual document.
 
 ```bash
-# Full source × target matrix
-krab-invoice --analyze
+# Full source x target matrix
+krab-cli --analyze
 
 # Scope to "from UBL to everything else"
-krab-invoice --analyze ubl-invoice
+krab-cli --analyze ubl-invoice
 ```
 
 ### Inspect canonical keys (authoring aid)
@@ -184,10 +185,10 @@ keys it does not yet cover.
 
 ```bash
 # Whole canonical vocabulary
-krab-invoice --keys
+krab-cli --keys
 
 # Covered vs. unused keys for one mapping
-krab-invoice --keys xrechnung-invoice
+krab-cli --keys xrechnung-invoice
 ```
 
 ### Exit codes
@@ -200,6 +201,68 @@ KrabInvoice follows BSD `sysexits.h` conventions:
 | `64` | Usage error — bad arguments, unknown format, or ambiguous source |
 | `65` | Data error — input couldn't be parsed/rendered, or mapping had errors |
 | `74` | I/O error — couldn't read input or write output |
+
+---
+
+## The `krab-server` HTTP API
+
+The same transformation as an HTTP service, one document per request,
+processed concurrently across a worker pool:
+
+```bash
+cargo run --release -p einvoice-interfaces --bin krab-server
+# krab-server listening on 0.0.0.0:8080 — 16 workers, ... bytes memory budget, x5 reservation
+
+curl -sS --data-binary @invoice.xml \
+    'localhost:8080/transform?to=xrechnung-invoice&from=ubl-invoice'
+```
+
+`POST /transform?to=<format>[&from=<format>]` — body is the source XML;
+`from` is auto-detected when omitted. `200` returns the transformed XML
+(warning diagnostics in the `X-Krab-Warnings` header), `400` bad
+parameters/XML, `422` mapping errors (rendered diagnostics in the body),
+`411` missing Content-Length, `413` a request that could never fit the
+memory budget.
+
+Capability and health endpoints: `GET /formats` (JSON array of accepted
+format names), `GET /analyze[?from=<format>]` (the CLI's `--analyze` table),
+`GET /health` (`200 ok`; `krab-server --healthcheck` self-probes it for the
+Docker `HEALTHCHECK`).
+
+Configuration is environment variables; defaults derive from the actual
+hardware (cgroup-aware, so container limits are respected):
+
+| Variable                | Default                                       |
+|-------------------------|-----------------------------------------------|
+| `KRAB_ADDR`             | `0.0.0.0:8080`                                |
+| `KRAB_WORKERS`          | available parallelism                         |
+| `KRAB_MEM_BUDGET_BYTES` | detected memory x 1/2 (cgroup v2 limit first) |
+| `KRAB_MEM_BLOWUP`       | `5` — reservation = Content-Length x blowup   |
+
+There is no per-document size limit. Instead, each request reserves
+`Content-Length x KRAB_MEM_BLOWUP` bytes from a global budget before its
+body is read; requests run in parallel while budget remains and queue when
+it is exhausted, so request traffic can never drive the process out of
+memory. See [crates/einvoice-interfaces/src/server/README.md](crates/einvoice-interfaces/src/server/README.md).
+
+The Dockerfile ships both programs: `docker build --target server` for the
+HTTP service (default), `--target cli` for the CLI image. All knobs are
+runtime environment variables — set them per container, never at build time:
+
+```bash
+docker build --target server -t krab-server .
+
+# Defaults derive from the container's own limits: workers from --cpus,
+# memory budget = half of --memory (cgroup v2).
+docker run --rm -p 8080:8080 --cpus 4 --memory 2g krab-server
+
+# Explicit overrides win over detection.
+docker run --rm -p 8080:8080 \
+    -e KRAB_WORKERS=8 \
+    -e KRAB_MEM_BUDGET_BYTES=1000000000 \
+    -e KRAB_MEM_BLOWUP=4 \
+    krab-server
+```
 
 ---
 
@@ -590,7 +653,7 @@ the **build fails** with a diagnostic pointing at the offending node.
 |-------|------|
 | [crates/einvoice-dsl](crates/einvoice-dsl/src/README.md) | Build-time mapping compiler: TOML → IR → validation → generated Rust hub + mappers |
 | [crates/einvoice-transformator](crates/einvoice-transformator/src/README.md) | Pure runtime helpers (normalization, validation, diagnostics) the generated mappers link against |
-| [crates/einvoice-interfaces](crates/einvoice-interfaces/src/README.md) | Public `Engine` API, the generated registry, and the `krab-invoice` CLI |
+| [crates/einvoice-interfaces](crates/einvoice-interfaces/src/README.md) | Public `Engine` API, the generated registry, and the `krab-cli` CLI |
 
 The TOML never reaches the runtime: `einvoice-interfaces`'s `build.rs` compiles
 [mappings/](mappings/) through `einvoice-dsl` into native Rust, and the engine

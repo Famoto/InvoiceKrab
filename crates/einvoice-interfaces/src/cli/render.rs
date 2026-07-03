@@ -9,14 +9,14 @@ use einvoice_transformator::result::{MappingDiagnostic, Severity};
 /// One-line usage summary, with the formats this build knows about.
 pub fn usage() -> String {
     format!(
-        "krab-invoice — transform an e-invoice XML document between formats\n\
+        "krab-cli — transform an e-invoice XML document between formats\n\
          \n\
          USAGE:\n    \
-         krab-invoice <INPUT> <TARGET-FORMAT> [--from <SOURCE-FORMAT>] [--out <FILE>]\n    \
-         krab-invoice --analyze [SOURCE-FORMAT]\n    \
-         krab-invoice --keys [FORMAT]\n    \
-         krab-invoice --list\n    \
-         krab-invoice --help\n\
+         krab-cli <INPUT> <TARGET-FORMAT> [--from <SOURCE-FORMAT>] [--out <FILE>]\n    \
+         krab-cli --analyze [SOURCE-FORMAT]\n    \
+         krab-cli --keys [FORMAT]\n    \
+         krab-cli --list\n    \
+         krab-cli --help\n\
          \n\
          ARGS:\n    \
          <INPUT>            Source XML file, or `-` to read stdin\n    \

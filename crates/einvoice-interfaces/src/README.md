@@ -18,14 +18,19 @@ No format is named in hand-written code.
 - `lib.rs` — [`Engine`] (`to_hub`, `from_hub`, `transform`), [`EngineError`], and
   the re-exported generated [`Spoke`] enum and [`MainKey`] hub.
 - `analysis.rs` — static conversion analysis (the CLI's `--analyze`): the
-  loss/error state of every source × target pair, without an input document.
+  loss/error state of every source x target pair, without an input document.
 - `keys.rs` — canonical-key reporting (the CLI's `--keys`): the hub vocabulary,
   and per-spoke covered/unused keys.
 - `table.rs` — shared aligned-table rendering used by `analysis` and `keys`.
-- `cli/` — the `krab-invoice` CLI: argument parsing, format resolution, source
+- `cli/` — the `krab-cli` CLI: argument parsing, format resolution, source
   auto-detection, IO wiring, and diagnostic rendering (see its `mod.rs` docs).
-- `bin/krab-invoice.rs` — thin binary shell forwarding argv and the standard
+- `server/` — the `krab-server` HTTP surface: env/hardware configuration, the
+  global memory-budget admission gate, and the request → response mapping
+  (see its `README.md`).
+- `bin/krab-cli.rs` — thin binary shell forwarding argv and the standard
   streams into `cli::run`.
+- `bin/krab-server.rs` — thin binary shell binding `tiny_http` workers to the
+  `server` module.
 
 ## Behavior
 

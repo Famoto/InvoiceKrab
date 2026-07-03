@@ -205,7 +205,10 @@ fn insert_node(
         && xml.starts_with('@')
     {
         if multi {
-            return Err("`multiple` is not valid on an attribute leaf (an XML attribute cannot repeat)".to_string());
+            return Err(
+                "`multiple` is not valid on an attribute leaf (an XML attribute cannot repeat)"
+                    .to_string(),
+            );
         }
         let field = snake_case(last);
         upsert_field(
@@ -226,8 +229,10 @@ fn insert_node(
     // Element text override (`xml = "$text"`): a value field on the current struct.
     if node.xml.as_deref() == Some("$text") {
         if multi {
-            return Err("`multiple` is not valid on a `$text` leaf (element text cannot repeat)"
-                .to_string());
+            return Err(
+                "`multiple` is not valid on a `$text` leaf (element text cannot repeat)"
+                    .to_string(),
+            );
         }
         upsert_field(
             structs,
@@ -570,7 +575,9 @@ mod tests {
             "ubl:2.1",
         );
         assert!(
-            diags.iter().any(|d| d.code == "E024" && d.message.contains("attribute")),
+            diags
+                .iter()
+                .any(|d| d.code == "E024" && d.message.contains("attribute")),
             "{diags:?}"
         );
     }
@@ -587,7 +594,9 @@ mod tests {
             "ubl:2.1",
         );
         assert!(
-            diags.iter().any(|d| d.code == "E024" && d.message.contains("collection")),
+            diags
+                .iter()
+                .any(|d| d.code == "E024" && d.message.contains("collection")),
             "{diags:?}"
         );
     }
@@ -611,7 +620,9 @@ mod tests {
             "ubl:2.1",
         );
         assert!(
-            diags.iter().any(|d| d.code == "E024" && d.message.contains("valued container")),
+            diags
+                .iter()
+                .any(|d| d.code == "E024" && d.message.contains("valued container")),
             "{diags:?}"
         );
     }

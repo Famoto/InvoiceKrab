@@ -40,6 +40,7 @@ use einvoice_transformator::result::MappingResult;
 pub mod analysis;
 pub mod cli;
 pub mod keys;
+pub mod server;
 mod table;
 
 /// The generated canonical hub, spoke mappers, and registry, emitted by

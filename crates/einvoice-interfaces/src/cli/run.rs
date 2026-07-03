@@ -76,12 +76,13 @@ fn dispatch(
 }
 
 /// Builds the `--analyze` table: every transform's loss/error state, scoped to a
-/// single source when `source` is given (else the full source × target matrix).
+/// single source when `source` is given (else the full source x target matrix).
+/// Also served verbatim by `krab-server` as `GET /analyze`.
 ///
 /// # Errors
 ///
 /// Returns [`CliError::UnknownFormat`] when `source` names no spoke.
-fn analyze_table(source: Option<&str>) -> Result<String, CliError> {
+pub fn analyze_table(source: Option<&str>) -> Result<String, CliError> {
     let sources: Vec<Spoke> = match source {
         Some(name) => vec![resolve_spoke(name)?],
         None => Spoke::ALL.to_vec(),
