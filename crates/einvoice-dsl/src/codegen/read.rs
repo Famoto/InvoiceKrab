@@ -188,9 +188,8 @@ fn read_multi_values(
     match policy {
         MultiplePolicy::Error => {
             let _ = writeln!(out, "{pad}if values.len() > 1 {{");
-            let msg = format!(
-                "format!(\"found {{}} values for single-valued `{key}`\", values.len())"
-            );
+            let msg =
+                format!("format!(\"found {{}} values for single-valued `{key}`\", values.len())");
             DiagSpec::new("Severity::Error", "MULTIPLE_VALUES", node.id.as_str(), &msg)
                 .key(key)
                 .path(&node.source_path)

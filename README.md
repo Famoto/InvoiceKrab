@@ -600,6 +600,18 @@ executes only that generated code.
 
 ## Developer commands
 
+Install the local pre-commit hooks once per checkout:
+
+```bash
+pre-commit install
+```
+
+Run the same hooks manually across the workspace with:
+
+```bash
+pre-commit run --all-files
+```
+
 The DSL crate ships an `xtask` dev CLI for mapping authors. It loads the
 mappings through the exact same loader and compiler the build uses, so what
 `check` accepts, the build accepts:

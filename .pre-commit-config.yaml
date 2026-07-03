@@ -1,0 +1,30 @@
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all -- --check
+        language: system
+        files: \.rs$
+        pass_filenames: false
+
+      - id: mapping-check
+        name: mapping check
+        entry: cargo run --locked -p einvoice-dsl -- check mappings
+        language: system
+        files: ^(Cargo\.(toml|lock)|mappings/.*\.toml|crates/einvoice-dsl/.*|crates/einvoice-interfaces/build\.rs)$
+        pass_filenames: false
+
+      - id: cargo-check
+        name: cargo check
+        entry: cargo check --workspace --all-targets --locked
+        language: system
+        files: ^(Cargo\.(toml|lock)|crates/.*|mappings/.*\.toml)$
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --workspace --all-targets --locked -- -D warnings
+        language: system
+        files: ^(Cargo\.(toml|lock)|crates/.*|mappings/.*\.toml)$
+        pass_filenames: false
