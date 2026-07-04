@@ -138,7 +138,7 @@ fn customization_id(bytes: &[u8]) -> Option<String> {
                 in_customization = e.local_name().as_ref() == b"CustomizationID";
             }
             Ok(Event::Text(t)) if in_customization => {
-                let text = t.unescape().ok()?.trim().to_string();
+                let text = t.decode().ok()?.trim().to_string();
                 if !text.is_empty() {
                     return Some(text);
                 }

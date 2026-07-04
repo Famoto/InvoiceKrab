@@ -174,7 +174,7 @@ fn serve_one(mut request: Request, gate: &MemGate, blowup: u64) {
 fn listen(addr: &str) -> Result<Server, Box<dyn std::error::Error + Send + Sync>> {
     let listener = std::net::TcpListener::bind(addr)?;
     let sock = socket2::SockRef::from(&listener);
-    sock.set_nodelay(true)?;
+    sock.set_tcp_nodelay(true)?;
     // Probe count stays at the kernel default (9 on Linux); overriding it
     // needs socket2's `all` feature for one knob that barely matters.
     sock.set_tcp_keepalive(
