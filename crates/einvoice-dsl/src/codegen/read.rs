@@ -1,9 +1,17 @@
-//! Reader generation: `read(source: &Root) -> MappingResult<MainKey>`.
+//! Reader generation: `read(mut source: Root) -> MappingResult<MainKey>`.
 //!
 //! Per node: reads the source field, applies the normalize chain, falls back
 //! through `fallbacks`, decodes/validates by `type`, applies an optional
 //! `adapter`, enforces `required`/`min_items`, and assigns into the typed hub.
+//!
+//! The reader **consumes** the source struct: paths read exactly once move
+//! their `String`s into the hub (`take`), so a large document's text is not
+//! duplicated. Paths read more than once in a scope — a primary that is also a
+//! fallback target, two nodes sharing a fallback, two collections over one
+//! `Vec` — fall back to borrow + clone, since a second read of a taken path
+//! would see the leftover `Default`.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use crate::multiple::MultiplePolicy;
@@ -12,7 +20,7 @@ use crate::normalize::NormalizeOp;
 use crate::source_model::SourceModelMeta;
 use crate::types::MappingType;
 
-use super::access::{access_expr, collection_item_struct, normalize_chain};
+use super::access::{access_expr, collection_item_struct, normalize_chain, take_expr};
 use super::diag::DiagSpec;
 use super::naming::{field_name, item_struct_name};
 use super::plan::{Frame, GenCtx};
@@ -27,26 +35,62 @@ struct Target<'a> {
     base_var: &'a str,
     /// The collection index variable for diagnostics, if inside a collection.
     index_var: Option<&'a str>,
+    /// Whether `base_var` is owned, allowing uniquely-read values to move out.
+    owned: bool,
 }
 
-/// Emits the `read(source: &Root) -> MappingResult<MainKey>` function into `out`.
+/// The source paths read more than once within one scope: each scalar's
+/// primary path, every fallback target's path, and each collection's path.
+/// These must stay borrow + clone reads; unique paths move out.
+fn shared_read_paths(
+    ctx: &GenCtx,
+    scalars: &[&SourceNode],
+    collections: &[&SourceNode],
+) -> BTreeSet<String> {
+    let mut paths: Vec<&str> = Vec::new();
+    for node in scalars {
+        paths.push(&node.source_path);
+        for fb_id in &node.fallbacks {
+            if let Some(fb) = ctx.ir.nodes.get(fb_id) {
+                paths.push(&fb.source_path);
+            }
+        }
+    }
+    for coll in collections {
+        paths.push(&coll.source_path);
+    }
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut shared = BTreeSet::new();
+    for path in paths {
+        if !seen.insert(path) {
+            shared.insert(path.to_string());
+        }
+    }
+    shared
+}
+
+/// Emits the `read(mut source: Root) -> MappingResult<MainKey>` function into
+/// `out`. The source is consumed; see the module docs for the move/clone rule.
 pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
-    out.push_str("/// Reads the typed source document into the canonical hub.\n");
+    out.push_str("/// Reads the typed source document into the canonical hub, consuming it\n");
+    out.push_str("/// so uniquely-read values move instead of clone.\n");
     let _ = writeln!(
         out,
-        "pub fn read(source: &{root}) -> MappingResult<MainKey> {{"
+        "pub fn read(mut source: {root}) -> MappingResult<MainKey> {{"
     );
     out.push_str("    let mut diagnostics: Vec<MappingDiagnostic> = Vec::new();\n");
     out.push_str("    let mut main = MainKey::default();\n");
 
+    let shared = shared_read_paths(ctx, &ctx.plan.root_scalars, &ctx.plan.root_collections);
     let root_target = Target {
         struct_var: "main",
         base_var: "source",
         index_var: None,
+        owned: true,
     };
     for node in &ctx.plan.root_scalars {
         out.push('\n');
-        read_scalar_block(out, ctx, node, &ctx.source.root, 1, &root_target);
+        read_scalar_block(out, ctx, node, &ctx.source.root, 1, &root_target, &shared);
     }
 
     for coll in &ctx.plan.root_collections {
@@ -61,7 +105,9 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
                 parent_hub: "main",
                 parent_src: "source",
                 parent_struct: &ctx.source.root,
+                owned: true,
             },
+            &shared,
         );
     }
 
@@ -71,7 +117,9 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
 }
 
 /// Emits the read block for one scalar node: read + normalize + fallbacks +
-/// decode + assign into `target.struct_var.<field>`.
+/// decode + assign into `target.struct_var.<field>`. `shared` is the scope's
+/// twice-read path set: those paths are cloned, unique ones are moved.
+#[allow(clippy::too_many_arguments)]
 fn read_scalar_block(
     out: &mut String,
     ctx: &GenCtx,
@@ -79,16 +127,18 @@ fn read_scalar_block(
     start_struct: &str,
     indent: usize,
     target: &Target,
+    shared: &BTreeSet<String>,
 ) {
     let pad = "    ".repeat(indent);
     let key = node
         .canonical_key
         .as_deref()
         .expect("scalar read block requires a canonical key");
+    let take = target.owned && !shared.contains(&node.source_path);
 
     if let Some(policy) = node.multiple {
         let _ = writeln!(out, "{pad}// {} -> {key} (multiple)", node.id);
-        read_multi_values(out, node, key, policy, indent, target);
+        read_multi_values(out, node, key, policy, indent, target, take);
     } else {
         let _ = writeln!(out, "{pad}// {} -> {key}", node.id);
         let binding = if node.fallbacks.is_empty() {
@@ -104,7 +154,8 @@ fn read_scalar_block(
                 start_struct,
                 &node.source_path,
                 &node.normalize,
-                target
+                target,
+                take
             )
         );
 
@@ -119,6 +170,7 @@ fn read_scalar_block(
             let Some(fb) = ctx.ir.nodes.get(fb_id) else {
                 continue;
             };
+            let fb_take = target.owned && !shared.contains(&fb.source_path);
             let _ = writeln!(out, "{pad}if value.is_none() {{");
             let _ = writeln!(
                 out,
@@ -128,7 +180,8 @@ fn read_scalar_block(
                     start_struct,
                     &fb.source_path,
                     &fb.normalize,
-                    target
+                    target,
+                    fb_take
                 )
             );
             let _ = writeln!(out, "{pad}    if value.is_some() {{");
@@ -172,18 +225,29 @@ fn read_multi_values(
     policy: MultiplePolicy,
     indent: usize,
     target: &Target,
+    take: bool,
 ) {
     let pad = "    ".repeat(indent);
     // The repeated leaf is a plain `Vec<String>` field (interior segments are
-    // never Option/Vec), so the source expression is a direct field access.
-    // Each item runs through the node's normalize chain; `empty_as_missing`
-    // drops the item.
-    let item_chain = normalize_chain("Some(s.as_str())", &node.normalize);
-    let _ = writeln!(
-        out,
-        "{pad}let values: Vec<String> = {}.{}.iter().filter_map(|s| {item_chain}).collect();",
-        target.base_var, node.source_path
-    );
+    // never Option/Vec), so the source expression is a direct field access —
+    // consumed when uniquely read, iterated by reference otherwise. Each item
+    // runs through the node's normalize chain; `empty_as_missing` drops the
+    // item.
+    if take {
+        let item_chain = normalize_chain("Some(s)", &node.normalize, true);
+        let _ = writeln!(
+            out,
+            "{pad}let values: Vec<String> = std::mem::take(&mut {}.{}).into_iter().filter_map(|s| {item_chain}).collect();",
+            target.base_var, node.source_path
+        );
+    } else {
+        let item_chain = normalize_chain("Some(s.as_str())", &node.normalize, false);
+        let _ = writeln!(
+            out,
+            "{pad}let values: Vec<String> = {}.{}.iter().filter_map(|s| {item_chain}).collect();",
+            target.base_var, node.source_path
+        );
+    }
 
     match policy {
         MultiplePolicy::Error => {
@@ -247,8 +311,16 @@ fn fallback_chain_literal(node: &SourceNode) -> String {
 /// Emits the read loop for one collection node and its children, building an item
 /// struct per source element and pushing it into the hub collection field.
 /// Recurses into nested collections; `frame` carries the depth (for unique loop
-/// variables), indent, and enclosing hub/source/struct context.
-fn read_collection_block(out: &mut String, ctx: &GenCtx, coll: &SourceNode, frame: &Frame) {
+/// variables), indent, and enclosing hub/source/struct context. A uniquely-read
+/// collection is consumed (`mem::take` + `into_iter`) so its elements' values
+/// can move; a twice-read one is iterated by reference and its subtree clones.
+fn read_collection_block(
+    out: &mut String,
+    ctx: &GenCtx,
+    coll: &SourceNode,
+    frame: &Frame,
+    shared: &BTreeSet<String>,
+) {
     let coll_key = coll
         .canonical_key
         .as_deref()
@@ -259,6 +331,8 @@ fn read_collection_block(out: &mut String, ctx: &GenCtx, coll: &SourceNode, fram
     let hub_field = field_name(coll_key);
     let children = ctx.plan.children_of(&coll.id);
     let nested = ctx.plan.nested_collections_of(&coll.id);
+    let owned = frame.owned && !shared.contains(&coll.source_path);
+    let child_shared = shared_read_paths(ctx, children, nested);
 
     // Per-depth variable names keep nested loops from shadowing each other.
     let depth = frame.depth;
@@ -273,28 +347,52 @@ fn read_collection_block(out: &mut String, ctx: &GenCtx, coll: &SourceNode, fram
     let body = "    ".repeat(indent + 1);
 
     let _ = writeln!(out, "{pad}// {} -> {coll_key} (collection)", coll.id);
-    let _ = writeln!(
-        out,
-        "{pad}let {count} = {parent_src}.{}.len();",
-        coll.source_path
-    );
     // The element count is known before the loop, so reserve the hub collection
     // once instead of letting it regrow as items are pushed.
-    let _ = writeln!(out, "{pad}{parent_hub}.{hub_field}.reserve({count});");
-    let _ = writeln!(
-        out,
-        "{pad}for ({idx}, {elem}) in {parent_src}.{}.iter().enumerate() {{",
-        coll.source_path
-    );
+    if owned {
+        let elements = format!("elements{depth}");
+        let _ = writeln!(
+            out,
+            "{pad}let {elements} = std::mem::take(&mut {parent_src}.{});",
+            coll.source_path
+        );
+        let _ = writeln!(out, "{pad}let {count} = {elements}.len();");
+        let _ = writeln!(out, "{pad}{parent_hub}.{hub_field}.reserve({count});");
+        let _ = writeln!(
+            out,
+            "{pad}for ({idx}, mut {elem}) in {elements}.into_iter().enumerate() {{"
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "{pad}let {count} = {parent_src}.{}.len();",
+            coll.source_path
+        );
+        let _ = writeln!(out, "{pad}{parent_hub}.{hub_field}.reserve({count});");
+        let _ = writeln!(
+            out,
+            "{pad}for ({idx}, {elem}) in {parent_src}.{}.iter().enumerate() {{",
+            coll.source_path
+        );
+    }
     let _ = writeln!(out, "{body}let mut {item} = {hub_item}::default();");
     let target = Target {
         struct_var: &item,
         base_var: &elem,
         index_var: Some(&idx),
+        owned,
     };
     for child in children {
         out.push('\n');
-        read_scalar_block(out, ctx, child, &src_item_struct, indent + 1, &target);
+        read_scalar_block(
+            out,
+            ctx,
+            child,
+            &src_item_struct,
+            indent + 1,
+            &target,
+            &child_shared,
+        );
     }
     for nested_coll in nested {
         out.push('\n');
@@ -308,7 +406,9 @@ fn read_collection_block(out: &mut String, ctx: &GenCtx, coll: &SourceNode, fram
                 parent_hub: &item,
                 parent_src: &elem,
                 parent_struct: &src_item_struct,
+                owned,
             },
+            &child_shared,
         );
     }
     out.push('\n');
@@ -331,16 +431,21 @@ fn read_collection_block(out: &mut String, ctx: &GenCtx, coll: &SourceNode, fram
 }
 
 /// Builds the `Option<String>` expression that reads one source field and applies
-/// its normalize chain.
+/// its normalize chain — moving the value out when `take`, cloning otherwise.
 fn read_one_value(
     source: &SourceModelMeta,
     start_struct: &str,
     path: &str,
     normalize: &[NormalizeOp],
     target: &Target,
+    take: bool,
 ) -> String {
-    let access = access_expr(source, start_struct, path, target.base_var);
-    normalize_chain(&access, normalize)
+    let access = if take {
+        take_expr(source, start_struct, path, target.base_var)
+    } else {
+        access_expr(source, start_struct, path, target.base_var)
+    };
+    normalize_chain(&access, normalize, take)
 }
 
 /// Emits the decode + adapter + assign snippet, given `raw: String` is in scope

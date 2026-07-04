@@ -137,7 +137,9 @@ fn serve_one(mut request: Request, gate: &MemGate, blowup: u64) {
         return;
     }
 
-    let reply = handle(query, &body);
+    // `handle` consumes the body and frees it once the source is parsed, so
+    // the write half of the transformation runs without the upload resident.
+    let reply = handle(query, body);
     let content_type = if reply.status == 200 {
         "application/xml"
     } else {

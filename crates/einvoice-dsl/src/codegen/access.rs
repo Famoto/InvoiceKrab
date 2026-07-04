@@ -22,11 +22,32 @@ pub(super) fn access_expr(
         // before codegen. Emit a loud `compile_error!` rather than plausible but
         // wrong access, so a codegen/validation gap fails at the exact site with a
         // clear message instead of a confusing downstream type error.
-        Err(_) => format!(
-            "compile_error!(\"unresolved source path `{path}` against `{start_struct}` \
-             (codegen bug or unvalidated mapping)\")"
-        ),
+        Err(_) => unresolved(path, start_struct),
     }
+}
+
+/// Emits the Rust expression that yields `Option<String>` by *moving* the value
+/// out of a mutable source struct (`take` for `Option` leaves, `mem::take` for
+/// required ones). Only valid for paths read exactly once — a second read of a
+/// taken path sees the leftover `Default`.
+pub(super) fn take_expr(
+    source: &SourceModelMeta,
+    start_struct: &str,
+    path: &str,
+    base_var: &str,
+) -> String {
+    match walk_segments(source, start_struct, path) {
+        Ok(segs) => build_take(base_var, path, &segs),
+        Err(_) => unresolved(path, start_struct),
+    }
+}
+
+/// The loud failure expression for a source path codegen cannot resolve.
+fn unresolved(path: &str, start_struct: &str) -> String {
+    format!(
+        "compile_error!(\"unresolved source path `{path}` against `{start_struct}` \
+         (codegen bug or unvalidated mapping)\")"
+    )
 }
 
 /// One resolved path segment: its name plus whether it is `Option`/`Vec` and
@@ -106,15 +127,55 @@ fn build_access(base: &str, full_path: &str, segs: &[SegInfo]) -> String {
     format!("{expr}{closers}")
 }
 
-/// Wraps a base `Option<&str>` access in the node's normalize chain, yielding an
+/// Builds an `Option<String>` *taking* expression from resolved segment info:
+/// the structural mirror of [`build_access`] with `as_mut`/`take` in place of
+/// `as_ref`/`as_str`, moving the leaf out and leaving `Default` behind.
+fn build_take(base: &str, full_path: &str, segs: &[SegInfo]) -> String {
+    let any_optional = segs.iter().any(|s| s.optional);
+    if !any_optional {
+        return format!("Some(std::mem::take(&mut {base}.{full_path}))");
+    }
+
+    let mut expr = String::from(base);
+    let mut depth = 0usize;
+    let mut closers = String::new();
+    for (i, seg) in segs.iter().enumerate() {
+        let is_last = i + 1 == segs.len();
+        if seg.optional {
+            if is_last {
+                expr = format!("{expr}.{}.take()", seg.name);
+            } else {
+                let var = format!("v{depth}");
+                expr = format!("{expr}.{}.as_mut().and_then(|{var}| ", seg.name);
+                expr.push_str(&var);
+                closers.push(')');
+                depth += 1;
+            }
+        } else {
+            expr = format!("{expr}.{}", seg.name);
+            if is_last {
+                expr = format!("Some(std::mem::take(&mut {expr}))");
+            }
+        }
+    }
+    format!("{expr}{closers}")
+}
+
+/// Wraps a base access in the node's normalize chain, yielding an
 /// `Option<String>`. `empty_as_missing` can collapse the value to `None`.
 ///
-/// The chain owns a single `String` (allocated once by the leading
-/// `s.to_string()`) and threads it through the normalize helpers by value, so no
-/// step after the first reallocates: `trim` edits in place, the case folds reuse
-/// the buffer's contents, and `empty_as_missing` hands it straight back.
-pub(super) fn normalize_chain(access: &str, ops: &[NormalizeOp]) -> String {
-    let mut expr = format!("{access}.map(|s| s.to_string())");
+/// When `owned` the access already yields `Option<String>` (a moved-out value)
+/// and is threaded through as-is; otherwise the access yields `Option<&str>`
+/// and the chain allocates once with a leading `s.to_string()`. Either way a
+/// single `String` moves through the helpers by value, so no step after the
+/// first reallocates: `trim` edits in place, the case folds reuse the buffer's
+/// contents, and `empty_as_missing` hands it straight back.
+pub(super) fn normalize_chain(access: &str, ops: &[NormalizeOp], owned: bool) -> String {
+    let mut expr = if owned {
+        access.to_string()
+    } else {
+        format!("{access}.map(|s| s.to_string())")
+    };
     for op in ops {
         match op {
             NormalizeOp::Trim => expr = format!("{expr}.map(normalize::trim)"),

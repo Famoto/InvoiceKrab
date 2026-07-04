@@ -209,11 +209,11 @@ mod tests {
         assert!(out.contains("pub fn from_xml"), "{out}");
         assert!(out.contains("pub fn to_xml"), "{out}");
         assert!(
-            out.contains("pub fn read(source: &Invoice) -> MappingResult<MainKey>"),
+            out.contains("pub fn read(mut source: Invoice) -> MappingResult<MainKey>"),
             "{out}"
         );
         assert!(
-            out.contains("pub fn write(main: &MainKey) -> MappingResult<Invoice>"),
+            out.contains("pub fn write(mut main: MainKey) -> MappingResult<Invoice>"),
             "{out}"
         );
     }
@@ -226,19 +226,16 @@ mod tests {
         assert!(out.contains("validate::is_currency(raw.trim())"), "{out}");
         assert!(out.contains("main.document_currency = Some(raw);"), "{out}");
         assert!(out.contains("Decimal::from_str(raw.trim())"), "{out}");
-        // The normalize chain threads one owned `String` by value (no per-op
-        // re-borrow / reallocation).
+        // The normalize chain threads the one moved-out `String` by value (no
+        // per-op re-borrow / reallocation, no clone).
         assert!(
-            out.contains(".map(|s| s.to_string()).map(normalize::trim).map(normalize::uppercase)"),
+            out.contains(".take().map(normalize::trim).map(normalize::uppercase)"),
             "{out}"
         );
         assert!(!out.contains("normalize::trim(&s)"), "{out}");
         // Collection loops use per-depth variable names (`item0`, `element0`) and
         // reserve the hub collection up front from the known source length.
-        assert!(
-            out.contains("let count0 = source.invoice_line.len();"),
-            "{out}"
-        );
+        assert!(out.contains("let count0 = elements0.len();"), "{out}");
         assert!(out.contains("main.invoice_lines.reserve(count0);"), "{out}");
         assert!(out.contains("main.invoice_lines.push(item0);"), "{out}");
         assert!(out.contains("item0.quantity = Some(d)"), "{out}");
@@ -249,7 +246,7 @@ mod tests {
         let (ir, _, source) = compiled();
         let out = generate_spoke(&ir, &source, "super::hub");
         assert!(
-            out.contains("if let Some(value) = &main.invoice_number {"),
+            out.contains("if let Some(value) = main.invoice_number.take() {"),
             "{out}"
         );
         // Values are rendered once, skipped if empty, then assigned. Every leaf
@@ -261,7 +258,7 @@ mod tests {
         assert!(out.contains("source.id = Some(rendered);"), "{out}");
         // The source collection is reserved once from the hub item count.
         assert!(
-            out.contains("source.invoice_line.reserve(main.invoice_lines.len());"),
+            out.contains("source.invoice_line.reserve(hub_items0.len());"),
             "{out}"
         );
         assert!(out.contains("REQUIRED_MISSING"), "{out}");
@@ -349,10 +346,14 @@ mod tests {
             "{hub_src}"
         );
 
-        // Spoke: nested read/write loops over the inner source Vec, keyed by depth.
+        // Spoke: nested read/write loops consume the inner Vec, keyed by depth.
         let spoke = generate_spoke(&ir, &source, "super::hub");
         assert!(
-            spoke.contains("for (idx1, element1) in element0.allowance_charge.iter().enumerate()"),
+            spoke.contains("let elements1 = std::mem::take(&mut element0.allowance_charge);"),
+            "{spoke}"
+        );
+        assert!(
+            spoke.contains("for (idx1, mut element1) in elements1.into_iter().enumerate()"),
             "{spoke}"
         );
         assert!(
@@ -360,7 +361,11 @@ mod tests {
             "{spoke}"
         );
         assert!(
-            spoke.contains("for (idx1, hub_item1) in hub_item0.line_allowances.iter().enumerate()"),
+            spoke.contains("let hub_items1 = std::mem::take(&mut hub_item0.line_allowances);"),
+            "{spoke}"
+        );
+        assert!(
+            spoke.contains("for (idx1, mut hub_item1) in hub_items1.into_iter().enumerate()"),
             "{spoke}"
         );
         assert!(
@@ -385,9 +390,10 @@ mod tests {
         let out = generate_spoke(&ir, &source, "super::hub");
         // Source struct: repeated scalar leaf.
         assert!(out.contains("pub note: Vec<String>,"), "{out}");
-        // Reader: collect normalized values, join with the separator.
+        // Reader: consume the repeated leaf, collect normalized values, join
+        // with the separator.
         assert!(
-            out.contains("source.note.iter().filter_map(|s| Some(s.as_str())"),
+            out.contains("std::mem::take(&mut source.note).into_iter().filter_map(|s| Some(s)"),
             "{out}"
         );
         assert!(out.contains("Some(values.join(\"\\n\"))"), "{out}");
@@ -411,6 +417,75 @@ mod tests {
             assert!(out.contains("MULTIPLE_VALUES"), "{out}");
             assert!(out.contains(severity), "{policy}: {out}");
         }
+    }
+
+    #[test]
+    fn test_reader_moves_unique_source_values() {
+        let (ir, _, source) = compiled();
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // The reader consumes the source struct so uniquely-read values move
+        // into the hub instead of being cloned.
+        assert!(
+            out.contains("pub fn read(mut source: Invoice) -> MappingResult<MainKey>"),
+            "{out}"
+        );
+        assert!(out.contains("source.id.take()"), "{out}");
+        // Collections are consumed by value, element by element.
+        assert!(
+            out.contains("let elements0 = std::mem::take(&mut source.invoice_line);"),
+            "{out}"
+        );
+        assert!(
+            out.contains("for (idx0, mut element0) in elements0.into_iter().enumerate()"),
+            "{out}"
+        );
+        // No path in this mapping is read twice, so nothing is cloned.
+        assert!(!out.contains(".map(|s| s.to_string())"), "{out}");
+    }
+
+    #[test]
+    fn test_reader_clones_shared_fallback_path() {
+        // Two primaries share `Invoice.UUID` as a fallback: that path is read
+        // twice, so it must stay a borrow + clone (a move would leave the
+        // second read empty). Unique paths still move.
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+            fallbacks = ["Invoice.UUID"]
+
+            [Invoice.Alt]
+            type = "identifier"
+            canonical_key = "AltNumber"
+            fallbacks = ["Invoice.UUID"]
+
+            [Invoice.UUID]
+            type = "identifier"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, "super::hub");
+        assert!(!out.contains("source.uuid.take()"), "{out}");
+        assert!(out.contains("source.uuid.as_ref()"), "{out}");
+        assert!(out.contains("source.id.take()"), "{out}");
+        assert!(out.contains("source.alt.take()"), "{out}");
+    }
+
+    #[test]
+    fn test_writer_moves_hub_values() {
+        let (ir, _, source) = compiled();
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // The writer consumes the hub so values move into the target struct.
+        assert!(
+            out.contains("pub fn write(mut main: MainKey) -> MappingResult<Invoice>"),
+            "{out}"
+        );
+        assert!(out.contains("main.invoice_number.take()"), "{out}");
+        assert!(
+            out.contains("let hub_items0 = std::mem::take(&mut main.invoice_lines);"),
+            "{out}"
+        );
+        assert!(!out.contains("value.clone()"), "{out}");
     }
 
     #[test]
