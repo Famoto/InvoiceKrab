@@ -21,6 +21,13 @@ thiserror = "2"
 rust_decimal = "1"
 # Source-XML (de)serialization for the typed source models.
 quick-xml = "0.37"
+# Sync HTTP server for the krab-server binary. Plain dependency (no feature
+# gate) so the crate's feature fingerprint never flips between CLI and server
+# builds — a flip would re-run the codegen build script every time.
+tiny_http = "0.12"
+# TCP_NODELAY on the server listener: tiny_http never sets it, and Nagle +
+# delayed ACK adds ~40 ms to every keep-alive request without it.
+socket2 = "0.5"
 
 # Internal crates.
 einvoice-transformator = { path = "crates/einvoice-transformator" }

@@ -1,4 +1,4 @@
-//! The `krab-invoice` command-line surface for the engine.
+//! The `krab-cli` command-line surface for the engine.
 //!
 //! This module owns the CLI: it parses argv into a [`Command`], resolves
 //! human-typed format names to the generated [`Spoke`](crate::Spoke) variants,
@@ -6,7 +6,7 @@
 //! XML document into a target format. It owns *only* the CLI concerns — argument
 //! parsing, format resolution, IO wiring, and diagnostic rendering; all mapping
 //! logic lives in the rest of this crate and in `einvoice-transformator`. The
-//! thin `krab-invoice` binary (`src/bin/krab-invoice.rs`) just forwards the real
+//! thin `krab-cli` binary (`src/bin/krab-cli.rs`) just forwards the real
 //! argv and standard streams into [`run`].
 //!
 //! # Structure
@@ -26,7 +26,7 @@
 //!
 //! # Behavior
 //!
-//! `krab-invoice <INPUT> <TARGET-FORMAT> [--from <SOURCE-FORMAT>] [--out <FILE>]`
+//! `krab-cli <INPUT> <TARGET-FORMAT> [--from <SOURCE-FORMAT>] [--out <FILE>]`
 //! reads `INPUT` (or stdin when `-`), transforms it from its source format to
 //! `TARGET-FORMAT`, and writes the result to stdout (or `--out`). When `--from`
 //! is omitted the source format is auto-detected by matching the document's root
@@ -36,11 +36,11 @@
 //! Mapping diagnostics are rendered to stderr; an error-severity diagnostic makes
 //! the process exit non-zero without emitting partial output.
 //!
-//! `krab-invoice --analyze [SOURCE-FORMAT]` instead emits a static table of every
+//! `krab-cli --analyze [SOURCE-FORMAT]` instead emits a static table of every
 //! transform's loss/error state (no input document needed); with a source format
 //! it is scoped to "from that format to everything else". See [`crate::analysis`].
 //!
-//! `krab-invoice --keys [FORMAT]` is an authoring aid for writing the mapping
+//! `krab-cli --keys [FORMAT]` is an authoring aid for writing the mapping
 //! TOMLs: with no format it lists the whole canonical "main key" vocabulary and
 //! which spokes define each; with a format it shows that spoke's covered keys and
 //! the hub keys it does not yet map (candidates to add). See [`crate::keys`].
@@ -65,4 +65,4 @@ pub use detect::{detect_source, resolve_spoke};
 pub use error::CliError;
 pub use parse::parse_args;
 pub use render::{format_list, render_diagnostics, usage};
-pub use run::{run, write_output_file};
+pub use run::{analyze_table, run, write_output_file};

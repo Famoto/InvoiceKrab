@@ -14,7 +14,7 @@
 //! - [`TransformReport`] — a transform's state plus the concrete missing-required
 //!   and dropped fields that explain it.
 //! - [`analyze`] — classify a single `source → target` pair.
-//! - [`analyze_all`] — every `source × target` pair, in spoke order.
+//! - [`analyze_all`] — every `source x target` pair, in spoke order.
 //! - [`render_table`] — a user-friendly aligned table over a set of reports.
 //!
 //! # Behavior
@@ -168,7 +168,7 @@ pub fn analyze(source: Spoke, target: Spoke) -> TransformReport {
     }
 }
 
-/// Every `source × target` transform among `sources` and `targets`, in the given
+/// Every `source x target` transform among `sources` and `targets`, in the given
 /// order (source-major). Pass `Spoke::ALL` for both to get the full matrix, or a
 /// single source to scope the report to "from X to everything else".
 pub fn analyze_all(sources: &[Spoke], targets: &[Spoke]) -> Vec<TransformReport> {

@@ -1,4 +1,4 @@
-//! `krab-invoice` binary — a thin shell delegating to [`einvoice_interfaces::cli::run`].
+//! `krab-cli` binary — a thin shell delegating to [`einvoice_interfaces::cli::run`].
 //!
 //! All logic lives in the [`cli`](einvoice_interfaces::cli) module so it can be
 //! unit- and integration-tested without spawning a process; this entry point

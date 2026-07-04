@@ -11,6 +11,11 @@ rust_decimal = { workspace = true }
 serde = { workspace = true }
 quick-xml = { workspace = true, features = ["serde", "serialize"] }
 thiserror = { workspace = true }
+# Used only by the krab-server binary; the linker strips it from krab-cli.
+tiny_http = { workspace = true }
+socket2 = { workspace = true }
+# JSON for the server's capability endpoints (`GET /formats`).
+serde_json = { workspace = true }
 
 [build-dependencies]
 # The compiler: build.rs runs the DSL pipeline and codegen at build time.

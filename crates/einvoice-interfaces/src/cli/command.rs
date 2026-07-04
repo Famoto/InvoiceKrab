@@ -13,7 +13,7 @@ pub enum Command {
     /// List the available formats and exit.
     ListFormats,
     /// Report the loss/error state of every transform, optionally scoped to a
-    /// single source format (`None` means the full source × target matrix).
+    /// single source format (`None` means the full source x target matrix).
     Analyze(Option<String>),
     /// Show the canonical main keys, as an authoring aid for writing mappings.
     /// `None` lists the whole hub vocabulary; `Some(format)` shows that spoke's

@@ -6,7 +6,7 @@
 //! - `to_hub`    — source XML bytes → typed canonical hub (the read half).
 //! - `from_hub`  — typed hub → target XML bytes (the write half).
 //! - `transform` — the full N–1–N path (read + write through the hub), across
-//!   the Cartesian product of source × target spokes, so same-spoke
+//!   the Cartesian product of source x target spokes, so same-spoke
 //!   round-trips, the reverse direction, and the cross-format routes are all
 //!   measured.
 //!
@@ -114,7 +114,7 @@ fn bench_from_hub(c: &mut Criterion) {
 fn bench_transform(c: &mut Criterion) {
     let engine = Engine::new();
     let mut group = c.benchmark_group("transform");
-    // Cartesian product of source × target spokes: same-spoke round-trips, the
+    // Cartesian product of source x target spokes: same-spoke round-trips, the
     // reverse direction, and the cross-format routes.
     for (from_name, from, build) in SPOKES {
         for (to_name, to, _) in SPOKES {
