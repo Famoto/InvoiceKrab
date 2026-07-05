@@ -2,10 +2,12 @@
 //!
 //! [`handle`] owns everything between "the body has been read" and "the
 //! response is known": query-parameter parsing, format resolution (reusing
-//! the [`cli`](crate::cli) helpers), driving
-//! [`Engine::transform`](crate::Engine::transform), and mapping outcomes to
-//! HTTP status codes. It knows nothing of sockets or `tiny_http`, so the
-//! whole decision table is unit-testable with plain byte slices.
+//! the [`cli`](crate::cli) helpers), driving the engine's read and write
+//! halves ([`Engine::to_hub`](crate::Engine::to_hub) then
+//! [`Engine::from_hub`](crate::Engine::from_hub), freeing the body between
+//! them), and mapping outcomes to HTTP status codes. It knows nothing of
+//! sockets or `tiny_http`, so the whole decision table is unit-testable with
+//! plain bytes.
 //!
 //! # Status mapping
 //!
@@ -33,6 +35,7 @@
 
 use crate::cli::{detect_source, render_diagnostics, resolve_spoke};
 use crate::{Engine, EngineError};
+use einvoice_transformator::result::MappingResult;
 
 /// The computed response: status code, body, and any warning text destined
 /// for a response header (never the body — the body is XML on success).
@@ -51,7 +54,11 @@ pub struct Reply {
 /// Transforms `body` according to the request `query` (`to=<format>`,
 /// optional `from=<format>`, auto-detected when absent) and maps the outcome
 /// to an HTTP reply. See the module docs for the status table.
-pub fn handle(query: &str, body: &[u8]) -> Reply {
+///
+/// Takes the body by value so it can be freed as soon as the source document
+/// is parsed: the write half of the transformation then runs without the raw
+/// upload resident, which matters for multi-hundred-MB documents.
+pub fn handle(query: &str, body: Vec<u8>) -> Reply {
     match transform(query, body) {
         Ok(reply) => reply,
         Err((status, message)) => Reply {
@@ -63,24 +70,39 @@ pub fn handle(query: &str, body: &[u8]) -> Reply {
 }
 
 /// The fallible core of [`handle`]; errors are `(status, problem text)`.
-fn transform(query: &str, body: &[u8]) -> Result<Reply, (u16, String)> {
+fn transform(query: &str, body: Vec<u8>) -> Result<Reply, (u16, String)> {
     let Some(to) = param(query, "to") else {
         return Err((400, "missing required query parameter: to=<format>".into()));
     };
     let to = resolve_spoke(to).map_err(|e| (400, e.to_string()))?;
     let from = match param(query, "from") {
         Some(name) => resolve_spoke(name).map_err(|e| (400, e.to_string()))?,
-        None => detect_source(body).map_err(|e| (400, e.to_string()))?,
+        None => detect_source(&body).map_err(|e| (400, e.to_string()))?,
     };
 
-    let result = Engine::new()
-        .transform(from, to, body)
-        .map_err(|e| match e {
-            // The client sent bytes that are not a well-formed `from` document.
-            EngineError::Deserialize(e) => (400, format!("source deserialization failed: {e}")),
-            // The engine produced an unserializable model: our bug, not theirs.
-            EngineError::Serialize(e) => (500, format!("target serialization failed: {e}")),
-        })?;
+    let status_of = |e: EngineError| match e {
+        // The client sent bytes that are not a well-formed `from` document.
+        EngineError::Deserialize(e) => (400, format!("source deserialization failed: {e}")),
+        // The engine produced an unserializable model: our bug, not theirs.
+        EngineError::Serialize(e) => (500, format!("target serialization failed: {e}")),
+    };
+
+    // The read and write halves are driven separately (instead of one
+    // `Engine::transform` call) so the body can be dropped the moment the
+    // source is parsed — the write half runs with the raw bytes freed.
+    let engine = Engine::new();
+    let read = engine.to_hub(from, &body).map_err(status_of)?;
+    drop(body);
+    let mut diagnostics = read.diagnostics;
+    let value = match read.value {
+        Some(hub) => {
+            let written = engine.from_hub(to, hub).map_err(status_of)?;
+            diagnostics.extend(written.diagnostics);
+            written.value
+        }
+        None => None,
+    };
+    let result = MappingResult::new(value, diagnostics);
 
     match result.value {
         Some(xml) if !result.has_errors() => Ok(Reply {
@@ -147,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_handle_valid_transform_returns_200_xml() {
-        let reply = handle("to=ubl-invoice&from=ubl-invoice", UBL);
+        let reply = handle("to=ubl-invoice&from=ubl-invoice", UBL.to_vec());
         assert_eq!(reply.status, 200, "{}", reply.body);
         assert!(reply.body.contains("<ID>INV-42</ID>"), "{}", reply.body);
         assert!(reply.warnings.is_empty(), "{}", reply.warnings);
@@ -155,14 +177,14 @@ mod tests {
 
     #[test]
     fn test_handle_detects_source_when_from_absent() {
-        let reply = handle("to=ubl-invoice", UBL);
+        let reply = handle("to=ubl-invoice", UBL.to_vec());
         assert_eq!(reply.status, 200, "{}", reply.body);
         assert!(reply.body.contains("<ID>INV-42</ID>"), "{}", reply.body);
     }
 
     #[test]
     fn test_handle_missing_to_returns_400() {
-        let reply = handle("", UBL);
+        let reply = handle("", UBL.to_vec());
         assert_eq!(reply.status, 400);
         assert!(
             reply.body.contains("to="),
@@ -173,27 +195,27 @@ mod tests {
 
     #[test]
     fn test_handle_unknown_target_returns_400() {
-        let reply = handle("to=not-a-format", UBL);
+        let reply = handle("to=not-a-format", UBL.to_vec());
         assert_eq!(reply.status, 400);
         assert!(reply.body.contains("not-a-format"), "{}", reply.body);
     }
 
     #[test]
     fn test_handle_unknown_source_returns_400() {
-        let reply = handle("to=ubl-invoice&from=not-a-format", UBL);
+        let reply = handle("to=ubl-invoice&from=not-a-format", UBL.to_vec());
         assert_eq!(reply.status, 400);
         assert!(reply.body.contains("not-a-format"), "{}", reply.body);
     }
 
     #[test]
     fn test_handle_undetectable_source_returns_400() {
-        let reply = handle("to=ubl-invoice", b"<Mystery/>");
+        let reply = handle("to=ubl-invoice", b"<Mystery/>".to_vec());
         assert_eq!(reply.status, 400, "{}", reply.body);
     }
 
     #[test]
     fn test_handle_malformed_xml_returns_400() {
-        let reply = handle("to=ubl-invoice&from=ubl-invoice", b"not xml <<<");
+        let reply = handle("to=ubl-invoice&from=ubl-invoice", b"not xml <<<".to_vec());
         assert_eq!(reply.status, 400, "{}", reply.body);
     }
 
@@ -201,7 +223,7 @@ mod tests {
     fn test_handle_mapping_errors_return_422_with_diagnostics() {
         // Plain UBL lacks the XRechnung-required CustomizationID: the writer
         // reports REQUIRED_MISSING (see the crate-level tests).
-        let reply = handle("to=xrechnung-invoice&from=ubl-invoice", UBL);
+        let reply = handle("to=xrechnung-invoice&from=ubl-invoice", UBL.to_vec());
         assert_eq!(reply.status, 422, "{}", reply.body);
         assert!(reply.body.contains("REQUIRED_MISSING"), "{}", reply.body);
     }

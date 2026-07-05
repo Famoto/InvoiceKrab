@@ -4,7 +4,9 @@
 //! The e-invoice engine is reworked so the canonical hub is a **generated typed
 //! struct** (`MainKey`) living in the interfaces crate, not a dynamic map.
 //! Generated reader/writer code therefore uses plain Rust types directly
-//! (`String`, `rust_decimal::Decimal`, `bool`, `Vec<…>`). This crate no longer
+//! (`compact_str::CompactString`, `rust_decimal::Decimal`, `bool`, `Vec<…>`;
+//! the inline string type keeps values of ≤ 24 bytes off the heap, which is
+//! most invoice fields). This crate no longer
 //! owns a `Value` type or a dynamic hub; it provides only the small set of pure
 //! helpers that generated code still calls plus the structured mapping result.
 //!

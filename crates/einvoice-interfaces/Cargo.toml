@@ -8,6 +8,7 @@ edition.workspace = true
 einvoice-transformator = { workspace = true }
 # Generated source structs + the MainKey hub use these directly.
 rust_decimal = { workspace = true }
+compact_str = { workspace = true }
 serde = { workspace = true }
 quick-xml = { workspace = true, features = ["serde", "serialize"] }
 thiserror = { workspace = true }

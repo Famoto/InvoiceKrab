@@ -9,7 +9,7 @@
 //! | `KRAB_ADDR`             | `0.0.0.0:8080`                                 |
 //! | `KRAB_WORKERS`          | available parallelism (cgroup-aware)           |
 //! | `KRAB_MEM_BUDGET_BYTES` | detected memory x 1/2 (cgroup v2 limit first)  |
-//! | `KRAB_MEM_BLOWUP`       | `5` (measured parse-memory multiplier)         |
+//! | `KRAB_MEM_BLOWUP`       | `7` (measured peak-memory multiplier)          |
 //!
 //! # Structure
 //!
@@ -91,7 +91,12 @@ impl Config {
         };
         let mem_blowup = match lookup("KRAB_MEM_BLOWUP") {
             Some(v) => parse_nonzero("KRAB_MEM_BLOWUP", &v)?,
-            None => 5,
+            // Measured peak RSS over the transform path (inline strings +
+            // boxed interior containers): worst ~6.1x the body for small
+            // line-dense documents, ~5.3x marginal at scale; 7 adds headroom.
+            // Ratios measured with glibc — re-measure in the musl container
+            // before tightening further.
+            None => 7,
         };
         Ok(Config {
             addr: lookup("KRAB_ADDR").unwrap_or_else(|| "0.0.0.0:8080".into()),
@@ -182,7 +187,7 @@ mod tests {
                 addr: "0.0.0.0:8080".into(),
                 workers: 16,
                 mem_budget_bytes: 32 * GIB, // half of detected
-                mem_blowup: 5,
+                mem_blowup: 7,
             }
         );
     }

@@ -4,5 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+# Normalize helpers thread the generated models' inline-string values.
+compact_str = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

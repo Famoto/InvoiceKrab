@@ -15,7 +15,8 @@
 //! The runtime never interprets the TOML; it links against the generated Rust,
 //! which targets the small `einvoice-transformator` helper API (`normalize`,
 //! `validate`, `adapter`, `MappingResult`) and uses native Rust types
-//! (`String`, `rust_decimal::Decimal`, `bool`, `Vec<…>`) directly.
+//! (`compact_str::CompactString`, `rust_decimal::Decimal`, `bool`, `Vec<…>`)
+//! directly.
 //!
 //! # Structure
 //!
@@ -87,6 +88,7 @@ pub fn generate_spoke(ir: &MappingIr, source: &SourceModelMeta, hub_module: &str
     );
     out.push('\n');
     out.push_str("use std::str::FromStr as _;\n");
+    out.push_str("use compact_str::{CompactString, ToCompactString as _};\n");
     out.push_str("use rust_decimal::Decimal;\n");
     out.push_str("use serde::{Deserialize, Serialize};\n");
     out.push_str(
@@ -177,7 +179,10 @@ mod tests {
         let (_, hub, _) = compiled();
         let out = generate_hub(&hub);
         assert!(out.contains("pub struct MainKey {"), "{out}");
-        assert!(out.contains("pub invoice_number: Option<String>,"), "{out}");
+        assert!(
+            out.contains("pub invoice_number: Option<CompactString>,"),
+            "{out}"
+        );
         assert!(
             out.contains("pub payable_amount: Option<Decimal>,"),
             "{out}"
@@ -209,11 +214,11 @@ mod tests {
         assert!(out.contains("pub fn from_xml"), "{out}");
         assert!(out.contains("pub fn to_xml"), "{out}");
         assert!(
-            out.contains("pub fn read(source: &Invoice) -> MappingResult<MainKey>"),
+            out.contains("pub fn read(mut source: Invoice) -> MappingResult<MainKey>"),
             "{out}"
         );
         assert!(
-            out.contains("pub fn write(main: &MainKey) -> MappingResult<Invoice>"),
+            out.contains("pub fn write(mut main: MainKey) -> MappingResult<Invoice>"),
             "{out}"
         );
     }
@@ -226,19 +231,16 @@ mod tests {
         assert!(out.contains("validate::is_currency(raw.trim())"), "{out}");
         assert!(out.contains("main.document_currency = Some(raw);"), "{out}");
         assert!(out.contains("Decimal::from_str(raw.trim())"), "{out}");
-        // The normalize chain threads one owned `String` by value (no per-op
-        // re-borrow / reallocation).
+        // The normalize chain threads the one moved-out inline string by value
+        // (no per-op re-borrow / reallocation, no clone).
         assert!(
-            out.contains(".map(|s| s.to_string()).map(normalize::trim).map(normalize::uppercase)"),
+            out.contains(".take().map(normalize::trim).map(normalize::uppercase)"),
             "{out}"
         );
         assert!(!out.contains("normalize::trim(&s)"), "{out}");
         // Collection loops use per-depth variable names (`item0`, `element0`) and
         // reserve the hub collection up front from the known source length.
-        assert!(
-            out.contains("let count0 = source.invoice_line.len();"),
-            "{out}"
-        );
+        assert!(out.contains("let count0 = elements0.len();"), "{out}");
         assert!(out.contains("main.invoice_lines.reserve(count0);"), "{out}");
         assert!(out.contains("main.invoice_lines.push(item0);"), "{out}");
         assert!(out.contains("item0.quantity = Some(d)"), "{out}");
@@ -249,29 +251,40 @@ mod tests {
         let (ir, _, source) = compiled();
         let out = generate_spoke(&ir, &source, "super::hub");
         assert!(
-            out.contains("if let Some(value) = &main.invoice_number {"),
+            out.contains("if let Some(value) = main.invoice_number.take() {"),
             "{out}"
         );
-        // Values are rendered once, skipped if empty, then assigned. Every leaf
-        // is Option-typed, so assignment wraps in `Some`.
+        // Typed values render straight to the inline string type (no
+        // intermediate heap `String` for short decimals).
         assert!(
-            out.contains("source.legal_monetary_total.payable_amount.value = Some(rendered);"),
+            out.contains("let rendered = value.to_compact_string();"),
+            "{out}"
+        );
+        // Values are rendered once, skipped if empty, then assigned. Interior
+        // container structs are `Option<Box<…>>` and materialize lazily on
+        // write; every leaf is Option-typed, so assignment wraps in `Some`.
+        assert!(
+            out.contains(
+                "source.legal_monetary_total.get_or_insert_default().payable_amount.get_or_insert_default().value = Some(rendered);"
+            ),
             "{out}"
         );
         assert!(out.contains("source.id = Some(rendered);"), "{out}");
         // The source collection is reserved once from the hub item count.
         assert!(
-            out.contains("source.invoice_line.reserve(main.invoice_lines.len());"),
+            out.contains("source.invoice_line.reserve(hub_items0.len());"),
             "{out}"
         );
         assert!(out.contains("REQUIRED_MISSING"), "{out}");
     }
 
     #[test]
-    fn test_interior_struct_field_is_defaultable() {
-        // A non-optional interior container must carry `default` so a document
-        // that omits the whole element deserializes to an empty struct instead
-        // of failing. On write, empty containers are skipped.
+    fn test_interior_struct_field_is_boxed_optional() {
+        // An interior container is `Option<Box<…>>`: a document that omits the
+        // whole element costs one `None` (8 bytes, no allocation) instead of a
+        // full inline `Default` struct. `default` keeps absent elements
+        // parseable; `Option::is_none` skips never-materialized subtrees on
+        // write.
         let field = FieldMeta {
             optional: false,
             repeated: false,
@@ -281,7 +294,7 @@ mod tests {
         let attr = serde_attr(&field).expect("interior struct needs a serde attr");
         assert!(attr.contains("default"), "{attr}");
         assert!(
-            attr.contains("skip_serializing_if = \"Party::is_empty\""),
+            attr.contains("skip_serializing_if = \"Option::is_none\""),
             "{attr}"
         );
     }
@@ -309,8 +322,15 @@ mod tests {
             out.contains("skip_serializing_if = \"Vec::is_empty\""),
             "{out}"
         );
+        // Interior containers are boxed-optional: absent subtree = `None`.
         assert!(
-            out.contains("skip_serializing_if = \"LegalMonetaryTotal::is_empty\""),
+            out.contains("pub legal_monetary_total: Option<Box<LegalMonetaryTotal>>,"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "self.legal_monetary_total.as_ref().map_or(true, |value| value.is_empty())"
+            ),
             "{out}"
         );
     }
@@ -349,10 +369,14 @@ mod tests {
             "{hub_src}"
         );
 
-        // Spoke: nested read/write loops over the inner source Vec, keyed by depth.
+        // Spoke: nested read/write loops consume the inner Vec, keyed by depth.
         let spoke = generate_spoke(&ir, &source, "super::hub");
         assert!(
-            spoke.contains("for (idx1, element1) in element0.allowance_charge.iter().enumerate()"),
+            spoke.contains("let elements1 = std::mem::take(&mut element0.allowance_charge);"),
+            "{spoke}"
+        );
+        assert!(
+            spoke.contains("for (idx1, mut element1) in elements1.into_iter().enumerate()"),
             "{spoke}"
         );
         assert!(
@@ -360,7 +384,11 @@ mod tests {
             "{spoke}"
         );
         assert!(
-            spoke.contains("for (idx1, hub_item1) in hub_item0.line_allowances.iter().enumerate()"),
+            spoke.contains("let hub_items1 = std::mem::take(&mut hub_item0.line_allowances);"),
+            "{spoke}"
+        );
+        assert!(
+            spoke.contains("for (idx1, mut hub_item1) in hub_items1.into_iter().enumerate()"),
             "{spoke}"
         );
         assert!(
@@ -384,13 +412,16 @@ mod tests {
         );
         let out = generate_spoke(&ir, &source, "super::hub");
         // Source struct: repeated scalar leaf.
-        assert!(out.contains("pub note: Vec<String>,"), "{out}");
-        // Reader: collect normalized values, join with the separator.
+        assert!(out.contains("pub note: Vec<CompactString>,"), "{out}");
+        // Reader: consume the repeated leaf, collect normalized values, join
+        // with the separator.
         assert!(
-            out.contains("source.note.iter().filter_map(|s| Some(s.as_str())"),
+            out.contains("std::mem::take(&mut source.note).into_iter().filter_map(|s| Some(s)"),
             "{out}"
         );
-        assert!(out.contains("Some(values.join(\"\\n\"))"), "{out}");
+        // Slice join yields a `String`; `.into()` moves it into the inline
+        // string type (O(1) for heap-sized joins).
+        assert!(out.contains("Some(values.join(\"\\n\").into())"), "{out}");
         // Writer: the joined canonical value is pushed as one element.
         assert!(out.contains("source.note.push(rendered);"), "{out}");
     }
@@ -411,6 +442,120 @@ mod tests {
             assert!(out.contains("MULTIPLE_VALUES"), "{out}");
             assert!(out.contains(severity), "{policy}: {out}");
         }
+    }
+
+    #[test]
+    fn test_reader_moves_unique_source_values() {
+        let (ir, _, source) = compiled();
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // The reader consumes the source struct so uniquely-read values move
+        // into the hub instead of being cloned.
+        assert!(
+            out.contains("pub fn read(mut source: Invoice) -> MappingResult<MainKey>"),
+            "{out}"
+        );
+        assert!(out.contains("source.id.take()"), "{out}");
+        // A take through a boxed interior chains `as_mut` and moves the leaf.
+        assert!(
+            out.contains("source.legal_monetary_total.as_mut()"),
+            "{out}"
+        );
+        // Collections are consumed by value, element by element.
+        assert!(
+            out.contains("let elements0 = std::mem::take(&mut source.invoice_line);"),
+            "{out}"
+        );
+        assert!(
+            out.contains("for (idx0, mut element0) in elements0.into_iter().enumerate()"),
+            "{out}"
+        );
+        // No path in this mapping is read twice, so nothing is cloned.
+        assert!(!out.contains(".map(|s| s.to_string())"), "{out}");
+    }
+
+    #[test]
+    fn test_reader_clones_shared_fallback_path() {
+        // Two primaries share `Invoice.UUID` as a fallback: that path is read
+        // twice, so it must stay a borrow + clone (a move would leave the
+        // second read empty). Unique paths still move.
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+            fallbacks = ["Invoice.UUID"]
+
+            [Invoice.Alt]
+            type = "identifier"
+            canonical_key = "AltNumber"
+            fallbacks = ["Invoice.UUID"]
+
+            [Invoice.UUID]
+            type = "identifier"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, "super::hub");
+        assert!(!out.contains("source.uuid.take()"), "{out}");
+        assert!(out.contains("source.uuid.as_ref()"), "{out}");
+        assert!(out.contains("source.id.take()"), "{out}");
+        assert!(out.contains("source.alt.take()"), "{out}");
+    }
+
+    #[test]
+    fn test_writer_moves_hub_values() {
+        let (ir, _, source) = compiled();
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // The writer consumes the hub so values move into the target struct.
+        assert!(
+            out.contains("pub fn write(mut main: MainKey) -> MappingResult<Invoice>"),
+            "{out}"
+        );
+        assert!(out.contains("main.invoice_number.take()"), "{out}");
+        assert!(
+            out.contains("let hub_items0 = std::mem::take(&mut main.invoice_lines);"),
+            "{out}"
+        );
+        assert!(!out.contains("value.clone()"), "{out}");
+    }
+
+    #[test]
+    fn test_wrapped_collection_crosses_boxed_interior() {
+        // A collection under an interior container (the Factur-X shape) must
+        // read through the boxed wrapper without materializing it, and write
+        // through `get_or_insert_default` only when there are items to push.
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+
+            [Invoice.Wrap.Line]
+            type = "collection"
+            canonical_key = "InvoiceLines"
+
+            [Invoice.Wrap.Line.ID]
+            type = "identifier"
+            canonical_key = "LineId"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // Reader: absent wrapper yields an empty Vec, no insertion.
+        assert!(
+            out.contains(
+                "let elements0 = source.wrap.as_mut().and_then(|v0| Some(std::mem::take(&mut v0.line))).unwrap_or_default();"
+            ),
+            "{out}"
+        );
+        // Writer: the wrapper materializes only when items exist.
+        assert!(out.contains("if !hub_items0.is_empty() {"), "{out}");
+        assert!(
+            out.contains("source.wrap.get_or_insert_default().line.reserve(hub_items0.len());"),
+            "{out}"
+        );
+        assert!(
+            out.contains("source.wrap.get_or_insert_default().line.push(element0);"),
+            "{out}"
+        );
     }
 
     #[test]

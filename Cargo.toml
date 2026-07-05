@@ -19,6 +19,10 @@ toml = { version = "1.1", features = ["preserve_order"] }
 thiserror = "2"
 # Scale-preserving decimal for canonical decimal values.
 rust_decimal = "1"
+# Inline small strings (≤24 bytes stay on the stack) for the generated source
+# models and hub: invoice fields are dominated by tiny values ("EUR", "2",
+# "10.00"), so per-field heap allocations were the bulk of peak memory.
+compact_str = { version = "0.9", features = ["serde"] }
 # Source-XML (de)serialization for the typed source models.
 quick-xml = "0.41"
 # Sync HTTP server for the krab-server binary. Plain dependency (no feature

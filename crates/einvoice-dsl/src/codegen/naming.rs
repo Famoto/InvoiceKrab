@@ -41,6 +41,8 @@ pub(super) fn canonical_rust_type(ty: MappingType) -> &'static str {
         MappingType::Decimal => "Decimal",
         MappingType::Boolean => "bool",
         // string / identifier / currency / date / datetime / unit_code.
-        _ => "String",
+        // Inline string: invoice text fields are mostly ≤ 24 bytes, so the
+        // typical field never touches the heap.
+        _ => "CompactString",
     }
 }

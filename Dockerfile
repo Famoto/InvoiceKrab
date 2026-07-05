@@ -15,9 +15,8 @@ FROM scratch AS server
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/krab-server /krab-server
 USER 65534
 EXPOSE 8080
-# Runtime configuration — override any of these with `docker run -e`.
-ENV KRAB_ADDR=0.0.0.0:8080 \
-    KRAB_MEM_BLOWUP=5
+# Runtime configuration — override with `docker run -e`.
+ENV KRAB_ADDR=0.0.0.0:8080
 # scratch has no curl; the binary doubles as its own probe client.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=2s \
     CMD ["/krab-server", "--healthcheck"]

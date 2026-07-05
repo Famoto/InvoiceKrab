@@ -34,6 +34,10 @@ pub(super) struct Frame<'a> {
     pub(super) parent_src: &'a str,
     /// The source struct the collection's `source_path` resolves against.
     pub(super) parent_struct: &'a str,
+    /// Whether the enclosing scope's variables are owned (consumable): values
+    /// may then be moved out instead of cloned. `false` inside a collection
+    /// that had to be iterated by reference (its source path is read twice).
+    pub(super) owned: bool,
 }
 
 /// The mapped nodes of a spoke, classified by position. Helper nodes (no

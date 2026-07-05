@@ -104,7 +104,13 @@ fn bench_from_hub(c: &mut Criterion) {
         for &lines in &SIZES {
             let hub = hub_of(&engine, spoke, &build(lines));
             group.bench_with_input(BenchmarkId::new(name, lines), &hub, |b, hub| {
-                b.iter(|| engine.from_hub(spoke, black_box(hub)).expect("renderable"));
+                // `from_hub` consumes the hub, so each iteration gets a fresh
+                // clone built outside the timed routine.
+                b.iter_batched(
+                    || hub.clone(),
+                    |hub| engine.from_hub(spoke, black_box(hub)).expect("renderable"),
+                    criterion::BatchSize::SmallInput,
+                );
             });
         }
     }

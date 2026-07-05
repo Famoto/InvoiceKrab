@@ -40,7 +40,9 @@ fn generate_is_empty_impl(out: &mut String, name: &str, meta: &StructMeta) {
     let mut exprs = meta.fields.iter().map(|(fname, field)| {
         if field.repeated {
             format!("self.{fname}.is_empty()")
-        } else if field.optional {
+        } else if field.optional || matches!(field.ty, FieldType::Struct(_)) {
+            // `Option`-typed: optional scalar or boxed interior container
+            // (`Box` derefs transparently to the struct's own `is_empty`).
             format!("self.{fname}.as_ref().map_or(true, |value| value.is_empty())")
         } else {
             format!("self.{fname}.is_empty()")
@@ -60,19 +62,31 @@ fn generate_is_empty_impl(out: &mut String, name: &str, meta: &StructMeta) {
     out.push_str("}\n");
 }
 
-/// The Rust type of a source field (`String` / `Option<String>` / `Vec<T>` /
-/// nested struct), per its `Option`/`Vec`/struct markers.
+/// The Rust type of a source field, per its `Option`/`Vec`/struct markers.
+///
+/// Scalars are inline strings (`CompactString`, values ≤ 24 bytes stay off the
+/// heap). Non-repeated interior structs are `Option<Box<…>>`: an absent
+/// subtree costs one `None` instead of a full inline `Default` struct — the
+/// per-item struct width, not string data, dominates peak memory on
+/// line-dense documents.
 fn source_field_type(field: &FieldMeta) -> String {
-    let base = match &field.ty {
-        FieldType::Scalar => "String".to_string(),
-        FieldType::Struct(name) => name.clone(),
-    };
-    if field.repeated {
-        format!("Vec<{base}>")
-    } else if field.optional {
-        format!("Option<{base}>")
-    } else {
-        base
+    match &field.ty {
+        FieldType::Scalar => {
+            if field.repeated {
+                "Vec<CompactString>".to_string()
+            } else if field.optional {
+                "Option<CompactString>".to_string()
+            } else {
+                "CompactString".to_string()
+            }
+        }
+        FieldType::Struct(name) => {
+            if field.repeated {
+                format!("Vec<{name}>")
+            } else {
+                format!("Option<Box<{name}>>")
+            }
+        }
     }
 }
 
@@ -83,23 +97,17 @@ pub(super) fn serde_attr(field: &FieldMeta) -> Option<String> {
     if let Some(xml) = &field.xml {
         parts.push(format!("rename = {xml:?}"));
     }
-    if field.optional {
-        parts.push("default".to_string());
-        parts.push("skip_serializing_if = \"Option::is_none\"".to_string());
-    } else if field.repeated {
+    if field.repeated {
         parts.push("default".to_string());
         parts.push("skip_serializing_if = \"Vec::is_empty\"".to_string());
-    } else if matches!(field.ty, FieldType::Struct(_)) {
-        // An interior container struct's leaves are each independently optional,
-        // so the whole element must be optional at parse time: a document that
-        // omits the sub-tree (e.g. no `<AccountingSupplierParty>`) should
-        // default to an empty struct rather than fail deserialization. On write,
-        // the generated `is_empty` impl suppresses containers whose descendants
-        // have no data.
+    } else if field.optional || matches!(field.ty, FieldType::Struct(_)) {
+        // Optional scalars and interior containers are both `Option`-typed
+        // (containers as `Option<Box<…>>`): `default` keeps a document that
+        // omits the element parseable, and the writer only materializes a
+        // container when it assigns a value into it, so `Option::is_none`
+        // suppresses empty subtrees on write.
         parts.push("default".to_string());
-        if let FieldType::Struct(name) = &field.ty {
-            parts.push(format!("skip_serializing_if = \"{name}::is_empty\""));
-        }
+        parts.push("skip_serializing_if = \"Option::is_none\"".to_string());
     }
     if parts.is_empty() {
         None

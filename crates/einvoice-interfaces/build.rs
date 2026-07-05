@@ -251,7 +251,7 @@ fn generate_dispatch(spokes: &[Spoke]) -> String {
     for spoke in spokes {
         let _ = writeln!(
             out,
-            "        Spoke::{v} => {{\n            let source = {s}::from_xml(bytes)?;\n            Ok({s}::read(&source))\n        }}",
+            "        Spoke::{v} => {{\n            let source = {s}::from_xml(bytes)?;\n            Ok({s}::read(source))\n        }}",
             v = spoke.variant,
             s = spoke.slug
         );
@@ -259,10 +259,11 @@ fn generate_dispatch(spokes: &[Spoke]) -> String {
     out.push_str("    }\n");
     out.push_str("}\n\n");
 
-    // write dispatch: MainKey -> source XML.
+    // write dispatch: MainKey -> source XML. The hub is consumed: the writers
+    // move its values into the target struct instead of cloning them.
     out.push_str("/// Runs `spoke`'s generated writer over `hub` and serializes to XML.\n");
     out.push_str(
-        "pub fn write(spoke: Spoke, hub: &MainKey) -> Result<MappingResult<String>, quick_xml::SeError> {\n",
+        "pub fn write(spoke: Spoke, hub: MainKey) -> Result<MappingResult<String>, quick_xml::SeError> {\n",
     );
     out.push_str("    match spoke {\n");
     for spoke in spokes {

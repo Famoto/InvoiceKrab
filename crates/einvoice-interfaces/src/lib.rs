@@ -104,6 +104,10 @@ impl Engine {
     /// Runs `spoke`'s generated writer over `hub` and serializes the result to
     /// XML, carrying through the writer's diagnostics.
     ///
+    /// Consumes the hub: the writer moves its values into the target document
+    /// instead of cloning them, so the hub's memory is released as the target
+    /// is built — which matters for multi-hundred-MB documents.
+    ///
     /// # Errors
     ///
     /// Returns [`EngineError::Serialize`] if the produced model cannot be
@@ -111,7 +115,7 @@ impl Engine {
     pub fn from_hub(
         &self,
         spoke: Spoke,
-        hub: &MainKey,
+        hub: MainKey,
     ) -> Result<MappingResult<String>, EngineError> {
         Ok(generated::write(spoke, hub)?)
     }
@@ -134,7 +138,7 @@ impl Engine {
         let Some(hub) = read.value else {
             return Ok(MappingResult::new(None, read.diagnostics));
         };
-        let written = self.from_hub(to, &hub)?;
+        let written = self.from_hub(to, hub)?;
         let mut diagnostics = read.diagnostics;
         diagnostics.extend(written.diagnostics);
         Ok(MappingResult::new(written.value, diagnostics))
@@ -266,9 +270,7 @@ mod tests {
             "notes join in source order, each trimmed"
         );
 
-        let out = engine
-            .from_hub(Spoke::UblInvoice, &hub)
-            .expect("renderable");
+        let out = engine.from_hub(Spoke::UblInvoice, hub).expect("renderable");
         let xml = out.value.expect("document");
         assert_eq!(xml.matches("<Note>").count(), 1, "{xml}");
     }

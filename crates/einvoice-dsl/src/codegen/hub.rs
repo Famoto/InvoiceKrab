@@ -15,6 +15,7 @@ use super::naming::{canonical_rust_type, field_name, item_struct_name};
 pub fn generate_hub(hub: &CanonicalModel) -> String {
     let mut out = String::new();
     out.push_str("// Generated canonical hub. Do not edit by hand.\n\n");
+    out.push_str("use compact_str::CompactString;\n");
     out.push_str("use rust_decimal::Decimal;\n\n");
 
     // MainKey: every Root-scope canonical field.
