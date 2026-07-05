@@ -15,7 +15,7 @@ use crate::node::SourceNode;
 use crate::source_model::SourceModelMeta;
 use crate::types::MappingType;
 
-use super::access::{collection_item_struct, walk_segments};
+use super::access::{assign_target_expr, collection_item_struct, walk_segments};
 use super::diag::DiagSpec;
 use super::naming::field_name;
 use super::plan::{Frame, GenCtx};
@@ -127,6 +127,16 @@ fn write_collection_block(
     let _ = writeln!(out, "{pad}let mut {count} = 0usize;");
     // The hub item count caps how many source elements can be pushed, so reserve
     // the source collection once up front rather than regrowing it per item.
+    // When the path crosses a boxed interior container, the reserve is guarded
+    // so an empty hub collection never materializes the subtree.
+    let target = assign_target_expr(
+        ctx.source,
+        frame.parent_struct,
+        &coll.source_path,
+        parent_src,
+    );
+    let crosses_boxed = walk_segments(ctx.source, frame.parent_struct, &coll.source_path)
+        .is_ok_and(|segs| segs.iter().any(|s| s.optional));
     if owned {
         let hub_items = format!("hub_items{depth}");
         let _ = writeln!(
@@ -134,22 +144,26 @@ fn write_collection_block(
             "{pad}let {hub_items} = std::mem::take(&mut {parent_hub}.{});",
             field_name(coll_key)
         );
-        let _ = writeln!(
-            out,
-            "{pad}{parent_src}.{}.reserve({hub_items}.len());",
-            coll.source_path
-        );
+        if crosses_boxed {
+            let _ = writeln!(out, "{pad}if !{hub_items}.is_empty() {{");
+            let _ = writeln!(out, "{pad}    {target}.reserve({hub_items}.len());");
+            let _ = writeln!(out, "{pad}}}");
+        } else {
+            let _ = writeln!(out, "{pad}{target}.reserve({hub_items}.len());");
+        }
         let _ = writeln!(
             out,
             "{pad}for ({idx}, mut {hub_item}) in {hub_items}.into_iter().enumerate() {{"
         );
     } else {
-        let _ = writeln!(
-            out,
-            "{pad}{parent_src}.{}.reserve({parent_hub}.{}.len());",
-            coll.source_path,
-            field_name(coll_key)
-        );
+        let hub_len = format!("{parent_hub}.{}.len()", field_name(coll_key));
+        if crosses_boxed {
+            let _ = writeln!(out, "{pad}if {hub_len} > 0 {{");
+            let _ = writeln!(out, "{pad}    {target}.reserve({hub_len});");
+            let _ = writeln!(out, "{pad}}}");
+        } else {
+            let _ = writeln!(out, "{pad}{target}.reserve({hub_len});");
+        }
         let _ = writeln!(
             out,
             "{pad}for ({idx}, {hub_item}) in {parent_hub}.{}.iter().enumerate() {{",
@@ -187,11 +201,7 @@ fn write_collection_block(
         );
     }
     let _ = writeln!(out, "{body}if !{elem}.is_empty() {{");
-    let _ = writeln!(
-        out,
-        "{body}    {parent_src}.{}.push({elem});",
-        coll.source_path
-    );
+    let _ = writeln!(out, "{body}    {target}.push({elem});");
     let _ = writeln!(out, "{body}    {count} += 1;");
     let _ = writeln!(out, "{body}}}");
     let _ = writeln!(out, "{pad}}}");
@@ -229,16 +239,22 @@ fn write_scalar_block(
     let path = &node.source_path;
     let field = field_name(key);
     let segs = walk_segments(source, start_struct, path).unwrap_or_default();
-    let optional = segs.iter().any(|s| s.optional);
+    // Only the leaf's own optionality picks the assignment form; interior
+    // containers are boxed-optional and materialized by the target chain.
+    let optional = segs.last().is_some_and(|s| s.optional);
     // A `multiple` node's source field is `Vec<String>`: the writer pushes the
     // single canonical value as one element (a joined value stays joined).
     let repeated_leaf = segs
         .last()
         .is_some_and(|s| s.repeated && s.struct_name.is_none());
-    // Render the typed value to a source String. Decimals/booleans render
-    // fresh; strings move when taken, clone when the hub value is shared.
+    // The mutable place to assign into: boxed interiors materialize on demand,
+    // and only inside the non-empty guard below, so no empty subtree is built.
+    let target = assign_target_expr(source, start_struct, path, src_var);
+    // Render the typed value to a source string. Decimals/booleans render
+    // fresh (inline, no heap for short renderings); strings move when taken,
+    // clone when the hub value is shared.
     let rendered = match node.source_type {
-        MappingType::Decimal | MappingType::Boolean => "value.to_string()",
+        MappingType::Decimal | MappingType::Boolean => "value.to_compact_string()",
         _ if take => "value",
         _ => "value.clone()",
     };
@@ -253,11 +269,11 @@ fn write_scalar_block(
     let _ = writeln!(out, "{pad}    let rendered = {rendered};");
     let _ = writeln!(out, "{pad}    if !rendered.is_empty() {{");
     if repeated_leaf {
-        let _ = writeln!(out, "{pad}        {src_var}.{path}.push(rendered);");
+        let _ = writeln!(out, "{pad}        {target}.push(rendered);");
     } else if optional {
-        let _ = writeln!(out, "{pad}        {src_var}.{path} = Some(rendered);");
+        let _ = writeln!(out, "{pad}        {target} = Some(rendered);");
     } else {
-        let _ = writeln!(out, "{pad}        {src_var}.{path} = rendered;");
+        let _ = writeln!(out, "{pad}        {target} = rendered;");
     }
     if node.required {
         let _ = writeln!(out, "{pad}    }} else {{");

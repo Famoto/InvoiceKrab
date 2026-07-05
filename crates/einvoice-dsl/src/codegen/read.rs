@@ -20,7 +20,10 @@ use crate::normalize::NormalizeOp;
 use crate::source_model::SourceModelMeta;
 use crate::types::MappingType;
 
-use super::access::{access_expr, collection_item_struct, normalize_chain, take_expr};
+use super::access::{
+    access_expr, collection_item_struct, collection_slice_expr, collection_take_expr,
+    normalize_chain, take_expr,
+};
 use super::diag::DiagSpec;
 use super::naming::{field_name, item_struct_name};
 use super::plan::{Frame, GenCtx};
@@ -138,7 +141,17 @@ fn read_scalar_block(
 
     if let Some(policy) = node.multiple {
         let _ = writeln!(out, "{pad}// {} -> {key} (multiple)", node.id);
-        read_multi_values(out, node, key, policy, indent, target, take);
+        read_multi_values(
+            out,
+            ctx.source,
+            start_struct,
+            node,
+            key,
+            policy,
+            indent,
+            target,
+            take,
+        );
     } else {
         let _ = writeln!(out, "{pad}// {} -> {key}", node.id);
         let binding = if node.fallbacks.is_empty() {
@@ -148,7 +161,7 @@ fn read_scalar_block(
         };
         let _ = writeln!(
             out,
-            "{pad}let {binding}: Option<String> = {};",
+            "{pad}let {binding}: Option<CompactString> = {};",
             read_one_value(
                 ctx.source,
                 start_struct,
@@ -218,8 +231,11 @@ fn read_scalar_block(
 /// `Vec<String>` from the repeated source field, then collapse it to
 /// `value: Option<String>` per the policy (`error` / `first` / `join`),
 /// emitting a `MULTIPLE_VALUES` diagnostic where the policy calls for one.
+#[allow(clippy::too_many_arguments)]
 fn read_multi_values(
     out: &mut String,
+    source: &SourceModelMeta,
+    start_struct: &str,
     node: &SourceNode,
     key: &str,
     policy: MultiplePolicy,
@@ -228,24 +244,25 @@ fn read_multi_values(
     take: bool,
 ) {
     let pad = "    ".repeat(indent);
-    // The repeated leaf is a plain `Vec<String>` field (interior segments are
-    // never Option/Vec), so the source expression is a direct field access —
-    // consumed when uniquely read, iterated by reference otherwise. Each item
-    // runs through the node's normalize chain; `empty_as_missing` drops the
-    // item.
+    // The repeated leaf is a `Vec<CompactString>` field, possibly behind boxed
+    // interior containers — consumed when uniquely read, borrowed as a slice
+    // otherwise. Each item runs through the node's normalize chain;
+    // `empty_as_missing` drops the item.
     if take {
+        let vec_expr =
+            collection_take_expr(source, start_struct, &node.source_path, target.base_var);
         let item_chain = normalize_chain("Some(s)", &node.normalize, true);
         let _ = writeln!(
             out,
-            "{pad}let values: Vec<String> = std::mem::take(&mut {}.{}).into_iter().filter_map(|s| {item_chain}).collect();",
-            target.base_var, node.source_path
+            "{pad}let values: Vec<CompactString> = {vec_expr}.into_iter().filter_map(|s| {item_chain}).collect();",
         );
     } else {
+        let vec_expr =
+            collection_slice_expr(source, start_struct, &node.source_path, target.base_var);
         let item_chain = normalize_chain("Some(s.as_str())", &node.normalize, false);
         let _ = writeln!(
             out,
-            "{pad}let values: Vec<String> = {}.{}.iter().filter_map(|s| {item_chain}).collect();",
-            target.base_var, node.source_path
+            "{pad}let values: Vec<CompactString> = {vec_expr}.iter().filter_map(|s| {item_chain}).collect();",
         );
     }
 
@@ -262,7 +279,7 @@ fn read_multi_values(
             let _ = writeln!(out, "{pad}}}");
             let _ = writeln!(
                 out,
-                "{pad}let value: Option<String> = if values.len() == 1 {{ values.into_iter().next() }} else {{ None }};"
+                "{pad}let value: Option<CompactString> = if values.len() == 1 {{ values.into_iter().next() }} else {{ None }};"
             );
         }
         MultiplePolicy::First => {
@@ -282,7 +299,7 @@ fn read_multi_values(
             let _ = writeln!(out, "{pad}}}");
             let _ = writeln!(
                 out,
-                "{pad}let value: Option<String> = values.into_iter().next();"
+                "{pad}let value: Option<CompactString> = values.into_iter().next();"
             );
         }
         MultiplePolicy::Join => {
@@ -290,9 +307,11 @@ fn read_multi_values(
                 .join_with
                 .as_deref()
                 .expect("E040 guarantees join_with for multiple = join");
+            // Slice join yields a `String`; `.into()` moves it into the inline
+            // string type (O(1) when the joined value is heap-sized).
             let _ = writeln!(
                 out,
-                "{pad}let value: Option<String> = if values.is_empty() {{ None }} else {{ Some(values.join({sep:?})) }};"
+                "{pad}let value: Option<CompactString> = if values.is_empty() {{ None }} else {{ Some(values.join({sep:?}).into()) }};"
             );
         }
     }
@@ -348,14 +367,18 @@ fn read_collection_block(
 
     let _ = writeln!(out, "{pad}// {} -> {coll_key} (collection)", coll.id);
     // The element count is known before the loop, so reserve the hub collection
-    // once instead of letting it regrow as items are pushed.
+    // once instead of letting it regrow as items are pushed. Paths through
+    // boxed interior containers chain through the `Option`s; an absent
+    // container yields no elements without materializing anything.
+    let elements = format!("elements{depth}");
     if owned {
-        let elements = format!("elements{depth}");
-        let _ = writeln!(
-            out,
-            "{pad}let {elements} = std::mem::take(&mut {parent_src}.{});",
-            coll.source_path
+        let vec_expr = collection_take_expr(
+            ctx.source,
+            frame.parent_struct,
+            &coll.source_path,
+            parent_src,
         );
+        let _ = writeln!(out, "{pad}let {elements} = {vec_expr};");
         let _ = writeln!(out, "{pad}let {count} = {elements}.len();");
         let _ = writeln!(out, "{pad}{parent_hub}.{hub_field}.reserve({count});");
         let _ = writeln!(
@@ -363,16 +386,18 @@ fn read_collection_block(
             "{pad}for ({idx}, mut {elem}) in {elements}.into_iter().enumerate() {{"
         );
     } else {
-        let _ = writeln!(
-            out,
-            "{pad}let {count} = {parent_src}.{}.len();",
-            coll.source_path
+        let slice_expr = collection_slice_expr(
+            ctx.source,
+            frame.parent_struct,
+            &coll.source_path,
+            parent_src,
         );
+        let _ = writeln!(out, "{pad}let {elements} = {slice_expr};");
+        let _ = writeln!(out, "{pad}let {count} = {elements}.len();");
         let _ = writeln!(out, "{pad}{parent_hub}.{hub_field}.reserve({count});");
         let _ = writeln!(
             out,
-            "{pad}for ({idx}, {elem}) in {parent_src}.{}.iter().enumerate() {{",
-            coll.source_path
+            "{pad}for ({idx}, {elem}) in {elements}.iter().enumerate() {{"
         );
     }
     let _ = writeln!(out, "{body}let mut {item} = {hub_item}::default();");
@@ -464,7 +489,7 @@ fn decode_and_assign(
     // Optional adapter: transform the raw string first (String -> String).
     let (decode_pad, has_adapter_wrap) = if let Some(adapter) = &node.adapter {
         let _ = writeln!(out, "{pad}let adapted = match adapter::{adapter}(&raw) {{");
-        let _ = writeln!(out, "{pad}    Ok(s) => Some(s),");
+        let _ = writeln!(out, "{pad}    Ok(s) => Some(CompactString::from(s)),");
         let _ = writeln!(out, "{pad}    Err(err) => {{");
         DiagSpec::new(
             "Severity::Error",
