@@ -1,4 +1,4 @@
-# KrabInvoice
+# InvoiceKrab
 
 **KrabInvoice** transforms electronic-invoice XML documents from one format to
 another (UBL, XRechnung, PEPPOL BIS Billing, CII, Factur-X/ZUGFeRD,
