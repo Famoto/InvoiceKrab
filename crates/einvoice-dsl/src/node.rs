@@ -21,6 +21,19 @@
 //! Bidirectionality (N–1–N): the synthesized `source_path` is symmetric — the
 //! generated reader reads `source.<path>` into the canonical key, and the writer
 //! writes the canonical key back to `source.<path>`. No separate read/write spec.
+//!
+//! The one asymmetry is `constant`: a node with a `constant` writes that fixed
+//! literal on the write side (the hub value, if any, is ignored), while the read
+//! side is untouched — with a `canonical_key` the source value still fills the
+//! hub, without one the node is write-only. This is how a spoke pins
+//! spec-mandated values (CIUS `CustomizationID` URNs, `UBLVersionID`, …) without
+//! leaking another format's value into its output.
+//!
+//! `clone_of` is the second asymmetry: the node mirrors an existing canonical
+//! key declared in its scope. The writer fans the key's hub value out to this
+//! path too (a format storing one value in several places); the reader never
+//! fills the hub from it, only checks the copy against the canonical value and
+//! warns (`CLONE_MISMATCH`) when a document's copies disagree.
 
 use serde::Deserialize;
 
@@ -136,6 +149,13 @@ pub struct RawNode {
     pub normalize: Option<Vec<NormalizeOp>>,
     /// Compiler-known adapter name.
     pub adapter: Option<String>,
+    /// Fixed write-side value: the writer always emits this literal at the
+    /// node's source path, ignoring the hub. Read side is unaffected.
+    pub constant: Option<String>,
+    /// Canonical key this node mirrors: the writer fans the key's hub value out
+    /// to this path too; the reader checks the copy against the canonical value
+    /// (`CLONE_MISMATCH`). Mutually exclusive with `canonical_key`.
+    pub clone_of: Option<String>,
     /// Whether the node is removed from the effective mapping.
     pub disabled: Option<bool>,
 }
@@ -161,6 +181,8 @@ impl RawNode {
             || self.join_with.is_some()
             || self.normalize.is_some()
             || self.adapter.is_some()
+            || self.constant.is_some()
+            || self.clone_of.is_some()
     }
 }
 
@@ -201,6 +223,10 @@ pub struct SourceNode {
     pub normalize: Vec<NormalizeOp>,
     /// Compiler-known adapter name.
     pub adapter: Option<String>,
+    /// Fixed write-side value (writer emits this literal, hub ignored on write).
+    pub constant: Option<String>,
+    /// Canonical key this node mirrors (write fan-out + read consistency check).
+    pub clone_of: Option<String>,
     /// Human description.
     pub description: Option<String>,
 }
@@ -276,5 +302,12 @@ mod tests {
         let n: RawNode = toml::from_str(r#"xml = "@currencyID""#).unwrap();
         assert!(n.has_active_field());
         assert_eq!(n.xml.as_deref(), Some("@currencyID"));
+    }
+
+    #[test]
+    fn test_raw_node_constant_marks_active() {
+        let n: RawNode = toml::from_str(r#"constant = "2.1""#).unwrap();
+        assert!(n.has_active_field());
+        assert_eq!(n.constant.as_deref(), Some("2.1"));
     }
 }

@@ -19,6 +19,9 @@
 //!   is an error (`E011`): there is no canonical item to attach to.
 //! - A canonical key declared with a conflicting type/shape across spokes is an
 //!   error (`E010`); the first declaration in deterministic order wins the slot.
+//! - A canonical key declared twice within one spoke in the same scope is an
+//!   error (`E013`): the read winner would otherwise fall out of node-id sort
+//!   order — read priority must be spelled out with `fallbacks` instead.
 //! - A name that would collide in the generated hub code — the same collection
 //!   key in two scopes (duplicate `{key}Item` struct) or two keys collapsing to
 //!   one snake_case field — is an error (`E012`).
@@ -145,6 +148,11 @@ pub fn derive_hub<'a>(
     let mut field_names: BTreeMap<(CanonicalScope, String), String> = BTreeMap::new();
 
     for mapping in mappings {
+        // Within one spoke a canonical (scope, key) may be declared only once.
+        // A second declaration would leave the read winner to node-id sort
+        // order — ambiguous to the author, so it is an error (E013); read
+        // priority is expressed explicitly via `fallbacks`.
+        let mut declared: BTreeMap<(CanonicalScope, String), String> = BTreeMap::new();
         for node in mapping.nodes.values() {
             let Some(key) = node.canonical_key.clone() else {
                 continue; // helper node: no canonical target.
@@ -169,6 +177,23 @@ pub fn derive_hub<'a>(
                 });
                 continue;
             };
+
+            if let Some(first) = declared.get(&(scope.clone(), key.clone())) {
+                diags.push(Diagnostic {
+                    code: "E013".to_string(),
+                    severity: Severity::Error,
+                    source_node: Some(node.id.to_string()),
+                    message: format!(
+                        "canonical key `{key}` is mapped by both `{first}` and `{}` in this \
+                         spoke — use `fallbacks` on one node to declare read priority, \
+                         `clone_of` to mirror the value to a second path, or rename one key",
+                        node.id
+                    ),
+                    span: None,
+                });
+                continue;
+            }
+            declared.insert((scope.clone(), key.clone()), node.id.to_string());
 
             let field = CanonicalField {
                 key: key.clone(),
@@ -438,6 +463,59 @@ mod tests {
         );
         let (_, diags) = derive_hub(&[a, b]);
         assert!(diags.iter().any(|d| d.code == "E012"), "{diags:?}");
+    }
+
+    #[test]
+    fn test_same_spoke_duplicate_key_is_e013() {
+        // Two nodes in one spoke mapping the same canonical key in the same
+        // scope: the read priority would be decided by node-id sort order —
+        // ambiguous to the author, so it is an error. `fallbacks` is the
+        // explicit way to express priority.
+        let m = ir(
+            "a:1",
+            r#"[Invoice.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+
+            [Invoice.Ref]
+            type = "identifier"
+            canonical_key = "InvoiceNumber""#,
+        );
+        let (_, diags) = derive_hub(&[m]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, "E013");
+        assert!(
+            diags[0].message.contains("Invoice.ID") && diags[0].message.contains("Invoice.Ref"),
+            "message must name both nodes: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn test_same_spoke_same_key_different_scopes_is_ok() {
+        // The same key at root and inside a collection are different canonical
+        // fields (different scope) — not a duplicate.
+        let m = ir(
+            "a:1",
+            r#"[Invoice.Note]
+            type = "string"
+            canonical_key = "Note"
+
+            [InvoiceLine]
+            type = "collection"
+            canonical_key = "InvoiceLines"
+
+            [InvoiceLine.Note]
+            type = "string"
+            canonical_key = "Note""#,
+        );
+        let (model, diags) = derive_hub(&[m]);
+        assert!(diags.is_empty(), "{diags:?}");
+        assert!(model.contains(&CanonicalScope::Root, "Note"));
+        assert!(model.contains(
+            &CanonicalScope::Collection(vec!["InvoiceLines".to_string()]),
+            "Note"
+        ));
     }
 
     #[test]

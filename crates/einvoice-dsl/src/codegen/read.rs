@@ -4,6 +4,10 @@
 //! through `fallbacks`, decodes/validates by `type`, applies an optional
 //! `adapter`, enforces `required`/`min_items`, and assigns into the typed hub.
 //!
+//! A `clone_of` node never fills the hub: after every primary assign in its
+//! scope, its path is read and decoded only to check the copy against the
+//! canonical value (`CLONE_MISMATCH` warning on disagreement).
+//!
 //! The reader **consumes** the source struct: paths read exactly once move
 //! their `String`s into the hub (`take`), so a large document's text is not
 //! duplicated. Paths read more than once in a scope — a primary that is also a
@@ -43,11 +47,13 @@ struct Target<'a> {
 }
 
 /// The source paths read more than once within one scope: each scalar's
-/// primary path, every fallback target's path, and each collection's path.
+/// primary path, every fallback target's path, each `clone_of` node's path
+/// (read for the consistency check), and each collection's path.
 /// These must stay borrow + clone reads; unique paths move out.
 fn shared_read_paths(
     ctx: &GenCtx,
     scalars: &[&SourceNode],
+    clones: &[&SourceNode],
     collections: &[&SourceNode],
 ) -> BTreeSet<String> {
     let mut paths: Vec<&str> = Vec::new();
@@ -58,6 +64,9 @@ fn shared_read_paths(
                 paths.push(&fb.source_path);
             }
         }
+    }
+    for clone in clones {
+        paths.push(&clone.source_path);
     }
     for coll in collections {
         paths.push(&coll.source_path);
@@ -84,7 +93,12 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
     out.push_str("    let mut diagnostics: Vec<MappingDiagnostic> = Vec::new();\n");
     out.push_str("    let mut main = MainKey::default();\n");
 
-    let shared = shared_read_paths(ctx, &ctx.plan.root_scalars, &ctx.plan.root_collections);
+    let shared = shared_read_paths(
+        ctx,
+        &ctx.plan.root_scalars,
+        &ctx.plan.root_clones,
+        &ctx.plan.root_collections,
+    );
     let root_target = Target {
         struct_var: "main",
         base_var: "source",
@@ -94,6 +108,13 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
     for node in &ctx.plan.root_scalars {
         out.push('\n');
         read_scalar_block(out, ctx, node, &ctx.source.root, 1, &root_target, &shared);
+    }
+
+    // Clone checks run after every primary assign, so the canonical value they
+    // compare against is final.
+    for clone in &ctx.plan.root_clones {
+        out.push('\n');
+        read_clone_check_block(out, ctx, clone, &ctx.source.root, 1, &root_target, &shared);
     }
 
     for coll in &ctx.plan.root_collections {
@@ -227,6 +248,73 @@ fn read_scalar_block(
     let _ = writeln!(out, "{pad}}}");
 }
 
+/// Emits the consistency check for one `clone_of` node: read + normalize the
+/// copy's path, decode it under the target key's type, and warn
+/// (`CLONE_MISMATCH`) when the decoded copy disagrees with the canonical value
+/// already assigned by the primary node. The copy never fills the hub; an
+/// absent copy is fine (the writer will emit it on the way out).
+fn read_clone_check_block(
+    out: &mut String,
+    ctx: &GenCtx,
+    node: &SourceNode,
+    start_struct: &str,
+    indent: usize,
+    target: &Target,
+    shared: &BTreeSet<String>,
+) {
+    let pad = "    ".repeat(indent);
+    let body = "    ".repeat(indent + 1);
+    let key = node.clone_of.as_deref().expect("clone node");
+    let canonical = format!("{}.{}", target.struct_var, field_name(key));
+    let take = target.owned && !shared.contains(&node.source_path);
+
+    let _ = writeln!(out, "{pad}// {}: copy of {key}, consistency check", node.id);
+    let _ = writeln!(out, "{pad}{{");
+    let _ = writeln!(
+        out,
+        "{body}let value: Option<CompactString> = {};",
+        read_one_value(
+            ctx.source,
+            start_struct,
+            &node.source_path,
+            &node.normalize,
+            target,
+            take
+        )
+    );
+    let _ = writeln!(out, "{body}if let Some(raw) = value {{");
+    let _ = writeln!(out, "{body}    let mut clone_value = None;");
+    decode_body(
+        out,
+        node,
+        key,
+        &"    ".repeat(indent + 2),
+        "clone_value",
+        target,
+    );
+    let _ = writeln!(out, "{body}    if let Some(found) = clone_value {{");
+    let _ = writeln!(
+        out,
+        "{body}        if {canonical}.as_ref() != Some(&found) {{"
+    );
+    let msg =
+        format!("format!(\"copy value `{{found}}` does not match the canonical `{key}` value\")");
+    DiagSpec::new(
+        "Severity::Warning",
+        "CLONE_MISMATCH",
+        node.id.as_str(),
+        &msg,
+    )
+    .key(key)
+    .path(&node.source_path)
+    .index(target.index_var)
+    .emit(out, &format!("{body}            "));
+    let _ = writeln!(out, "{body}        }}");
+    let _ = writeln!(out, "{body}    }}");
+    let _ = writeln!(out, "{body}}}");
+    let _ = writeln!(out, "{pad}}}");
+}
+
 /// Emits the multi-value read for a `multiple` node: collect the normalized
 /// `Vec<String>` from the repeated source field, then collapse it to
 /// `value: Option<String>` per the policy (`error` / `first` / `join`),
@@ -350,8 +438,9 @@ fn read_collection_block(
     let hub_field = field_name(coll_key);
     let children = ctx.plan.children_of(&coll.id);
     let nested = ctx.plan.nested_collections_of(&coll.id);
+    let clones = ctx.plan.clones_of(&coll.id);
     let owned = frame.owned && !shared.contains(&coll.source_path);
-    let child_shared = shared_read_paths(ctx, children, nested);
+    let child_shared = shared_read_paths(ctx, children, clones, nested);
 
     // Per-depth variable names keep nested loops from shadowing each other.
     let depth = frame.depth;
@@ -413,6 +502,18 @@ fn read_collection_block(
             out,
             ctx,
             child,
+            &src_item_struct,
+            indent + 1,
+            &target,
+            &child_shared,
+        );
+    }
+    for clone in clones {
+        out.push('\n');
+        read_clone_check_block(
+            out,
+            ctx,
+            clone,
             &src_item_struct,
             indent + 1,
             &target,
