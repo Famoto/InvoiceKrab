@@ -13,7 +13,11 @@ serde = { workspace = true }
 quick-xml = { workspace = true, features = ["serde", "serialize"] }
 thiserror = { workspace = true }
 # Used only by the krab-server binary; the linker strips it from krab-cli.
-tiny_http = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+http-body = { workspace = true }
+http-body-util = { workspace = true }
 socket2 = { workspace = true }
 # JSON for the server's capability endpoints (`GET /formats`).
 serde_json = { workspace = true }
@@ -26,6 +30,9 @@ einvoice-dsl = { workspace = true }
 rstest = { workspace = true }
 pretty_assertions = { workspace = true }
 criterion = { workspace = true }
+tower = { workspace = true }
+# `start_paused` tests fire body timeouts without real waiting.
+tokio = { workspace = true, features = ["test-util"] }
 
 [[bench]]
 name = "transformation"

@@ -6,8 +6,8 @@
 //! halves ([`Engine::to_hub`](crate::Engine::to_hub) then
 //! [`Engine::from_hub`](crate::Engine::from_hub), freeing the body between
 //! them), and mapping outcomes to HTTP status codes. It knows nothing of
-//! sockets or `tiny_http`, so the whole decision table is unit-testable with
-//! plain bytes.
+//! sockets or the HTTP stack, so the whole decision table is unit-testable
+//! with plain bytes.
 //!
 //! # Status mapping
 //!

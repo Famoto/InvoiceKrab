@@ -4,12 +4,13 @@
 //! (or container) actually offers. A malformed value is a startup error —
 //! never a silent fallback.
 //!
-//! | Variable                | Default                                        |
-//! |-------------------------|------------------------------------------------|
-//! | `KRAB_ADDR`             | `0.0.0.0:8080`                                 |
-//! | `KRAB_WORKERS`          | available parallelism (cgroup-aware)           |
-//! | `KRAB_MEM_BUDGET_BYTES` | detected memory x 1/2 (cgroup v2 limit first)  |
-//! | `KRAB_MEM_BLOWUP`       | `7` (measured peak-memory multiplier)          |
+//! | Variable                 | Default                                        |
+//! |--------------------------|------------------------------------------------|
+//! | `KRAB_ADDR`              | `0.0.0.0:8080`                                 |
+//! | `KRAB_WORKERS`           | available parallelism (cgroup-aware)           |
+//! | `KRAB_MEM_BUDGET_BYTES`  | detected memory x 1/2 (cgroup v2 limit first)  |
+//! | `KRAB_MEM_BLOWUP`        | `7` (measured peak-memory multiplier)          |
+//! | `KRAB_BODY_TIMEOUT_SECS` | `30` (per-frame body read/write timeout)       |
 //!
 //! # Structure
 //!
@@ -38,12 +39,16 @@
 pub struct Config {
     /// Listen address, `host:port`.
     pub addr: String,
-    /// Worker threads sharing the accept loop.
+    /// Tokio runtime worker threads; also caps the blocking pool that runs
+    /// the CPU-bound transformations.
     pub workers: usize,
     /// Total bytes the memory gate may reserve at once.
     pub mem_budget_bytes: u64,
     /// Reservation multiplier: a request reserves `Content-Length x blowup`.
     pub mem_blowup: u64,
+    /// Per-frame timeout (seconds) on request-body reads and response-body
+    /// writes: bounds how long a live-but-slow peer can pin a reservation.
+    pub body_timeout_secs: u64,
 }
 
 /// A configuration problem that must stop startup.
@@ -98,11 +103,18 @@ impl Config {
             // before tightening further.
             None => 7,
         };
+        let body_timeout_secs = match lookup("KRAB_BODY_TIMEOUT_SECS") {
+            Some(v) => parse_nonzero("KRAB_BODY_TIMEOUT_SECS", &v)?,
+            // Generous for real uploads on slow links; what it bounds is the
+            // *gap between frames*, not the total transfer time.
+            None => 30,
+        };
         Ok(Config {
             addr: lookup("KRAB_ADDR").unwrap_or_else(|| "0.0.0.0:8080".into()),
             workers,
             mem_budget_bytes,
             mem_blowup,
+            body_timeout_secs,
         })
     }
 
@@ -188,6 +200,7 @@ mod tests {
                 workers: 16,
                 mem_budget_bytes: 32 * GIB, // half of detected
                 mem_blowup: 7,
+                body_timeout_secs: 30,
             }
         );
     }
@@ -200,6 +213,7 @@ mod tests {
                 ("KRAB_WORKERS", "4"),
                 ("KRAB_MEM_BUDGET_BYTES", "1000000"),
                 ("KRAB_MEM_BLOWUP", "3"),
+                ("KRAB_BODY_TIMEOUT_SECS", "5"),
             ]),
             Some(64 * GIB),
             16,
@@ -212,7 +226,24 @@ mod tests {
                 workers: 4,
                 mem_budget_bytes: 1_000_000,
                 mem_blowup: 3,
+                body_timeout_secs: 5,
             }
+        );
+    }
+
+    #[test]
+    fn test_resolve_zero_body_timeout_is_invalid() {
+        let err = Config::resolve(env(&[("KRAB_BODY_TIMEOUT_SECS", "0")]), Some(GIB), 8)
+            .expect_err("zero timeout fails every body read");
+        assert!(
+            matches!(
+                err,
+                ConfigError::Invalid {
+                    var: "KRAB_BODY_TIMEOUT_SECS",
+                    ..
+                }
+            ),
+            "{err:?}"
         );
     }
 

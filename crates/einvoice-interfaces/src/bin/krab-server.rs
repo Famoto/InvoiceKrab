@@ -2,19 +2,24 @@
 //!
 //! All decisions live in [`einvoice_interfaces::server`] where they are unit
 //! tested; this entry point owns only the untestable I/O boundary: binding
-//! the listener, the worker accept loop, reading bodies under the memory
-//! gate, and writing responses.
+//! the listener, building the tokio runtime, and shutdown signals. Routing,
+//! admission, and body handling are the tested
+//! [`router`](einvoice_interfaces::server::router).
 //!
 //! `POST /transform?to=<format>[&from=<format>]` with the source XML as the
 //! request body. Configuration is environment variables — see
 //! [`einvoice_interfaces::server::config`].
+//!
+//! SIGTERM or SIGINT triggers a graceful shutdown: the listener stops
+//! accepting, in-flight requests drain, then the process exits. The
+//! container orchestrator's kill grace period is the drain deadline.
 
 use std::io::Read as _;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
-use einvoice_interfaces::server::{self, Config, MemGate, handle};
-use tiny_http::{Header, Method, Request, Response, Server};
+use einvoice_interfaces::server::{self, Config, MemGate};
 
 fn main() -> ExitCode {
     let config = match Config::from_env() {
@@ -29,151 +34,98 @@ fn main() -> ExitCode {
     if std::env::args().any(|a| a == "--healthcheck") {
         return healthcheck(&config.addr);
     }
-    let server = match listen(&config.addr) {
-        Ok(s) => Arc::new(s),
+    let listener = match listen(&config.addr) {
+        Ok(l) => l,
         Err(e) => {
             eprintln!("krab-server: cannot listen on {}: {e}", config.addr);
             return ExitCode::from(74); // EX_IOERR
         }
     };
-    let gate = Arc::new(MemGate::new(config.mem_budget_bytes));
+    // `max_blocking_threads` caps the pool running the CPU-bound transforms
+    // at the worker count — the same transform parallelism the old
+    // thread-per-worker loop had, now separate from connection I/O.
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(config.workers)
+        .max_blocking_threads(config.workers)
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("krab-server: cannot start runtime: {e}");
+            return ExitCode::from(74); // EX_IOERR
+        }
+    };
     eprintln!(
-        "krab-server listening on {} — {} workers, {} bytes memory budget, x{} reservation",
-        config.addr, config.workers, config.mem_budget_bytes, config.mem_blowup
+        "krab-server listening on {} — {} workers, {} bytes memory budget, x{} reservation, {}s body timeout",
+        config.addr,
+        config.workers,
+        config.mem_budget_bytes,
+        config.mem_blowup,
+        config.body_timeout_secs
     );
+    runtime.block_on(serve(listener, &config))
+}
 
-    let workers: Vec<_> = (0..config.workers)
-        .map(|_| {
-            let server = Arc::clone(&server);
-            let gate = Arc::clone(&gate);
-            let blowup = config.mem_blowup;
-            std::thread::spawn(move || {
-                // `recv` fails only when the listener is gone; the process is
-                // done at that point.
-                while let Ok(request) = server.recv() {
-                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        serve_one(request, &gate, blowup)
-                    }))
-                    .is_err()
-                    {
-                        eprintln!(
-                            "krab-server: worker recovered from a panic while serving a request"
-                        );
-                    }
-                }
-            })
-        })
-        .collect();
-    for worker in workers {
-        let _ = worker.join();
+/// Converts the configured listener to tokio and serves until a shutdown
+/// signal drains the connections.
+async fn serve(listener: std::net::TcpListener, config: &Config) -> ExitCode {
+    let listener = match listener
+        .set_nonblocking(true)
+        .and_then(|()| tokio::net::TcpListener::from_std(listener))
+    {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("krab-server: cannot register listener: {e}");
+            return ExitCode::from(74); // EX_IOERR
+        }
+    };
+    let gate = Arc::new(MemGate::new(config.mem_budget_bytes));
+    let app = server::router(
+        gate,
+        config.mem_blowup,
+        Duration::from_secs(config.body_timeout_secs),
+    );
+    if let Err(e) = axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+    {
+        eprintln!("krab-server: server error: {e}");
+        return ExitCode::from(74); // EX_IOERR
     }
     ExitCode::SUCCESS
 }
 
-/// Serves a single request end to end: route, reserve memory, read the body,
-/// delegate to the [`server`](einvoice_interfaces::server) handlers, respond.
-/// Failures to write the response are ignored — the client is gone.
-fn serve_one(mut request: Request, gate: &MemGate, blowup: u64) {
-    // Owned: `url()` borrows the request, which `as_reader()` needs mutably.
-    let url = request.url().to_owned();
-    let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
-
-    // Body-less capability/health routes: no memory reservation needed.
-    match (request.method(), path) {
-        (Method::Get, "/health") => return respond(request, 200, "ok".into(), false),
-        (Method::Get, "/formats") => {
-            return respond_typed(request, 200, server::formats(), "application/json");
-        }
-        (Method::Get, "/analyze") => {
-            return match server::analyze(query) {
-                Ok(table) => respond_typed(request, 200, table, "text/plain"),
-                Err(problem) => respond(request, 400, problem, false),
-            };
-        }
-        (Method::Post, "/transform") => {}
-        _ => {
-            return respond(
-                request,
-                404,
-                "POST /transform?to=<format>[&from=<format>] | GET /formats | GET /analyze[?from=<format>] | GET /health"
-                    .into(),
-                false,
-            );
-        }
-    }
-
-    // The reservation is sized from Content-Length, so a body without one
-    // (chunked) cannot be admitted. Standard answer: 411 Length Required.
-    let Some(length) = request.body_length() else {
-        respond(request, 411, "Content-Length required".into(), true);
-        return;
+/// Resolves on SIGTERM (container stop) or SIGINT (^C), starting the drain.
+async fn shutdown_signal() {
+    let interrupt = async {
+        // Errors registering ^C leave SIGTERM as the only trigger.
+        let _ = tokio::signal::ctrl_c().await;
     };
-
-    // Reserve the request's estimated peak memory (body + parse blowup)
-    // before reading a byte. Blocks while the budget is exhausted — workers
-    // waiting here are the backpressure. Held until the response is written.
-    let _reservation = match gate.acquire((length as u64).saturating_mul(blowup)) {
-        Ok(guard) => guard,
-        Err(never_fits) => {
-            respond(request, 413, never_fits.to_string(), true);
-            return;
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut term) => {
+                term.recv().await;
+            }
+            Err(_) => std::future::pending().await,
         }
     };
-
-    let mut body = Vec::with_capacity(length);
-    // tiny_http already frames the reader by Content-Length; `take` makes the
-    // bound local and explicit.
-    if let Err(e) = request
-        .as_reader()
-        .take(length as u64)
-        .read_to_end(&mut body)
-    {
-        respond(
-            request,
-            400,
-            format!("failed reading request body: {e}"),
-            true,
-        );
-        return;
+    tokio::select! {
+        () = interrupt => {},
+        () = terminate => {},
     }
-
-    // `handle` consumes the body and frees it once the source is parsed, so
-    // the write half of the transformation runs without the upload resident.
-    let reply = handle(query, body);
-    let content_type = if reply.status == 200 {
-        "application/xml"
-    } else {
-        "text/plain"
-    };
-    let mut response = Response::from_string(reply.body).with_status_code(reply.status);
-    if let Ok(h) = Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes()) {
-        response.add_header(h);
-    }
-    if !reply.warnings.is_empty()
-        && let Ok(h) = Header::from_bytes(&b"X-Krab-Warnings"[..], reply.warnings.as_bytes())
-    {
-        response.add_header(h);
-    }
-    let _ = request.respond(response);
+    eprintln!("krab-server: shutdown signal received, draining connections");
 }
 
 /// Binds `addr` with `TCP_NODELAY` and TCP keepalive set on the listener
-/// (accepted sockets inherit both on Linux). tiny_http never sets
-/// `TCP_NODELAY`, and Nagle + delayed ACK otherwise adds ~40 ms to every
-/// request on a kept-alive connection.
+/// (accepted sockets inherit both on Linux). Nagle + delayed ACK otherwise
+/// adds ~40 ms to every request on a kept-alive connection.
 ///
-/// Keepalive bounds how long a *dead* peer (crashed client, dropped NAT
-/// mapping) can pin a worker mid-body-read together with its memory
-/// reservation: after ~2 min of unanswered probes the kernel resets the
-/// connection, the blocked read errors, and `serve_one`'s error path
-/// releases the reservation. `SO_RCVTIMEO` would bound live-but-silent
-/// peers too, but on a listener it also times out `accept()`, which
-/// tiny_http treats as fatal — so keepalive is the strongest in-process
-/// bound available.
-// ponytail: dead peers only — a live client that stalls its upload still
-// pins one worker indefinitely; tiny_http 0.12 has no request timeout, so
-// that case needs a fronting proxy (or a different HTTP layer).
-fn listen(addr: &str) -> Result<Server, Box<dyn std::error::Error + Send + Sync>> {
+/// Keepalive complements the in-process body timeouts: the timeouts bound
+/// live-but-silent peers, keepalive reaps *dead* ones (crashed client,
+/// dropped NAT mapping) — after ~2 min of unanswered probes the kernel
+/// resets the connection and the pending read errors out.
+fn listen(addr: &str) -> Result<std::net::TcpListener, Box<dyn std::error::Error + Send + Sync>> {
     let listener = std::net::TcpListener::bind(addr)?;
     let sock = socket2::SockRef::from(&listener);
     sock.set_tcp_nodelay(true)?;
@@ -181,30 +133,10 @@ fn listen(addr: &str) -> Result<Server, Box<dyn std::error::Error + Send + Sync>
     // needs socket2's `all` feature for one knob that barely matters.
     sock.set_tcp_keepalive(
         &socket2::TcpKeepalive::new()
-            .with_time(std::time::Duration::from_secs(30))
-            .with_interval(std::time::Duration::from_secs(10)),
+            .with_time(Duration::from_secs(30))
+            .with_interval(Duration::from_secs(10)),
     )?;
-    Server::from_listener(listener, None)
-}
-
-/// Writes a plain-text response. `close` adds `Connection: close`, used when
-/// the request body was not (fully) read — the connection cannot be reused,
-/// and closing it stops an in-flight upload at the TCP level.
-fn respond(request: Request, status: u16, text: String, close: bool) {
-    let mut response = Response::from_string(text).with_status_code(status);
-    if close && let Ok(h) = Header::from_bytes(&b"Connection"[..], &b"close"[..]) {
-        response.add_header(h);
-    }
-    let _ = request.respond(response);
-}
-
-/// Writes a response with an explicit Content-Type.
-fn respond_typed(request: Request, status: u16, body: String, content_type: &str) {
-    let mut response = Response::from_string(body).with_status_code(status);
-    if let Ok(h) = Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes()) {
-        response.add_header(h);
-    }
-    let _ = request.respond(response);
+    Ok(listener)
 }
 
 /// `--healthcheck`: connect to the configured port on loopback, `GET /health`,
@@ -226,7 +158,7 @@ fn healthcheck(addr: &str) -> ExitCode {
 /// Minimal HTTP/1.0 GET over a raw socket; `Some(())` when the status is 200.
 fn probe(target: &str) -> Option<()> {
     use std::io::Write as _;
-    let timeout = std::time::Duration::from_secs(3);
+    let timeout = Duration::from_secs(3);
     let addr = target.parse().ok()?;
     let mut stream = std::net::TcpStream::connect_timeout(&addr, timeout).ok()?;
     stream.set_read_timeout(Some(timeout)).ok()?;

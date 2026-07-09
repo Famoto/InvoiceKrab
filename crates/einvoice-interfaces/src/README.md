@@ -29,8 +29,8 @@ No format is named in hand-written code.
   (see its `README.md`).
 - `bin/krab-cli.rs` — thin binary shell forwarding argv and the standard
   streams into `cli::run`.
-- `bin/krab-server.rs` — thin binary shell binding `tiny_http` workers to the
-  `server` module.
+- `bin/krab-server.rs` — thin binary shell binding a tokio runtime, listener,
+  and shutdown signals to the `server` module's axum router.
 
 ## Behavior
 
