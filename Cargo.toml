@@ -25,12 +25,27 @@ rust_decimal = "1"
 compact_str = { version = "0.9", features = ["serde"] }
 # Source-XML (de)serialization for the typed source models.
 quick-xml = "0.41"
-# Sync HTTP server for the krab-server binary. Plain dependency (no feature
+# HTTP stack for the krab-server binary. Plain dependencies (no feature
 # gate) so the crate's feature fingerprint never flips between CLI and server
 # builds — a flip would re-run the codegen build script every time.
-tiny_http = "0.12"
-# TCP_NODELAY on the server listener: tiny_http never sets it, and Nagle +
-# delayed ACK adds ~40 ms to every keep-alive request without it.
+axum = "0.8"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "signal",
+    "sync",
+    "time",
+    "macros",
+] }
+# Per-frame body timeouts: bounds how long a slow client can pin a worker
+# and its memory reservation (tiny_http had no equivalent — see git history).
+tower-http = { version = "0.6", features = ["timeout"] }
+# `http_body::Body` impl (the reservation-holding response body) and
+# `BodyExt::frame` for reading request bodies without an extra copy.
+http-body = "1"
+http-body-util = "0.1"
+# TCP_NODELAY on the server listener: Nagle + delayed ACK adds ~40 ms to
+# every keep-alive request without it. Keepalive bounds dead-peer pinning.
 socket2 = "0.6"
 
 # Internal crates.
@@ -42,3 +57,6 @@ rstest = "0.26"
 pretty_assertions = "1"
 insta = "1"
 criterion = "0.8"
+# `ServiceExt::oneshot` drives the axum Router in-process — the whole HTTP
+# decision table is tested without opening a socket.
+tower = { version = "0.5", features = ["util"] }
