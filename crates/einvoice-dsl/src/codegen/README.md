@@ -27,8 +27,9 @@ text.
 - `write.rs` — the writer: `MainKey` → source (inverse of the reader).
 - `access.rs` — source-path access expressions shared by reader and writer
   (`walk_segments`, `access_expr`, `normalize_chain`, `collection_item_struct`).
-- `plan.rs` — IR classification: root scalars/collections and the children /
-  nested collections of any collection node, in deterministic id order.
+- `plan.rs` — IR classification: root scalars/collections/constants/clones and
+  the children / nested collections / constants / clones of any collection
+  node, in deterministic id order.
 - `diag.rs` — emission of `MappingDiagnostic` construction snippets.
 
 ## Behavior
@@ -40,6 +41,18 @@ refactors must not change generated text.
 A source path that fails to resolve (which validation E021/E023 should have
 rejected) emits a `compile_error!` at the access site rather than plausible but
 wrong code, so a validation/codegen gap fails loudly with a clear message.
+
+A node with a `constant` is write-only from the hub's perspective: the writer
+assigns the literal at the source path (at root unconditionally, inside a
+collection only on non-empty items), the hub value — if the node also has a
+`canonical_key` — is ignored on write, and the reader is unaffected.
+
+A node with a `clone_of` mirrors an existing canonical key in its scope: the
+writer fans the key's hub value out to the clone's path too (the key then
+stays a borrow + clone instead of moving), and the reader — after every
+primary assign in the scope — decodes the copy only to compare it against the
+canonical value, warning `CLONE_MISMATCH` when a document's copies disagree.
+The hub is never filled from a clone.
 
 ## Testing
 
