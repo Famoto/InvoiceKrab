@@ -113,6 +113,8 @@ pub fn apply_defaults(
                 join_with: raw.join_with.clone(),
                 normalize: raw.normalize.clone().unwrap_or_default(),
                 adapter: raw.adapter.clone(),
+                constant: raw.constant.clone(),
+                clone_of: raw.clone_of.clone(),
                 description: raw.description.clone(),
             },
         );
@@ -174,7 +176,36 @@ mod tests {
         assert!(n.normalize.is_empty());
         assert_eq!(n.min_items, None);
         assert_eq!(n.adapter, None);
+        assert_eq!(n.constant, None, "undeclared constant stays None");
         assert_eq!(n.scope, Scope::Root);
+    }
+
+    #[test]
+    fn test_constant_carried_through_resolution() {
+        let nodes = effective(
+            r#"[Invoice.UBLVersionID]
+            type = "identifier"
+            constant = "2.1""#,
+        );
+        let n = &nodes[&NodeId::new("Invoice.UBLVersionID")];
+        assert_eq!(n.constant.as_deref(), Some("2.1"));
+        assert!(n.is_helper(), "constant-only node has no canonical key");
+    }
+
+    #[test]
+    fn test_clone_of_carried_through_resolution() {
+        let nodes = effective(
+            r#"[Invoice.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+
+            [Invoice.BuyerReference]
+            type = "identifier"
+            clone_of = "InvoiceNumber""#,
+        );
+        let n = &nodes[&NodeId::new("Invoice.BuyerReference")];
+        assert_eq!(n.clone_of.as_deref(), Some("InvoiceNumber"));
+        assert!(n.is_helper(), "clone node has no canonical key of its own");
     }
 
     #[test]

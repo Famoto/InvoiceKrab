@@ -20,11 +20,22 @@
 //! - `E041` `min_items` on a non-collection node.
 //! - `E043` `multiple` combined with `fallbacks`.
 //! - `E050` unknown adapter name (against the known-adapter set).
+//! - `E060` `constant` on a collection node.
+//! - `E061` `constant` literal does not parse under the node's `type`.
+//! - `E062` `constant` combined with `fallbacks`, `multiple`, `adapter`, or
+//!   `normalize` (the constant is emitted verbatim on write; none of these
+//!   apply to it).
+//! - `E070` `clone_of` on a collection node, or combined with `canonical_key`,
+//!   `constant`, `fallbacks`, `multiple`, or `adapter`.
+//! - `E071` `clone_of` target key not declared by a primary node in the same
+//!   scope.
+//! - `E072` `clone_of` node's `type` differs from its target's.
 //!
 //! Unknown TOML fields (`E001`), missing `path`/`type` (`E002`), and cross-spoke
 //! hub conflicts (`E010`/`E011`) are caught earlier (parse / resolve / hub).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Not;
 
 use crate::error::{Diagnostic, Severity};
 use crate::ir::MappingIr;
@@ -52,6 +63,8 @@ pub fn validate(input: &ValidationInput) -> Vec<Diagnostic> {
         check_structural(node, &mut diags);
         check_fallbacks(node, input.ir, &mut diags);
         check_adapter(node, input.adapters, &mut diags);
+        check_constant(node, &mut diags);
+        check_clone_of(node, input.ir, &mut diags);
     }
     check_fallback_cycles(input.ir, &mut diags);
 
@@ -247,6 +260,168 @@ fn fallback_type_compatible(primary: MappingType, fallback: MappingType) -> bool
         UnitCode => fallback == UnitCode,
         Boolean => fallback == Boolean,
         Collection => fallback == Collection,
+    }
+}
+
+/// Validates a node's `constant`: structural exclusions (E060/E062) and the
+/// literal parsing under the node's declared `type` (E061), so a typo'd URN or
+/// malformed code fails the build instead of surfacing in emitted documents.
+fn check_constant(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
+    let Some(value) = &node.constant else {
+        return;
+    };
+
+    if node.is_collection() {
+        diags.push(err(
+            "E060",
+            &node.id,
+            "`constant` is not valid on a collection node".to_string(),
+        ));
+        return;
+    }
+
+    if let Some(reason) = constant_literal_error(node.source_type, value) {
+        diags.push(err(
+            "E061",
+            &node.id,
+            format!(
+                "constant `{value}` is not a valid `{}` literal: {reason}",
+                node.source_type
+            ),
+        ));
+    }
+
+    for (set, field) in [
+        (!node.fallbacks.is_empty(), "fallbacks"),
+        (node.multiple.is_some(), "multiple"),
+        (node.adapter.is_some(), "adapter"),
+        (!node.normalize.is_empty(), "normalize"),
+    ] {
+        if set {
+            diags.push(err(
+                "E062",
+                &node.id,
+                format!(
+                    "`constant` cannot be combined with `{field}`; the literal is \
+                     emitted verbatim on write"
+                ),
+            ));
+        }
+    }
+}
+
+/// Why `value` is not a valid literal of `ty`, or `None` when it is.
+///
+/// Shape checks only — no ISO-4217 table, no calendar arithmetic; the goal is
+/// catching typos at compile time, not re-implementing the runtime validators.
+// ponytail: currency = 3 uppercase letters, date = digit/dash shape; wire the
+// runtime `validate` helpers in if a real code table is ever needed.
+fn constant_literal_error(ty: MappingType, value: &str) -> Option<String> {
+    if value.trim().is_empty() {
+        return Some("it is empty".to_string());
+    }
+    let date_shaped = |s: &str| {
+        s.len() == 10
+            && s.bytes().enumerate().all(|(i, b)| {
+                if i == 4 || i == 7 {
+                    b == b'-'
+                } else {
+                    b.is_ascii_digit()
+                }
+            })
+    };
+    match ty {
+        MappingType::String | MappingType::Identifier | MappingType::UnitCode => None,
+        MappingType::Boolean => {
+            (value != "true" && value != "false").then(|| "expected `true` or `false`".to_string())
+        }
+        MappingType::Currency => (value.len() != 3
+            || !value.bytes().all(|b| b.is_ascii_uppercase()))
+        .then(|| "expected three uppercase ASCII letters".to_string()),
+        MappingType::Decimal => {
+            let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
+            let (int, frac) = digits.split_once('.').unwrap_or((digits, "0"));
+            let all_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+            (!all_digits(int) || !all_digits(frac))
+                .then(|| "expected a plain decimal number".to_string())
+        }
+        MappingType::Date => (!date_shaped(value)).then(|| "expected `YYYY-MM-DD`".to_string()),
+        MappingType::Datetime => (match (value.get(..10), value.as_bytes().get(10)) {
+            (Some(date), Some(b'T')) => date_shaped(date),
+            _ => false,
+        })
+        .not()
+        .then(|| "expected `YYYY-MM-DDThh:mm:ss…`".to_string()),
+        MappingType::Collection => unreachable!("E060 rejects collections before this check"),
+    }
+}
+
+/// Validates a node's `clone_of`: role exclusions (E070), target key existence
+/// in the node's scope (E071), and type agreement with the target node (E072).
+///
+/// A clone is a write-only mirror plus a read-side consistency check, so it
+/// cannot also be a primary (`canonical_key`), a `constant`, or carry read
+/// collapse/transform features (`fallbacks`, `multiple`, `adapter`) — and a
+/// collection has no single value to mirror. Clone chains are impossible by
+/// construction: the target is a canonical *key*, and clones declare none.
+fn check_clone_of(node: &SourceNode, ir: &MappingIr, diags: &mut Vec<Diagnostic>) {
+    let Some(target_key) = &node.clone_of else {
+        return;
+    };
+
+    if node.is_collection() {
+        diags.push(err(
+            "E070",
+            &node.id,
+            "`clone_of` is not valid on a collection node".to_string(),
+        ));
+        return;
+    }
+    for (set, field) in [
+        (node.canonical_key.is_some(), "canonical_key"),
+        (node.constant.is_some(), "constant"),
+        (!node.fallbacks.is_empty(), "fallbacks"),
+        (node.multiple.is_some(), "multiple"),
+        (node.adapter.is_some(), "adapter"),
+    ] {
+        if set {
+            diags.push(err(
+                "E070",
+                &node.id,
+                format!(
+                    "`clone_of` cannot be combined with `{field}`; a clone only \
+                     mirrors its target key"
+                ),
+            ));
+        }
+    }
+
+    // The target key must be declared by a primary node in the same scope.
+    let Some(target) = ir
+        .nodes
+        .values()
+        .find(|n| n.canonical_key.as_deref() == Some(target_key) && n.scope == node.scope)
+    else {
+        diags.push(err(
+            "E071",
+            &node.id,
+            format!(
+                "clone_of target `{target_key}` is not a canonical key declared \
+                 in this scope"
+            ),
+        ));
+        return;
+    };
+    if target.source_type != node.source_type {
+        diags.push(err(
+            "E072",
+            &node.id,
+            format!(
+                "clone of `{target_key}` is declared `{}` but the target is `{}`; \
+                 the types must match",
+                node.source_type, target.source_type
+            ),
+        ));
     }
 }
 
@@ -521,6 +696,165 @@ mod tests {
             &adapters,
         );
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn test_constant_only_node_is_clean() {
+        let diags = run(r#"[Invoice.UBLVersionID]
+            type = "identifier"
+            constant = "2.1""#);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn test_constant_with_canonical_key_is_clean() {
+        // Transparent read, fixed write: the flagship CustomizationID shape.
+        let diags = run(r#"[Invoice.CustomizationID]
+            type = "identifier"
+            canonical_key = "SpecificationId"
+            constant = "urn:cen.eu:en16931:2017""#);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn test_constant_on_collection_is_e060() {
+        let diags = run(r#"[Line]
+            type = "collection"
+            canonical_key = "Lines"
+            constant = "x"
+
+            [Line.ID]
+            type = "identifier"
+            canonical_key = "LineId""#);
+        assert_eq!(codes(&diags), ["E060"]);
+    }
+
+    use rstest::rstest;
+
+    #[rstest]
+    #[case::empty("identifier", "  ")]
+    #[case::bad_boolean("boolean", "yes")]
+    #[case::bad_currency("currency", "eur")]
+    #[case::bad_currency_len("currency", "EURO")]
+    #[case::bad_decimal("decimal", "1,5")]
+    #[case::bad_date("date", "2024-1-1")]
+    #[case::bad_datetime("datetime", "2024-01-01 10:00:00")]
+    #[case::bad_datetime_literal("datetime", "é234-56-78T12:34:56")]
+
+    fn test_invalid_constant_literal_is_e061(#[case] ty: &str, #[case] value: &str) {
+        let diags = run(&format!(
+            "[Invoice.X]\ntype = \"{ty}\"\nconstant = \"{value}\""
+        ));
+        assert_eq!(codes(&diags), ["E061"], "{ty} / {value:?}: {diags:?}");
+    }
+
+    #[rstest]
+    #[case::boolean("boolean", "false")]
+    #[case::currency("currency", "EUR")]
+    #[case::decimal_plain("decimal", "19")]
+    #[case::decimal_signed("decimal", "-19.00")]
+    #[case::date("date", "2024-01-01")]
+    #[case::datetime("datetime", "2024-01-01T10:00:00")]
+    #[case::unit_code("unit_code", "C62")]
+    fn test_valid_constant_literal_is_clean(#[case] ty: &str, #[case] value: &str) {
+        let diags = run(&format!(
+            "[Invoice.X]\ntype = \"{ty}\"\nconstant = \"{value}\""
+        ));
+        assert!(diags.is_empty(), "{ty} / {value:?}: {diags:?}");
+    }
+
+    #[rstest]
+    #[case::fallbacks("fallbacks = [\"Invoice.Alt\"]\n\n[Invoice.Alt]\ntype = \"identifier\"")]
+    #[case::multiple("multiple = \"first\"")]
+    #[case::adapter("adapter = \"known\"")]
+    #[case::normalize("normalize = [\"trim\"]")]
+    fn test_constant_combined_with_read_features_is_e062(#[case] extra: &str) {
+        let adapters: BTreeSet<String> = ["known".to_string()].into_iter().collect();
+        let diags = run_with_adapters(
+            &format!("[Invoice.X]\ntype = \"identifier\"\nconstant = \"v\"\n{extra}"),
+            &adapters,
+        );
+        assert!(codes(&diags).contains(&"E062"), "{extra}: {diags:?}");
+    }
+
+    #[test]
+    fn test_clone_of_valid_is_clean() {
+        let diags = run(r#"[Invoice.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+
+            [Invoice.BuyerReference]
+            type = "identifier"
+            clone_of = "InvoiceNumber""#);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[rstest]
+    #[case::canonical_key("canonical_key = \"Other\"")]
+    #[case::constant("constant = \"v\"")]
+    #[case::fallbacks("fallbacks = [\"Invoice.Alt\"]\n\n[Invoice.Alt]\ntype = \"identifier\"")]
+    #[case::multiple("multiple = \"first\"")]
+    #[case::adapter("adapter = \"known\"")]
+    fn test_clone_of_combined_with_other_roles_is_e070(#[case] extra: &str) {
+        let adapters: BTreeSet<String> = ["known".to_string()].into_iter().collect();
+        let diags = run_with_adapters(
+            &format!(
+                "[Invoice.ID]\ntype = \"identifier\"\ncanonical_key = \"InvoiceNumber\"\n\n\
+                 [Invoice.Copy]\ntype = \"identifier\"\nclone_of = \"InvoiceNumber\"\n{extra}"
+            ),
+            &adapters,
+        );
+        assert!(codes(&diags).contains(&"E070"), "{extra}: {diags:?}");
+    }
+
+    #[test]
+    fn test_clone_of_on_collection_is_e070() {
+        let diags = run(r#"[Line]
+            type = "collection"
+            canonical_key = "Lines"
+
+            [Copies]
+            type = "collection"
+            clone_of = "Lines""#);
+        assert!(codes(&diags).contains(&"E070"), "{diags:?}");
+    }
+
+    #[test]
+    fn test_clone_of_unknown_key_is_e071() {
+        let diags = run(r#"[Invoice.Copy]
+            type = "identifier"
+            clone_of = "Ghost""#);
+        assert_eq!(codes(&diags), ["E071"]);
+    }
+
+    #[test]
+    fn test_clone_of_key_in_other_scope_is_e071() {
+        // Target key exists, but only inside a collection scope — a root clone
+        // cannot mirror it.
+        let diags = run(r#"[Line]
+            type = "collection"
+            canonical_key = "Lines"
+
+            [Line.ID]
+            type = "identifier"
+            canonical_key = "LineId"
+
+            [Invoice.Copy]
+            type = "identifier"
+            clone_of = "LineId""#);
+        assert!(codes(&diags).contains(&"E071"), "{diags:?}");
+    }
+
+    #[test]
+    fn test_clone_of_type_mismatch_is_e072() {
+        let diags = run(r#"[Invoice.Total]
+            type = "decimal"
+            canonical_key = "PayableAmount"
+
+            [Invoice.Copy]
+            type = "string"
+            clone_of = "PayableAmount""#);
+        assert!(codes(&diags).contains(&"E072"), "{diags:?}");
     }
 
     #[test]

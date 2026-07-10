@@ -4,9 +4,17 @@
 //! each canonical field back to its primary `source_path`, rendering the typed
 //! value to its source `String` form. Fallbacks and helper nodes are skipped.
 //!
+//! A node with a `constant` is written from that literal instead of the hub:
+//! at root unconditionally, inside a collection only on non-empty items (so a
+//! constant never resurrects an otherwise-empty element).
+//!
+//! A `clone_of` node fans its target key's hub value out to a second source
+//! path — how a format stores one canonical value in several places (currency
+//! attributes, duplicated VAT ids).
+//!
 //! The writer **consumes** the hub: canonical fields written exactly once move
-//! their values into the target struct (`take`); a field two nodes in one
-//! scope write from stays a borrow + clone.
+//! their values into the target struct (`take`); a key written from more than
+//! one node (a primary plus its clones) stays a borrow + clone.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -20,19 +28,37 @@ use super::diag::DiagSpec;
 use super::naming::field_name;
 use super::plan::{Frame, GenCtx};
 
-/// The canonical keys written more than once within one scope (two nodes
-/// mapping the same canonical field back to different source paths). These
-/// must stay borrow + clone reads of the hub; unique keys move out.
-fn shared_hub_keys(scalars: &[&SourceNode], collections: &[&SourceNode]) -> BTreeSet<String> {
+/// The canonical keys written more than once within one scope: a `clone_of`
+/// node fans its target key out to a second source path, so the key is read
+/// from the hub twice. These must stay borrow + clone reads of the hub; unique
+/// keys move out. Nodes with a `constant` never read the hub, so they don't
+/// count.
+fn shared_hub_keys(
+    scalars: &[&SourceNode],
+    clones: &[&SourceNode],
+    collections: &[&SourceNode],
+) -> BTreeSet<String> {
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     let mut shared = BTreeSet::new();
-    for node in scalars.iter().chain(collections) {
-        let key = node.canonical_key.as_deref().expect("mapped node");
+    for node in scalars.iter().chain(clones).chain(collections) {
+        if node.constant.is_some() {
+            continue;
+        }
+        let key = hub_key(node);
         if !seen.insert(key) {
             shared.insert(key.to_string());
         }
     }
     shared
+}
+
+/// The hub key a node writes from: its own `canonical_key`, or the mirrored
+/// key for a `clone_of` node.
+fn hub_key(node: &SourceNode) -> &str {
+    node.canonical_key
+        .as_deref()
+        .or(node.clone_of.as_deref())
+        .expect("mapped or clone node")
 }
 
 /// Emits the `write(mut main: MainKey) -> MappingResult<Root>` function into
@@ -49,8 +75,22 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
     out.push_str("    let mut diagnostics: Vec<MappingDiagnostic> = Vec::new();\n");
     let _ = writeln!(out, "    let mut source = {root}::default();");
 
-    let shared = shared_hub_keys(&ctx.plan.root_scalars, &ctx.plan.root_collections);
-    for node in &ctx.plan.root_scalars {
+    let shared = shared_hub_keys(
+        &ctx.plan.root_scalars,
+        &ctx.plan.root_clones,
+        &ctx.plan.root_collections,
+    );
+    for node in &ctx.plan.root_constants {
+        out.push('\n');
+        write_constant_block(out, ctx.source, node, &ctx.source.root, "source", 1);
+    }
+    for node in ctx
+        .plan
+        .root_scalars
+        .iter()
+        .filter(|n| n.constant.is_none())
+        .chain(&ctx.plan.root_clones)
+    {
         out.push('\n');
         write_scalar_block(
             out,
@@ -61,7 +101,7 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
             "source",
             None,
             1,
-            !shared.contains(node.canonical_key.as_deref().expect("mapped scalar")),
+            !shared.contains(hub_key(node)),
         );
     }
 
@@ -105,8 +145,9 @@ fn write_collection_block(
         collection_item_struct(ctx.source, frame.parent_struct, &coll.source_path);
     let children = ctx.plan.children_of(&coll.id);
     let nested = ctx.plan.nested_collections_of(&coll.id);
+    let clones = ctx.plan.clones_of(&coll.id);
     let owned = frame.owned && !shared.contains(coll_key);
-    let child_shared = shared_hub_keys(children, nested);
+    let child_shared = shared_hub_keys(children, clones, nested);
 
     let depth = frame.depth;
     let indent = frame.indent;
@@ -171,7 +212,11 @@ fn write_collection_block(
         );
     }
     let _ = writeln!(out, "{body}let mut {elem} = {src_item_struct}::default();");
-    for child in children {
+    for child in children
+        .iter()
+        .filter(|n| n.constant.is_none())
+        .chain(clones)
+    {
         write_scalar_block(
             out,
             ctx.source,
@@ -181,7 +226,7 @@ fn write_collection_block(
             &elem,
             Some(&idx),
             indent + 1,
-            owned && !child_shared.contains(child.canonical_key.as_deref().expect("mapped scalar")),
+            owned && !child_shared.contains(hub_key(child)),
         );
     }
     for nested_coll in nested {
@@ -201,6 +246,16 @@ fn write_collection_block(
         );
     }
     let _ = writeln!(out, "{body}if !{elem}.is_empty() {{");
+    for constant in ctx.plan.constants_of(&coll.id) {
+        write_constant_block(
+            out,
+            ctx.source,
+            constant,
+            &src_item_struct,
+            &elem,
+            indent + 2,
+        );
+    }
     let _ = writeln!(out, "{body}    {target}.push({elem});");
     let _ = writeln!(out, "{body}    {count} += 1;");
     let _ = writeln!(out, "{body}}}");
@@ -220,6 +275,35 @@ fn write_collection_block(
     }
 }
 
+/// Emits the assignment of a node's `constant` literal to its source path. The
+/// hub is never consulted; the literal was validated against the node's `type`
+/// at compile time (E061), so it is emitted verbatim.
+fn write_constant_block(
+    out: &mut String,
+    source: &SourceModelMeta,
+    node: &SourceNode,
+    start_struct: &str,
+    src_var: &str,
+    indent: usize,
+) {
+    let lit = node.constant.as_deref().expect("constant node");
+    let path = &node.source_path;
+    let target = assign_target_expr(source, start_struct, path, src_var);
+    let optional = walk_segments(source, start_struct, path)
+        .unwrap_or_default()
+        .last()
+        .is_some_and(|s| s.optional);
+    let value = format!("CompactString::from({lit:?})");
+
+    let pad = "    ".repeat(indent);
+    let _ = writeln!(out, "{pad}// constant -> {path}");
+    if optional {
+        let _ = writeln!(out, "{pad}{target} = Some({value});");
+    } else {
+        let _ = writeln!(out, "{pad}{target} = {value};");
+    }
+}
+
 /// Emits the write of one canonical field back to its source path, rendering the
 /// typed value to the source `String` representation. When `take`, the hub value
 /// is moved out instead of cloned (the field is written exactly once).
@@ -235,7 +319,7 @@ fn write_scalar_block(
     indent: usize,
     take: bool,
 ) {
-    let key = node.canonical_key.as_deref().expect("mapped scalar");
+    let key = hub_key(node);
     let path = &node.source_path;
     let field = field_name(key);
     let segs = walk_segments(source, start_struct, path).unwrap_or_default();

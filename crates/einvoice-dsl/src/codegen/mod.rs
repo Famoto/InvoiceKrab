@@ -33,7 +33,9 @@
 //! `normalize` ops, falls back through `fallbacks`, decodes/validates by `type`,
 //! applies an optional `adapter`, enforces `required`/`min_items`, and assigns
 //! into the typed `MainKey`. Helper nodes (no `canonical_key`) are read only as
-//! fallback sources.
+//! fallback sources. A node with a `constant` is written from that literal
+//! instead of the hub (spec-pinned values like CIUS `CustomizationID` URNs);
+//! its read side is unchanged.
 //!
 //! # Testing
 //!
@@ -556,6 +558,175 @@ mod tests {
             out.contains("source.wrap.get_or_insert_default().line.push(element0);"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn test_constant_only_node_is_written_not_read() {
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+
+            [Invoice.UBLVersionID]
+            type = "identifier"
+            constant = "2.1"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // Writer pins the literal at the source path.
+        assert!(
+            out.contains("source.ubl_version_id = Some(CompactString::from(\"2.1\"));"),
+            "{out}"
+        );
+        // Reader never touches the field: write-only node.
+        assert!(!out.contains("source.ubl_version_id.take()"), "{out}");
+        assert!(!out.contains("source.ubl_version_id.as_ref()"), "{out}");
+    }
+
+    #[test]
+    fn test_keyed_constant_reads_transparently_and_writes_fixed() {
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.CustomizationID]
+            type = "identifier"
+            canonical_key = "SpecificationId"
+            constant = "urn:cen.eu:en16931:2017"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // Reader fills the hub from the document as usual.
+        assert!(out.contains("source.customization_id.take()"), "{out}");
+        assert!(out.contains("main.specification_id = Some(raw);"), "{out}");
+        // Writer emits the constant and never consults the hub value.
+        assert!(
+            out.contains(
+                "source.customization_id = Some(CompactString::from(\"urn:cen.eu:en16931:2017\"));"
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("main.specification_id.take()"), "{out}");
+    }
+
+    #[test]
+    fn test_collection_scoped_constant_written_per_nonempty_item() {
+        let (ir, _, source) = compile(
+            r#"
+            [InvoiceLine]
+            type = "collection"
+            canonical_key = "InvoiceLines"
+
+            [InvoiceLine.ID]
+            type = "identifier"
+            canonical_key = "LineId"
+
+            [InvoiceLine.TypeCode]
+            type = "identifier"
+            constant = "380"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // The constant assignment sits inside the non-empty guard, before the
+        // push: it never resurrects an otherwise-empty item.
+        let guard = out
+            .find("if !element0.is_empty() {")
+            .expect("non-empty guard exists");
+        let assign = out
+            .find("element0.type_code = Some(CompactString::from(\"380\"));")
+            .expect("constant assigned on the element");
+        let push = out
+            .find("source.invoice_line.push(element0);")
+            .expect("element pushed");
+        assert!(guard < assign && assign < push, "{out}");
+    }
+
+    #[test]
+    fn test_clone_of_writes_hub_value_to_both_paths() {
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+
+            [Invoice.BuyerReference]
+            type = "identifier"
+            clone_of = "InvoiceNumber"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // The hub key is written twice (primary + clone), so both writes borrow
+        // instead of moving.
+        assert_eq!(
+            out.matches("if let Some(value) = &main.invoice_number {")
+                .count(),
+            2,
+            "{out}"
+        );
+        assert!(!out.contains("main.invoice_number.take()"), "{out}");
+        assert!(out.contains("source.id = Some(rendered);"), "{out}");
+        assert!(
+            out.contains("source.buyer_reference = Some(rendered);"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn test_clone_of_reader_checks_copy_and_warns_on_mismatch() {
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+
+            [Invoice.BuyerReference]
+            type = "identifier"
+            clone_of = "InvoiceNumber"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // Only the primary fills the hub.
+        assert_eq!(
+            out.matches("main.invoice_number = Some(raw);").count(),
+            1,
+            "{out}"
+        );
+        // The copy is read and compared against the canonical value; a
+        // disagreeing copy is a warning, not a silent pick.
+        assert!(out.contains("CLONE_MISMATCH"), "{out}");
+        assert!(out.contains("Severity::Warning"), "{out}");
+    }
+
+    #[test]
+    fn test_collection_scoped_clone_written_per_item() {
+        let (ir, _, source) = compile(
+            r#"
+            [InvoiceLine]
+            type = "collection"
+            canonical_key = "InvoiceLines"
+
+            [InvoiceLine.ID]
+            type = "identifier"
+            canonical_key = "LineId"
+
+            [InvoiceLine.DocumentReference]
+            type = "identifier"
+            clone_of = "LineId"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // Writer: both element fields written from the same hub item key.
+        assert_eq!(
+            out.matches("if let Some(value) = &hub_item0.line_id {")
+                .count(),
+            2,
+            "{out}"
+        );
+        assert!(
+            out.contains("element0.document_reference = Some(rendered);"),
+            "{out}"
+        );
+        // Reader: per-item mismatch check.
+        assert!(out.contains("CLONE_MISMATCH"), "{out}");
     }
 
     #[test]
