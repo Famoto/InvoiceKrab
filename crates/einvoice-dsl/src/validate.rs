@@ -310,11 +310,9 @@ fn check_constant(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
     }
 }
 
-/// Why `value` is not a valid literal of `ty`, or `None` when it is.
-///
 /// Shape checks only — no ISO-4217 table, no calendar arithmetic; the goal is
 /// catching typos at compile time, not re-implementing the runtime validators.
-// ponytail: currency = 3 uppercase letters, date = digit/dash shape; wire the
+//  currency = 3 uppercase letters, date = digit/dash shape; wire the
 // runtime `validate` helpers in if a real code table is ever needed.
 fn constant_literal_error(ty: MappingType, value: &str) -> Option<String> {
     if value.trim().is_empty() {

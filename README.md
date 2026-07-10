@@ -29,19 +29,7 @@ deltas — XRechnung and Peppol are a handful of lines on top of UBL.
 - [The `krab-server` HTTP API](#the-krab-server-http-api)
 - [Library usage](#library-usage)
 - [Features](#features)
-- [Authoring a DSL mapping (TOML)](#authoring-a-dsl-mapping-toml)
-  - [The `[meta]` table](#the-meta-table)
-  - [Source nodes](#source-nodes)
-  - [Node fields reference](#node-fields-reference)
-  - [Types](#types)
-  - [Normalization](#normalization)
-  - [Multiple values](#multiple-values)
-  - [Collections](#collections)
-  - [Canonical keys & the hub](#canonical-keys--the-hub)
-  - [Fallbacks](#fallbacks)
-  - [Inheritance](#inheritance)
-  - [Auto-detection](#auto-detection)
-  - [A complete example](#a-complete-example)
+- [The mapping DSL](#the-mapping-dsl)
 - [Adding a new format](#adding-a-new-format)
 - [Workspace layout](#workspace-layout)
 - [Developer commands](#developer-commands)
@@ -323,302 +311,29 @@ an `EngineError` only means the XML could not be parsed or rendered at all.
 
 ---
 
-## Authoring a DSL mapping (TOML)
+## The mapping DSL
 
-A mapping file (a "spoke") describes one document format. It compiles to:
-
-1. a typed Rust source struct (synthesized from the node ids),
-2. `read` (source → hub) and `write` (hub → source) mappers, and
-3. the format's contribution to the shared canonical hub.
-
-The guiding principle is **fail at build time, not at runtime**.
-
-### The big idea: ids mirror the XML tree
-
-There is a **single tree**. Each node's dotted table id *is* its XML element
-path under the root. The compiler derives the source struct tree and each node's
-XML path from the ids — there is **no separate `[source]` table** and **no
-hand-written path**.
+A mapping file (a "spoke") describes one document format in declarative TOML.
+The big idea: each node's dotted table id *is* its XML element path — there is
+no separate source spec and no hand-written path. At build time each spoke
+compiles to a typed Rust source struct, `read`/`write` mappers, and the
+format's contribution to the shared canonical hub. Anything wrong — unknown
+fields, type conflicts, fallback cycles, invalid constants — **fails the
+build**, never the runtime.
 
 ```toml
-[Invoice.LegalMonetaryTotal.PayableAmount]   # <Invoice><LegalMonetaryTotal><PayableAmount>
-```
-
-Interior elements (`LegalMonetaryTotal` here) are *inferred* from the ids of
-their leaf descendants — you never write them as their own table.
-
-### The `[meta]` table
-
-The reserved `[meta]` table identifies the format. Unknown keys are rejected.
-
-```toml
-[meta]
-doc_format     = "ubl-invoice"          # required — logical format id; drives the
-                                        #   generated module name & Spoke variant
-format_version = "2.1"                  # required
-mapping_version = "1.0"                 # required — version of this mapping file
-canonical_model = "canonical-invoice:1.0"  # required — the hub this targets
-root           = "Invoice"              # root XML element / struct (default: "Root")
-source_model   = "ubl-invoice:2.1"      # optional display id (default: doc_format:format_version)
-detect         = ["xrechnung"]          # optional auto-detection markers
-inherits       = "ubl-invoice:2.0"      # optional parent mapping to inherit from
-disabled       = true                   # optional — inherit-only base, emits no spoke
-description    = "…"                     # optional, reports only
-```
-
-| Field | Required | Purpose |
-|-------|----------|---------|
-| `doc_format` | ✅ | Logical id; becomes the `Spoke` name and module slug |
-| `format_version` | ✅ | Format version string |
-| `mapping_version` | ✅ | Version of this mapping file |
-| `canonical_model` | ✅ | Canonical model id this mapping targets |
-| `root` | — | Root element/struct name (default `Root`) |
-| `source_model` | — | Display id (default `doc_format:format_version`) |
-| `detect` | — | Substrings matched against `CustomizationID` for auto-detect |
-| `inherits` | — | Parent mapping id to inherit nodes from |
-| `disabled` | — | When `true`, inherit-only base: other spokes may `inherits` it, but it emits no `Spoke` of its own |
-| `description` | — | Human note, used in reports only |
-
-### Source nodes
-
-Every other table is a **source node**, keyed by its dotted id:
-
-```toml
-[Invoice.ID]
+[Invoice.ID]                    # <Invoice><ID> — the id is the XML path
 type = "identifier"
-canonical_key = "InvoiceNumber"
+canonical_key = "InvoiceNumber" # the shared hub field this maps to
 required = true
 normalize = ["trim", "empty_as_missing"]
 ```
 
-The `xml` field only marks a leaf as an **attribute** or renames an element;
-otherwise the XML local name equals the id segment:
-
-```toml
-[Invoice.LegalMonetaryTotal.PayableAmount.currencyID]
-xml = "@currencyID"        # this leaf is the @currencyID attribute, not an element
-type = "currency"
-canonical_key = "PayableAmountCurrency"
-```
-
-A node whose text is a value *and* which has attribute children (a "valued
-element") becomes a struct with a `$text` value field plus the attribute fields —
-the compiler handles that for you from the ids.
-
-### Node fields reference
-
-| Field | Type | Meaning |
-|-------|------|---------|
-| `type` | string | Value type (see [Types](#types)). Required for active nodes. |
-| `canonical_key` | string | Target field in the canonical hub. Omit for a fallback-only helper node. |
-| `xml` | string | Leaf binding override: `@attr` for an attribute, `$text` for element text, or a new name to rename the element. |
-| `required` | bool | Whether the value must be present (default `false`). |
-| `normalize` | array | String transforms, applied in order (see [Normalization](#normalization)). |
-| `fallbacks` | array | Other node ids to try, in order, when this node is missing (see [Fallbacks](#fallbacks)). |
-| `multiple` | string | Policy for repeated scalar values (see [Multiple values](#multiple-values)). |
-| `join_with` | string | Separator — required iff `multiple = "join"`. |
-| `min_items` | int | Minimum item count for a `collection` node. |
-| `adapter` | string | Name of a compiler-known value adapter. |
-| `description` | string | Human note, reports only. |
-| `disabled` | bool | Remove this node from the effective mapping (useful with inheritance). |
-
-### Types
-
-`type` is one of the following closed set (lower-case keywords):
-
-| Type | Meaning |
-|------|---------|
-| `string` | Free text; may be empty after normalization |
-| `identifier` | An id; empty/whitespace after normalization counts as missing |
-| `date` | A calendar date |
-| `datetime` | A date-time |
-| `decimal` | A scale-preserving decimal (zero is valid) |
-| `currency` | An ISO 4217 currency code |
-| `unit_code` | A unit-of-measure code |
-| `boolean` | A boolean |
-| `collection` | Structural: a repeated item that opens a child scope |
-
-> There is intentionally no `amount` type: an amount and its currency are mapped
-> as two separate nodes (`decimal` + `currency`).
-
-### Normalization
-
-`normalize = [...]` applies a sequence of compiler-known transforms, in order,
-before type validation. No type is normalized implicitly — declare it if you
-want it.
-
-| Op | Effect |
-|----|--------|
-| `trim` | Strip leading/trailing whitespace |
-| `uppercase` | Upper-case the value |
-| `lowercase` | Lower-case the value |
-| `empty_as_missing` | Treat an empty (post-trim) value as missing |
-
-```toml
-normalize = ["trim", "uppercase"]          # e.g. for a currency code
-normalize = ["trim", "empty_as_missing"]   # e.g. for an identifier
-```
-
-### Multiple values
-
-For a **scalar** node whose source resolves to more than one value, `multiple`
-controls the behavior:
-
-| Policy | Effect |
-|--------|--------|
-| `error` | Diagnostic error if more than one value is found (**default**) |
-| `first` | Use the first value in source order; emit a diagnostic |
-| `array` | Keep all values (requires an array-compatible canonical field) |
-| `join` | Join all values using `join_with` |
-
-```toml
-[Invoice.Note]
-type = "string"
-canonical_key = "Notes"
-multiple = "join"
-join_with = "\n"
-```
-
-### Collections
-
-A `type = "collection"` node marks a repeated element and opens a **child scope**
-for its descendant nodes:
-
-```toml
-[InvoiceLine]                  # repeated <InvoiceLine> element
-type = "collection"
-canonical_key = "InvoiceLines"
-required = true
-min_items = 1
-
-[InvoiceLine.ID]               # a field on each line item
-type = "identifier"
-canonical_key = "LineId"
-
-[InvoiceLine.Item.Name]        # nested aggregate, inferred from the id
-type = "string"
-canonical_key = "ItemName"
-```
-
-### Canonical keys & the hub
-
-`canonical_key` is how a node connects to the shared model. The hub (`MainKey`)
-is **derived** as the union of every spoke's canonical keys. Two formats
-round-trip through the hub precisely because they share canonical keys.
-
-**Rule:** when two formats declare the same `canonical_key`, they must declare it
-with the *same type* — a cross-format type conflict is a compile-time error.
-That's what keeps UBL ⇄ XRechnung lossless on the keys they share.
-
-A node with **no** `canonical_key` is a *helper* node — it carries no hub value
-itself and exists only to be referenced as a fallback.
-
-### Fallbacks
-
-`fallbacks` lists other node ids to try, in order, when this node's value is
-missing. Fallback existence, type compatibility, scope, and the absence of
-cycles are all checked at compile time. A fallback must live in the **same
-scope** as the referring node — root nodes fall back to root nodes, and a
-collection child falls back only to siblings inside the same collection item.
-
-```toml
-[Invoice.IssueDate]
-type = "date"
-canonical_key = "IssueDate"
-fallbacks = ["Invoice.TaxPointDate"]
-```
-
-### Inheritance
-
-`[meta].inherits` names a parent mapping id (its `source_model`, or
-`doc_format:format_version`). At build time the inheritance chain is resolved
-ancestor-first, so the child starts from the parent's full node set and only
-declares its deltas:
-
-- Re-declaring a node id **replaces the whole base node** (no field merge).
-- `disabled = true` on a node removes it from the effective mapping.
-- `disabled = true` in `[meta]` makes the mapping itself **inherit-only**: it can
-  be inherited from but emits no spoke (see [mappings/cii.toml](mappings/cii.toml)
-  and [mappings/facturx.toml](mappings/facturx.toml)).
-
-Missing parents and inheritance cycles fail the build. See
-[mappings/xrechnung.toml](mappings/xrechnung.toml) for a complete CIUS example:
-its own identity, a `detect` marker, and one `required = true` override on top
-of the UBL base.
-
-### Auto-detection
-
-When a document is valid under more than one format (e.g. an XRechnung is also
-valid UBL), `[meta].detect` markers break the tie. Markers are matched
-**case-insensitively** against the document's `CustomizationID` (EN16931 BT-24).
-A format whose marker is present wins over a base format that declares none.
-
-```toml
-[meta]
-# An XRechnung is also valid UBL; this makes auto-detection prefer this CIUS.
-detect = ["xrechnung"]
-```
-
-A base format (plain UBL) simply leaves `detect` empty and acts as the fallback.
-
-### A complete example
-
-A minimal but complete spoke (`mappings/ubl.toml`):
-
-```toml
-[meta]
-doc_format = "ubl-invoice"
-format_version = "2.1"
-mapping_version = "1.0"
-canonical_model = "canonical-invoice:1.0"
-root = "Invoice"
-
-[Invoice.ID]
-type = "identifier"
-canonical_key = "InvoiceNumber"
-required = true
-normalize = ["trim", "empty_as_missing"]
-
-[Invoice.IssueDate]
-type = "date"
-canonical_key = "IssueDate"
-
-[Invoice.DocumentCurrencyCode]
-type = "currency"
-canonical_key = "DocumentCurrency"
-normalize = ["trim", "uppercase"]
-
-# A valued element: its text is the amount, its currencyID is a sibling attribute.
-[Invoice.LegalMonetaryTotal.PayableAmount]
-type = "decimal"
-canonical_key = "PayableAmount"
-
-[Invoice.LegalMonetaryTotal.PayableAmount.currencyID]
-xml = "@currencyID"
-type = "currency"
-canonical_key = "PayableAmountCurrency"
-
-# A required collection of invoice lines.
-[InvoiceLine]
-type = "collection"
-canonical_key = "InvoiceLines"
-required = true
-min_items = 1
-
-[InvoiceLine.ID]
-type = "identifier"
-canonical_key = "LineId"
-
-[InvoiceLine.InvoicedQuantity]
-type = "decimal"
-canonical_key = "Quantity"
-
-[InvoiceLine.Item.Name]
-type = "string"
-canonical_key = "ItemName"
-```
-
-See [mappings/ubl.toml](mappings/ubl.toml) and
+The full authoring reference — `[meta]`, node fields, types, normalization,
+collections, fallbacks, constants, clones, inheritance, auto-detection, and
+every diagnostic code — lives in
+**[mappings/README.md](mappings/README.md)**. See
+[mappings/ubl.toml](mappings/ubl.toml) and
 [mappings/xrechnung.toml](mappings/xrechnung.toml) for the reference spokes.
 
 ---
@@ -626,7 +341,8 @@ See [mappings/ubl.toml](mappings/ubl.toml) and
 ## Adding a new format
 
 1. Write a new `mappings/<your-format>.toml` with a `[meta]` table and your
-   nodes (use the reference spokes as a template). If your format is a profile
+   nodes — the DSL reference is [mappings/README.md](mappings/README.md), and
+   the reference spokes make good templates. If your format is a profile
    of an existing syntax, `inherits` its mapping and declare only the deltas —
    see [mappings/peppol.toml](mappings/peppol.toml) for the minimal case.
 2. Give it the same `canonical_key`s (with matching types) as the existing
