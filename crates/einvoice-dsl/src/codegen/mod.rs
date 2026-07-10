@@ -11,6 +11,9 @@
 //!   its [`SourceModelMeta`](crate::source_model::SourceModelMeta) into: the
 //!   typed source structs (with serde/XML binding), `from_xml`/`to_xml`, and the
 //!   `read` (source → `MainKey`) / `write` (`MainKey` → source) mappers.
+//! - [`generate_source_module`] / [`generate_mapper_module`] split the same
+//!   output in two, so a build script can emit one structs module shared by
+//!   every spoke whose synthesized source model generates identical text.
 //!
 //! The runtime never interprets the TOML; it links against the generated Rust,
 //! which targets the small `einvoice-transformator` helper API (`normalize`,
@@ -68,15 +71,6 @@ use std::fmt::Write as _;
 /// the emitted module glob-imports `MainKey` and the item structs from it. The
 /// output is deterministic for identical inputs.
 pub fn generate_spoke(ir: &MappingIr, source: &SourceModelMeta, hub_module: &str) -> String {
-    let root = &source.root;
-    // The IR classification is the same for both mappers, so build it once and
-    // share it across the reader and writer generators.
-    let plan = MappingPlan::build(ir);
-    let ctx = GenCtx {
-        ir,
-        source,
-        plan: &plan,
-    };
     let mut out = String::new();
 
     // Plain `//` comments (not `//!`): the output is `include!`d into a module,
@@ -99,16 +93,90 @@ pub fn generate_spoke(ir: &MappingIr, source: &SourceModelMeta, hub_module: &str
     out.push_str("use einvoice_transformator::{adapter, normalize, validate};\n");
     let _ = writeln!(out, "use {hub_module}::*;");
     out.push('\n');
-
-    source::generate_source_structs(&mut out, source);
+    source_section(&mut out, source);
     out.push('\n');
-    source::generate_xml_io(&mut out, root);
-    out.push('\n');
-    read::generate_read(&mut out, &ctx, root);
-    out.push('\n');
-    write::generate_write(&mut out, &ctx, root);
+    mapper_section(&mut out, ir, source);
 
     out
+}
+
+/// Generates a self-contained module (as text) holding only a source model's
+/// typed structs and `from_xml`/`to_xml` — no mappers. Spokes whose mappings
+/// synthesize identical source models can share one such module (the output is
+/// deterministic, so equal models yield byte-identical text for deduplication).
+pub fn generate_source_module(source: &SourceModelMeta) -> String {
+    let mut out = String::new();
+    out.push_str("// Generated shared source model. Do not edit by hand.\n");
+    let _ = writeln!(out, "// Source model: {}", source.model_id);
+    out.push('\n');
+    out.push_str("use compact_str::CompactString;\n");
+    out.push_str("use serde::{Deserialize, Serialize};\n\n");
+    source_section(&mut out, source);
+    out
+}
+
+/// Generates a spoke module (as text) that re-exports its typed source structs
+/// and XML I/O from `structs_module` (a generated [`generate_source_module`]
+/// sibling, e.g. `super::shared_0`) and defines only the `read`/`write`
+/// mappers. Pairs with [`generate_source_module`] to deduplicate spokes that
+/// share a source model; together they cover exactly what [`generate_spoke`]
+/// emits as one module.
+pub fn generate_mapper_module(
+    ir: &MappingIr,
+    source: &SourceModelMeta,
+    hub_module: &str,
+    structs_module: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str("// Generated spoke mapper. Do not edit by hand.\n");
+    let _ = writeln!(out, "// Source model: {} (structs shared)", source.model_id);
+    let _ = writeln!(
+        out,
+        "// Mapping: {} v{}",
+        ir.meta.doc_format, ir.meta.mapping_version
+    );
+    out.push('\n');
+    let _ = writeln!(out, "pub use {structs_module}::*;");
+    out.push('\n');
+    mapper_imports(&mut out, hub_module);
+    out.push('\n');
+    mapper_section(&mut out, ir, source);
+    out
+}
+
+/// Emits the typed source structs and the root's `from_xml`/`to_xml`.
+fn source_section(out: &mut String, source: &SourceModelMeta) {
+    source::generate_source_structs(out, source);
+    out.push('\n');
+    source::generate_xml_io(out, &source.root);
+}
+
+/// Emits the imports the `read`/`write` mappers need (the source structs and
+/// their serde imports are emitted separately).
+fn mapper_imports(out: &mut String, hub_module: &str) {
+    out.push_str("use std::str::FromStr as _;\n");
+    out.push_str("use compact_str::{CompactString, ToCompactString as _};\n");
+    out.push_str("use rust_decimal::Decimal;\n");
+    out.push_str(
+        "use einvoice_transformator::result::{MappingDiagnostic, MappingResult, Severity};\n",
+    );
+    out.push_str("use einvoice_transformator::{adapter, normalize, validate};\n");
+    let _ = writeln!(out, "use {hub_module}::*;");
+}
+
+/// Emits the `read` and `write` mapper functions.
+fn mapper_section(out: &mut String, ir: &MappingIr, source: &SourceModelMeta) {
+    // The IR classification is the same for both mappers, so build it once and
+    // share it across the reader and writer generators.
+    let plan = MappingPlan::build(ir);
+    let ctx = GenCtx {
+        ir,
+        source,
+        plan: &plan,
+    };
+    read::generate_read(out, &ctx, &source.root);
+    out.push('\n');
+    write::generate_write(out, &ctx, &source.root);
 }
 
 #[cfg(test)]
@@ -246,6 +314,79 @@ mod tests {
         assert!(out.contains("main.invoice_lines.reserve(count0);"), "{out}");
         assert!(out.contains("main.invoice_lines.push(item0);"), "{out}");
         assert!(out.contains("item0.quantity = Some(d)"), "{out}");
+    }
+
+    #[test]
+    fn test_reader_omits_required_missing_branch_for_optional_fields() {
+        let (ir, _, source) = compiled();
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // Optional fields must not carry a dead `else if false { … }`
+        // diagnostic block; required fields keep a plain `else` branch.
+        assert!(!out.contains("else if false"), "{out}");
+        assert!(!out.contains("else if true"), "{out}");
+        assert!(out.contains("REQUIRED_MISSING"), "{out}");
+    }
+
+    #[test]
+    fn test_generate_source_module_is_self_contained_structs_and_xml_io() {
+        let (_, _, source) = compiled();
+        let out = super::generate_source_module(&source);
+        // Self-contained: carries its own imports, structs, and XML I/O …
+        assert!(out.contains("use compact_str::CompactString;"), "{out}");
+        assert!(
+            out.contains("use serde::{Deserialize, Serialize};"),
+            "{out}"
+        );
+        assert!(out.contains("pub struct Invoice {"), "{out}");
+        assert!(out.contains("pub fn from_xml"), "{out}");
+        assert!(out.contains("pub fn to_xml"), "{out}");
+        // … and no mappers.
+        assert!(!out.contains("pub fn read"), "{out}");
+        assert!(!out.contains("pub fn write"), "{out}");
+    }
+
+    #[test]
+    fn test_generate_mapper_module_reexports_structs_and_omits_them() {
+        let (ir, _, source) = compiled();
+        let out = super::generate_mapper_module(&ir, &source, "super::hub", "super::shared_0");
+        // Structs come from the shared module, re-exported for callers.
+        assert!(out.contains("pub use super::shared_0::*;"), "{out}");
+        assert!(!out.contains("pub struct Invoice {"), "{out}");
+        assert!(!out.contains("pub fn from_xml"), "{out}");
+        // Mappers are present.
+        assert!(
+            out.contains("pub fn read(mut source: Invoice) -> MappingResult<MainKey>"),
+            "{out}"
+        );
+        assert!(
+            out.contains("pub fn write(mut main: MainKey) -> MappingResult<Invoice>"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn test_split_modules_cover_the_monolithic_spoke() {
+        // The split pair must carry the same structs and mappers the monolith
+        // does, so build-time dedup can swap representations freely.
+        let (ir, _, source) = compiled();
+        let monolith = generate_spoke(&ir, &source, "super::hub");
+        let src = super::generate_source_module(&source);
+        let map = super::generate_mapper_module(&ir, &source, "super::hub", "super::shared_0");
+        for needle in ["pub struct Invoice {", "pub fn from_xml", "pub fn to_xml"] {
+            assert!(
+                monolith.contains(needle) && src.contains(needle),
+                "{needle}"
+            );
+        }
+        for needle in [
+            "pub fn read(mut source: Invoice)",
+            "pub fn write(mut main: MainKey)",
+        ] {
+            assert!(
+                monolith.contains(needle) && map.contains(needle),
+                "{needle}"
+            );
+        }
     }
 
     #[test]

@@ -231,20 +231,23 @@ fn read_scalar_block(
         }
     }
 
-    // Decode + assign, or a required-missing diagnostic.
+    // Decode + assign; only a required field gets the missing-value branch,
+    // so optional fields emit no dead diagnostic code.
     let _ = writeln!(out, "{pad}if let Some(raw) = value {{");
     decode_and_assign(out, node, key, indent + 1, target);
-    let _ = writeln!(out, "{pad}}} else if {} {{", node.required);
-    DiagSpec::new(
-        "Severity::Error",
-        "REQUIRED_MISSING",
-        node.id.as_str(),
-        "\"required value is missing\"",
-    )
-    .key(key)
-    .path(&node.source_path)
-    .index(target.index_var)
-    .emit(out, &format!("{pad}    "));
+    if node.required {
+        let _ = writeln!(out, "{pad}}} else {{");
+        DiagSpec::new(
+            "Severity::Error",
+            "REQUIRED_MISSING",
+            node.id.as_str(),
+            "\"required value is missing\"",
+        )
+        .key(key)
+        .path(&node.source_path)
+        .index(target.index_var)
+        .emit(out, &format!("{pad}    "));
+    }
     let _ = writeln!(out, "{pad}}}");
 }
 

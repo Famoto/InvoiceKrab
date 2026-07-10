@@ -35,7 +35,7 @@ pub mod source_model;
 pub mod types;
 pub mod validate;
 
-pub use codegen::{generate_hub, generate_spoke};
+pub use codegen::{generate_hub, generate_mapper_module, generate_source_module, generate_spoke};
 pub use compile::{CompileOutput, KNOWN_ADAPTERS, SpokeInput, compile, known_adapters};
 pub use error::{ConfigError, Diagnostic, Severity};
 pub use hub::{CanonicalField, CanonicalModel, CanonicalScope, canonical_scope_of, derive_hub};
