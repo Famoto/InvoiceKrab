@@ -388,10 +388,9 @@ constant = "2.1"
 Rules:
 
 - The literal must parse under the node's `type` (E061) — a typo'd URN, a
-  lower-case currency code, or a malformed date fails the build instead of
-  surfacing in emitted documents. These are shape checks only (digits and
-  separators in the right places), not semantic validation — no ISO 4217
-  table, no calendar arithmetic.
+ The literal must satisfy the node's documented type checks (E061); malformed
+  shapes fail the build instead of
+   surfacing in emitted documents. These are shape checks only (digits and
 - Not valid on a collection node (E060).
 - Cannot be combined with `fallbacks`, `multiple`, `adapter`, or `normalize`
   (E062): the constant is emitted verbatim on write, so read-side collapse and
