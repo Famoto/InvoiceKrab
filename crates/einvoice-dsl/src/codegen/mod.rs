@@ -11,6 +11,9 @@
 //!   its [`SourceModelMeta`](crate::source_model::SourceModelMeta) into: the
 //!   typed source structs (with serde/XML binding), `from_xml`/`to_xml`, and the
 //!   `read` (source → `MainKey`) / `write` (`MainKey` → source) mappers.
+//! - [`generate_source_module`] / [`generate_mapper_module`] split the same
+//!   output in two, so a build script can emit one structs module shared by
+//!   every spoke whose synthesized source model generates identical text.
 //!
 //! The runtime never interprets the TOML; it links against the generated Rust,
 //! which targets the small `einvoice-transformator` helper API (`normalize`,
@@ -68,15 +71,6 @@ use std::fmt::Write as _;
 /// the emitted module glob-imports `MainKey` and the item structs from it. The
 /// output is deterministic for identical inputs.
 pub fn generate_spoke(ir: &MappingIr, source: &SourceModelMeta, hub_module: &str) -> String {
-    let root = &source.root;
-    // The IR classification is the same for both mappers, so build it once and
-    // share it across the reader and writer generators.
-    let plan = MappingPlan::build(ir);
-    let ctx = GenCtx {
-        ir,
-        source,
-        plan: &plan,
-    };
     let mut out = String::new();
 
     // Plain `//` comments (not `//!`): the output is `include!`d into a module,
@@ -99,16 +93,187 @@ pub fn generate_spoke(ir: &MappingIr, source: &SourceModelMeta, hub_module: &str
     out.push_str("use einvoice_transformator::{adapter, normalize, validate};\n");
     let _ = writeln!(out, "use {hub_module}::*;");
     out.push('\n');
-
-    source::generate_source_structs(&mut out, source);
+    source_section(&mut out, source);
     out.push('\n');
-    source::generate_xml_io(&mut out, root);
-    out.push('\n');
-    read::generate_read(&mut out, &ctx, root);
-    out.push('\n');
-    write::generate_write(&mut out, &ctx, root);
+    mapper_section(&mut out, ir, source);
 
     out
+}
+
+/// Generates a self-contained module (as text) holding only a source model's
+/// typed structs and `from_xml`/`to_xml` — no mappers. Spokes whose mappings
+/// synthesize identical source models can share one such module (the output is
+/// deterministic, so equal models yield byte-identical text for deduplication).
+pub fn generate_source_module(source: &SourceModelMeta) -> String {
+    let mut out = String::new();
+    out.push_str("// Generated shared source model. Do not edit by hand.\n");
+    let _ = writeln!(out, "// Source model: {}", source.model_id);
+    out.push('\n');
+    out.push_str("use compact_str::CompactString;\n");
+    out.push_str("use serde::{Deserialize, Serialize};\n\n");
+    source_section(&mut out, source);
+    out
+}
+
+/// Generates a spoke module (as text) that re-exports its typed source structs
+/// and XML I/O from `structs_module` (a generated [`generate_source_module`]
+/// sibling, e.g. `super::shared_0`) and defines only the `read`/`write`
+/// mappers. Pairs with [`generate_source_module`] to deduplicate spokes that
+/// share a source model; together they cover exactly what [`generate_spoke`]
+/// emits as one module.
+pub fn generate_mapper_module(
+    ir: &MappingIr,
+    source: &SourceModelMeta,
+    hub_module: &str,
+    structs_module: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str("// Generated spoke mapper. Do not edit by hand.\n");
+    let _ = writeln!(out, "// Source model: {} (structs shared)", source.model_id);
+    let _ = writeln!(
+        out,
+        "// Mapping: {} v{}",
+        ir.meta.doc_format, ir.meta.mapping_version
+    );
+    out.push('\n');
+    let _ = writeln!(out, "pub use {structs_module}::*;");
+    out.push('\n');
+    mapper_imports(&mut out, hub_module);
+    out.push('\n');
+    mapper_section(&mut out, ir, source);
+    out
+}
+
+/// The deduplicated codegen plan for a set of spokes: which shared structs
+/// modules to emit, and per spoke either its module text or the earlier spoke
+/// it aliases. Pure — callers (a build script) own the file writes.
+pub struct SpokeDedupPlan {
+    /// Shared structs modules to emit, as `(module_name, module_text)`.
+    pub shared_modules: Vec<(String, String)>,
+    /// Per spoke: the shared structs module its mappers import from, if any.
+    pub structs_module_of: Vec<Option<String>>,
+    /// Per spoke: the earlier spoke slug whose module is byte-identical, if any.
+    pub alias_of: Vec<Option<String>>,
+    /// Per spoke: the module text to write — `None` when aliased.
+    pub code_of: Vec<Option<String>>,
+}
+
+/// Plans deduplicated codegen for `spokes` (`(slug, ir, source)` triples, in
+/// emission order):
+///
+/// 1. Spokes whose synthesized source models generate identical struct text
+///    share one `shared_<n>` structs module (collapsing the serde-derive cost
+///    of `inherits` families to one expansion) and get mappers-only modules.
+/// 2. A spoke whose module body is byte-identical to an earlier spoke's (e.g.
+///    an `inherits` child overriding nothing) gets no text of its own — just
+///    an alias to the earlier slug.
+///
+/// Codegen is byte-deterministic, so equality of text is equality of behavior.
+/// Generated text starts with an identity comment block (spoke/model names)
+/// that legitimately differs between behaviorally identical spokes; all
+/// comparisons use the body after the first blank line.
+pub fn plan_spoke_dedup(
+    spokes: &[(&str, &MappingIr, &SourceModelMeta)],
+    hub_module: &str,
+) -> SpokeDedupPlan {
+    fn body(text: &str) -> &str {
+        text.split_once("\n\n").map_or(text, |(_, b)| b)
+    }
+
+    let source_texts: Vec<String> = spokes
+        .iter()
+        .map(|(_, _, source)| generate_source_module(source))
+        .collect();
+    // Group spokes by identical struct text, in emission order (deterministic).
+    let mut groups: Vec<(&str, Vec<usize>)> = Vec::new();
+    for (i, text) in source_texts.iter().enumerate() {
+        match groups.iter_mut().find(|(t, _)| body(t) == body(text)) {
+            Some((_, members)) => members.push(i),
+            None => groups.push((text, vec![i])),
+        }
+    }
+
+    let mut shared_modules: Vec<(String, String)> = Vec::new();
+    let mut structs_module_of: Vec<Option<String>> = vec![None; spokes.len()];
+    for (text, members) in &groups {
+        if members.len() < 2 {
+            continue;
+        }
+        let name = format!("shared_{}", shared_modules.len());
+        // The shared module's header names every sharer instead of carrying
+        // the first member's identity.
+        let sharers: Vec<&str> = members.iter().map(|&i| spokes[i].0).collect();
+        let text = format!(
+            "// Generated shared source model. Do not edit by hand.\n// Shared by: {}\n\n{}",
+            sharers.join(", "),
+            body(text)
+        );
+        for &i in members {
+            structs_module_of[i] = Some(name.clone());
+        }
+        shared_modules.push((name, text));
+    }
+
+    let mut seen: Vec<(String, &str)> = Vec::new(); // (module text, canonical slug)
+    let mut alias_of: Vec<Option<String>> = vec![None; spokes.len()];
+    let mut code_of: Vec<Option<String>> = vec![None; spokes.len()];
+    for (i, &(slug, ir, source)) in spokes.iter().enumerate() {
+        let code = match &structs_module_of[i] {
+            Some(shared) => {
+                generate_mapper_module(ir, source, hub_module, &format!("super::{shared}"))
+            }
+            None => generate_spoke(ir, source, hub_module),
+        };
+        match seen.iter().find(|(text, _)| body(text) == body(&code)) {
+            Some((_, canonical)) => alias_of[i] = Some(canonical.to_string()),
+            None => {
+                seen.push((code.clone(), slug));
+                code_of[i] = Some(code);
+            }
+        }
+    }
+
+    SpokeDedupPlan {
+        shared_modules,
+        structs_module_of,
+        alias_of,
+        code_of,
+    }
+}
+
+/// Emits the typed source structs and the root's `from_xml`/`to_xml`.
+fn source_section(out: &mut String, source: &SourceModelMeta) {
+    source::generate_source_structs(out, source);
+    out.push('\n');
+    source::generate_xml_io(out, &source.root);
+}
+
+/// Emits the imports the `read`/`write` mappers need (the source structs and
+/// their serde imports are emitted separately).
+fn mapper_imports(out: &mut String, hub_module: &str) {
+    out.push_str("use std::str::FromStr as _;\n");
+    out.push_str("use compact_str::{CompactString, ToCompactString as _};\n");
+    out.push_str("use rust_decimal::Decimal;\n");
+    out.push_str(
+        "use einvoice_transformator::result::{MappingDiagnostic, MappingResult, Severity};\n",
+    );
+    out.push_str("use einvoice_transformator::{adapter, normalize, validate};\n");
+    let _ = writeln!(out, "use {hub_module}::*;");
+}
+
+/// Emits the `read` and `write` mapper functions.
+fn mapper_section(out: &mut String, ir: &MappingIr, source: &SourceModelMeta) {
+    // The IR classification is the same for both mappers, so build it once and
+    // share it across the reader and writer generators.
+    let plan = MappingPlan::build(ir);
+    let ctx = GenCtx {
+        ir,
+        source,
+        plan: &plan,
+    };
+    read::generate_read(out, &ctx, &source.root);
+    out.push('\n');
+    write::generate_write(out, &ctx, &source.root);
 }
 
 #[cfg(test)]
@@ -249,6 +414,79 @@ mod tests {
     }
 
     #[test]
+    fn test_reader_omits_required_missing_branch_for_optional_fields() {
+        let (ir, _, source) = compiled();
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // Optional fields must not carry a dead `else if false { … }`
+        // diagnostic block; required fields keep a plain `else` branch.
+        assert!(!out.contains("else if false"), "{out}");
+        assert!(!out.contains("else if true"), "{out}");
+        assert!(out.contains("REQUIRED_MISSING"), "{out}");
+    }
+
+    #[test]
+    fn test_generate_source_module_is_self_contained_structs_and_xml_io() {
+        let (_, _, source) = compiled();
+        let out = super::generate_source_module(&source);
+        // Self-contained: carries its own imports, structs, and XML I/O …
+        assert!(out.contains("use compact_str::CompactString;"), "{out}");
+        assert!(
+            out.contains("use serde::{Deserialize, Serialize};"),
+            "{out}"
+        );
+        assert!(out.contains("pub struct Invoice {"), "{out}");
+        assert!(out.contains("pub fn from_xml"), "{out}");
+        assert!(out.contains("pub fn to_xml"), "{out}");
+        // … and no mappers.
+        assert!(!out.contains("pub fn read"), "{out}");
+        assert!(!out.contains("pub fn write"), "{out}");
+    }
+
+    #[test]
+    fn test_generate_mapper_module_reexports_structs_and_omits_them() {
+        let (ir, _, source) = compiled();
+        let out = super::generate_mapper_module(&ir, &source, "super::hub", "super::shared_0");
+        // Structs come from the shared module, re-exported for callers.
+        assert!(out.contains("pub use super::shared_0::*;"), "{out}");
+        assert!(!out.contains("pub struct Invoice {"), "{out}");
+        assert!(!out.contains("pub fn from_xml"), "{out}");
+        // Mappers are present.
+        assert!(
+            out.contains("pub fn read(mut source: Invoice) -> MappingResult<MainKey>"),
+            "{out}"
+        );
+        assert!(
+            out.contains("pub fn write(mut main: MainKey) -> MappingResult<Invoice>"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn test_split_modules_cover_the_monolithic_spoke() {
+        // The split pair must carry the same structs and mappers the monolith
+        // does, so build-time dedup can swap representations freely.
+        let (ir, _, source) = compiled();
+        let monolith = generate_spoke(&ir, &source, "super::hub");
+        let src = super::generate_source_module(&source);
+        let map = super::generate_mapper_module(&ir, &source, "super::hub", "super::shared_0");
+        for needle in ["pub struct Invoice {", "pub fn from_xml", "pub fn to_xml"] {
+            assert!(
+                monolith.contains(needle) && src.contains(needle),
+                "{needle}"
+            );
+        }
+        for needle in [
+            "pub fn read(mut source: Invoice)",
+            "pub fn write(mut main: MainKey)",
+        ] {
+            assert!(
+                monolith.contains(needle) && map.contains(needle),
+                "{needle}"
+            );
+        }
+    }
+
+    #[test]
     fn test_writer_renders_typed_values() {
         let (ir, _, source) = compiled();
         let out = generate_spoke(&ir, &source, "super::hub");
@@ -311,6 +549,95 @@ mod tests {
         let (hub, hd) = derive_hub(std::slice::from_ref(&ir));
         assert!(hd.is_empty(), "{hd:?}");
         (ir, hub, source)
+    }
+
+    /// Compiles a mapping body under a distinct doc_format into (ir, source).
+    fn compile_named(doc_format: &str, body: &str) -> (MappingIr, SourceModelMeta) {
+        let src = format!(
+            "[meta]\ndoc_format = \"{doc_format}\"\nformat_version = \"1\"\nmapping_version = \"1\"\ncanonical_model = \"c:1\"\nroot = \"Invoice\"\n{body}"
+        );
+        let (ir, source, diags) = build_ir(&[parse_mapping(&src).expect("parses")]);
+        assert!(diags.is_empty(), "{diags:?}");
+        (ir, source)
+    }
+
+    const PLAIN_ID: &str = r#"
+        [Invoice.ID]
+        type = "identifier"
+        canonical_key = "InvoiceNumber"
+    "#;
+
+    #[test]
+    fn test_plan_dedup_shares_structs_and_aliases_identical_spokes() {
+        let (ir_a, src_a) = compile_named("alpha", PLAIN_ID);
+        let (ir_b, src_b) = compile_named("beta", PLAIN_ID);
+        let spokes = [("alpha", &ir_a, &src_a), ("beta", &ir_b, &src_b)];
+        let plan = super::plan_spoke_dedup(&spokes, "super::hub");
+
+        // One shared structs module, its header naming every sharer.
+        assert_eq!(plan.shared_modules.len(), 1);
+        let (name, text) = &plan.shared_modules[0];
+        assert_eq!(name, "shared_0");
+        assert!(text.contains("Shared by: alpha, beta"), "{text}");
+        assert!(text.contains("pub struct Invoice {"), "{text}");
+        assert_eq!(
+            plan.structs_module_of,
+            [Some("shared_0".to_string()), Some("shared_0".to_string())]
+        );
+
+        // The second spoke's module body is byte-identical: aliased, no file.
+        assert_eq!(plan.alias_of, [None, Some("alpha".to_string())]);
+        let first = plan.code_of[0].as_deref().expect("first spoke has code");
+        assert!(first.contains("pub use super::shared_0::*;"), "{first}");
+        assert!(!first.contains("pub struct Invoice {"), "{first}");
+        assert!(plan.code_of[1].is_none());
+    }
+
+    #[test]
+    fn test_plan_dedup_shares_structs_but_not_mappers_on_mapping_delta() {
+        // Same element tree, but one spoke marks the field required: identical
+        // structs (shared) yet different mappers (no alias) — the
+        // XRechnung-over-UBL case.
+        let strict = r#"
+            [Invoice.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+            required = true
+        "#;
+        let (ir_a, src_a) = compile_named("alpha", PLAIN_ID);
+        let (ir_b, src_b) = compile_named("beta", strict);
+        let spokes = [("alpha", &ir_a, &src_a), ("beta", &ir_b, &src_b)];
+        let plan = super::plan_spoke_dedup(&spokes, "super::hub");
+
+        assert_eq!(plan.shared_modules.len(), 1);
+        assert_eq!(plan.alias_of, [None, None]);
+        let a = plan.code_of[0].as_deref().expect("alpha has code");
+        let b = plan.code_of[1].as_deref().expect("beta has code");
+        assert_ne!(a, b);
+        assert!(b.contains("REQUIRED_MISSING"), "{b}");
+    }
+
+    #[test]
+    fn test_plan_dedup_keeps_distinct_source_models_standalone() {
+        let other = r#"
+            [Invoice.UUID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+        "#;
+        let (ir_a, src_a) = compile_named("alpha", PLAIN_ID);
+        let (ir_b, src_b) = compile_named("beta", other);
+        let spokes = [("alpha", &ir_a, &src_a), ("beta", &ir_b, &src_b)];
+        let plan = super::plan_spoke_dedup(&spokes, "super::hub");
+
+        // Nothing shared, nothing aliased: each spoke keeps a self-contained
+        // module with its structs inline.
+        assert!(plan.shared_modules.is_empty());
+        assert_eq!(plan.structs_module_of, [None, None]);
+        assert_eq!(plan.alias_of, [None, None]);
+        for code in &plan.code_of {
+            let code = code.as_deref().expect("standalone spoke has code");
+            assert!(code.contains("pub struct Invoice {"), "{code}");
+        }
     }
 
     #[test]

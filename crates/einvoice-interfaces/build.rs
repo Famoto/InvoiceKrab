@@ -18,10 +18,13 @@
 //!
 //! - `hub.rs` — the typed `MainKey` hub, derived from the union of every spoke's
 //!   canonical keys.
-//! - `<slug>.rs` — one per spoke: its typed source structs + `from_xml`/`to_xml`
-//!   + `read`/`write` mappers.
-//! - `spokes.rs` — the generated glue: a `mod <slug>` per spoke, the public
-//!   `Spoke` enum, and the `read`/`write` dispatch over it.
+//! - `<slug>.rs` — one per spoke: its typed source structs, `from_xml`/`to_xml`,
+//!   and the `read`/`write` mappers. Spokes generating identical struct text
+//!   share one `shared_<n>.rs` structs module instead; a spoke whose whole
+//!   module is byte-identical to an earlier one emits no file (aliased module).
+//! - `spokes.rs` — the generated glue: a `mod <slug>` per spoke (include or
+//!   alias), the shared structs modules, the public `Spoke` enum, and the
+//!   `read`/`write` dispatch over it.
 //!
 //! `compile` synthesizes each spoke's typed source model from its nodes (the ids
 //! mirror the XML element tree); `lib.rs` `include!`s the generated code. There is
@@ -34,8 +37,8 @@ use std::path::{Path, PathBuf};
 use einvoice_dsl::compile::{CompileOutput, SpokeInput};
 use einvoice_dsl::ir::MappingIr;
 use einvoice_dsl::{
-    Severity, SourceModelMeta, compile, covered_canonical_fields, generate_hub, generate_spoke,
-    known_adapters, load_dir, required_canonical_fields,
+    Severity, SourceModelMeta, SpokeDedupPlan, compile, covered_canonical_fields, generate_hub,
+    known_adapters, load_dir, plan_spoke_dedup, required_canonical_fields,
 };
 
 /// One discovered spoke: its meta-derived names plus its compiled artifacts.
@@ -89,15 +92,28 @@ fn main() {
     // Emit the shared hub once (already derived + validated by `compile`).
     std::fs::write(out_dir.join("hub.rs"), generate_hub(&out.hub)).expect("write hub.rs");
 
-    // Emit one module per spoke, named from its meta-derived slug.
-    for spoke in &spokes {
-        let code = generate_spoke(&spoke.ir, &spoke.source, "super::hub");
+    // Plan the deduplicated spoke modules (shared structs modules for spokes
+    // with identical synthesized source models, aliases for byte-identical
+    // spokes — see `plan_spoke_dedup`), then write what the plan emitted.
+    let triples: Vec<(&str, &MappingIr, &SourceModelMeta)> = spokes
+        .iter()
+        .map(|s| (s.slug.as_str(), &s.ir, &s.source))
+        .collect();
+    let plan = plan_spoke_dedup(&triples, "super::hub");
+
+    for (name, text) in &plan.shared_modules {
+        let file = format!("{name}.rs");
+        std::fs::write(out_dir.join(&file), text).unwrap_or_else(|e| panic!("write {file}: {e}"));
+    }
+    for (spoke, code) in spokes.iter().zip(&plan.code_of) {
+        let Some(code) = code else { continue }; // aliased: no file of its own
         let file = format!("{}.rs", spoke.slug);
         std::fs::write(out_dir.join(&file), code).unwrap_or_else(|e| panic!("write {file}: {e}"));
     }
 
     // Emit the dispatch glue (module decls + `Spoke` enum + read/write).
-    std::fs::write(out_dir.join("spokes.rs"), generate_dispatch(&spokes)).expect("write spokes.rs");
+    std::fs::write(out_dir.join("spokes.rs"), generate_dispatch(&spokes, &plan))
+        .expect("write spokes.rs");
 }
 
 /// Locates the workspace `mappings/` directory (two levels up from the crate).
@@ -140,9 +156,11 @@ fn collect_spokes(out: &CompileOutput) -> Vec<Spoke> {
         .collect()
 }
 
-/// Generates `spokes.rs`: a `mod <slug>` per spoke (each `include!`ing its
-/// emitted file), the public `Spoke` enum, and the `read`/`write` dispatch.
-fn generate_dispatch(spokes: &[Spoke]) -> String {
+/// Generates `spokes.rs`: the shared structs modules, a `mod <slug>` per spoke
+/// (each `include!`ing its emitted file, or re-exporting a byte-identical
+/// sibling per the dedup `plan`), the public `Spoke` enum, and the
+/// `read`/`write` dispatch.
+fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
     let mut out = String::new();
     out.push_str("// Generated spoke registry + dispatch. Do not edit by hand.\n");
     out.push_str("// One entry per `mappings/*.toml`; names derive from `[meta].doc_format`.\n\n");
@@ -150,14 +168,32 @@ fn generate_dispatch(spokes: &[Spoke]) -> String {
     out.push_str("use einvoice_transformator::result::MappingResult;\n");
     out.push_str("use hub::MainKey;\n\n");
 
-    // Per-spoke generated module.
-    for spoke in spokes {
-        let _ = writeln!(out, "pub mod {} {{", spoke.slug);
+    // Structs modules shared by spokes with identical synthesized source models.
+    for (name, _) in &plan.shared_modules {
+        let _ = writeln!(out, "mod {name} {{");
         let _ = writeln!(
             out,
-            "    include!(concat!(env!(\"OUT_DIR\"), \"/{}.rs\"));",
-            spoke.slug
+            "    include!(concat!(env!(\"OUT_DIR\"), \"/{name}.rs\"));"
         );
+        out.push_str("}\n\n");
+    }
+
+    // Per-spoke generated module. A spoke whose generated code is byte-identical
+    // to an earlier spoke's re-exports that module instead of duplicating it.
+    for (spoke, alias) in spokes.iter().zip(&plan.alias_of) {
+        let _ = writeln!(out, "pub mod {} {{", spoke.slug);
+        match alias {
+            Some(canonical) => {
+                let _ = writeln!(out, "    pub use super::{canonical}::*;");
+            }
+            None => {
+                let _ = writeln!(
+                    out,
+                    "    include!(concat!(env!(\"OUT_DIR\"), \"/{}.rs\"));",
+                    spoke.slug
+                );
+            }
+        }
         out.push_str("}\n\n");
     }
 
