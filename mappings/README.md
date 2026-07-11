@@ -200,8 +200,8 @@ canonical_key = "PayableAmountCurrency"
 |------|---------|
 | `string` | Free text; may be empty after normalization |
 | `identifier` | An id; empty/whitespace after normalization counts as missing |
-| `date` | A calendar date (`YYYY-MM-DD`) |
-| `datetime` | A date-time (`YYYY-MM-DDThh:mm:ss…`) |
+| `date` | A calendar date (`YYYY-MM-DD`). Shape check only: month 01–12, day 01–31 — no calendar arithmetic, so e.g. February 30 passes |
+| `datetime` | A date-time (`YYYY-MM-DDThh:mm:ss` plus optional fraction/zone). Shape check only, like `date` |
 | `decimal` | A scale-preserving decimal (zero is valid) |
 | `currency` | An ISO 4217 currency code |
 | `unit_code` | A unit-of-measure code |
@@ -389,7 +389,9 @@ Rules:
 
 - The literal must parse under the node's `type` (E061) — a typo'd URN, a
   lower-case currency code, or a malformed date fails the build instead of
-  surfacing in emitted documents.
+  surfacing in emitted documents. These are shape checks only (digits and
+  separators in the right places), not semantic validation — no ISO 4217
+  table, no calendar arithmetic.
 - Not valid on a collection node (E060).
 - Cannot be combined with `fallbacks`, `multiple`, `adapter`, or `normalize`
   (E062): the constant is emitted verbatim on write, so read-side collapse and

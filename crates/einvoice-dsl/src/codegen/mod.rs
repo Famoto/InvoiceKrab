@@ -144,6 +144,103 @@ pub fn generate_mapper_module(
     out
 }
 
+/// The deduplicated codegen plan for a set of spokes: which shared structs
+/// modules to emit, and per spoke either its module text or the earlier spoke
+/// it aliases. Pure — callers (a build script) own the file writes.
+pub struct SpokeDedupPlan {
+    /// Shared structs modules to emit, as `(module_name, module_text)`.
+    pub shared_modules: Vec<(String, String)>,
+    /// Per spoke: the shared structs module its mappers import from, if any.
+    pub structs_module_of: Vec<Option<String>>,
+    /// Per spoke: the earlier spoke slug whose module is byte-identical, if any.
+    pub alias_of: Vec<Option<String>>,
+    /// Per spoke: the module text to write — `None` when aliased.
+    pub code_of: Vec<Option<String>>,
+}
+
+/// Plans deduplicated codegen for `spokes` (`(slug, ir, source)` triples, in
+/// emission order):
+///
+/// 1. Spokes whose synthesized source models generate identical struct text
+///    share one `shared_<n>` structs module (collapsing the serde-derive cost
+///    of `inherits` families to one expansion) and get mappers-only modules.
+/// 2. A spoke whose module body is byte-identical to an earlier spoke's (e.g.
+///    an `inherits` child overriding nothing) gets no text of its own — just
+///    an alias to the earlier slug.
+///
+/// Codegen is byte-deterministic, so equality of text is equality of behavior.
+/// Generated text starts with an identity comment block (spoke/model names)
+/// that legitimately differs between behaviorally identical spokes; all
+/// comparisons use the body after the first blank line.
+pub fn plan_spoke_dedup(
+    spokes: &[(&str, &MappingIr, &SourceModelMeta)],
+    hub_module: &str,
+) -> SpokeDedupPlan {
+    fn body(text: &str) -> &str {
+        text.split_once("\n\n").map_or(text, |(_, b)| b)
+    }
+
+    let source_texts: Vec<String> = spokes
+        .iter()
+        .map(|(_, _, source)| generate_source_module(source))
+        .collect();
+    // Group spokes by identical struct text, in emission order (deterministic).
+    let mut groups: Vec<(&str, Vec<usize>)> = Vec::new();
+    for (i, text) in source_texts.iter().enumerate() {
+        match groups.iter_mut().find(|(t, _)| body(t) == body(text)) {
+            Some((_, members)) => members.push(i),
+            None => groups.push((text, vec![i])),
+        }
+    }
+
+    let mut shared_modules: Vec<(String, String)> = Vec::new();
+    let mut structs_module_of: Vec<Option<String>> = vec![None; spokes.len()];
+    for (text, members) in &groups {
+        if members.len() < 2 {
+            continue;
+        }
+        let name = format!("shared_{}", shared_modules.len());
+        // The shared module's header names every sharer instead of carrying
+        // the first member's identity.
+        let sharers: Vec<&str> = members.iter().map(|&i| spokes[i].0).collect();
+        let text = format!(
+            "// Generated shared source model. Do not edit by hand.\n// Shared by: {}\n\n{}",
+            sharers.join(", "),
+            body(text)
+        );
+        for &i in members {
+            structs_module_of[i] = Some(name.clone());
+        }
+        shared_modules.push((name, text));
+    }
+
+    let mut seen: Vec<(String, &str)> = Vec::new(); // (module text, canonical slug)
+    let mut alias_of: Vec<Option<String>> = vec![None; spokes.len()];
+    let mut code_of: Vec<Option<String>> = vec![None; spokes.len()];
+    for (i, &(slug, ir, source)) in spokes.iter().enumerate() {
+        let code = match &structs_module_of[i] {
+            Some(shared) => {
+                generate_mapper_module(ir, source, hub_module, &format!("super::{shared}"))
+            }
+            None => generate_spoke(ir, source, hub_module),
+        };
+        match seen.iter().find(|(text, _)| body(text) == body(&code)) {
+            Some((_, canonical)) => alias_of[i] = Some(canonical.to_string()),
+            None => {
+                seen.push((code.clone(), slug));
+                code_of[i] = Some(code);
+            }
+        }
+    }
+
+    SpokeDedupPlan {
+        shared_modules,
+        structs_module_of,
+        alias_of,
+        code_of,
+    }
+}
+
 /// Emits the typed source structs and the root's `from_xml`/`to_xml`.
 fn source_section(out: &mut String, source: &SourceModelMeta) {
     source::generate_source_structs(out, source);
@@ -452,6 +549,95 @@ mod tests {
         let (hub, hd) = derive_hub(std::slice::from_ref(&ir));
         assert!(hd.is_empty(), "{hd:?}");
         (ir, hub, source)
+    }
+
+    /// Compiles a mapping body under a distinct doc_format into (ir, source).
+    fn compile_named(doc_format: &str, body: &str) -> (MappingIr, SourceModelMeta) {
+        let src = format!(
+            "[meta]\ndoc_format = \"{doc_format}\"\nformat_version = \"1\"\nmapping_version = \"1\"\ncanonical_model = \"c:1\"\nroot = \"Invoice\"\n{body}"
+        );
+        let (ir, source, diags) = build_ir(&[parse_mapping(&src).expect("parses")]);
+        assert!(diags.is_empty(), "{diags:?}");
+        (ir, source)
+    }
+
+    const PLAIN_ID: &str = r#"
+        [Invoice.ID]
+        type = "identifier"
+        canonical_key = "InvoiceNumber"
+    "#;
+
+    #[test]
+    fn test_plan_dedup_shares_structs_and_aliases_identical_spokes() {
+        let (ir_a, src_a) = compile_named("alpha", PLAIN_ID);
+        let (ir_b, src_b) = compile_named("beta", PLAIN_ID);
+        let spokes = [("alpha", &ir_a, &src_a), ("beta", &ir_b, &src_b)];
+        let plan = super::plan_spoke_dedup(&spokes, "super::hub");
+
+        // One shared structs module, its header naming every sharer.
+        assert_eq!(plan.shared_modules.len(), 1);
+        let (name, text) = &plan.shared_modules[0];
+        assert_eq!(name, "shared_0");
+        assert!(text.contains("Shared by: alpha, beta"), "{text}");
+        assert!(text.contains("pub struct Invoice {"), "{text}");
+        assert_eq!(
+            plan.structs_module_of,
+            [Some("shared_0".to_string()), Some("shared_0".to_string())]
+        );
+
+        // The second spoke's module body is byte-identical: aliased, no file.
+        assert_eq!(plan.alias_of, [None, Some("alpha".to_string())]);
+        let first = plan.code_of[0].as_deref().expect("first spoke has code");
+        assert!(first.contains("pub use super::shared_0::*;"), "{first}");
+        assert!(!first.contains("pub struct Invoice {"), "{first}");
+        assert!(plan.code_of[1].is_none());
+    }
+
+    #[test]
+    fn test_plan_dedup_shares_structs_but_not_mappers_on_mapping_delta() {
+        // Same element tree, but one spoke marks the field required: identical
+        // structs (shared) yet different mappers (no alias) — the
+        // XRechnung-over-UBL case.
+        let strict = r#"
+            [Invoice.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+            required = true
+        "#;
+        let (ir_a, src_a) = compile_named("alpha", PLAIN_ID);
+        let (ir_b, src_b) = compile_named("beta", strict);
+        let spokes = [("alpha", &ir_a, &src_a), ("beta", &ir_b, &src_b)];
+        let plan = super::plan_spoke_dedup(&spokes, "super::hub");
+
+        assert_eq!(plan.shared_modules.len(), 1);
+        assert_eq!(plan.alias_of, [None, None]);
+        let a = plan.code_of[0].as_deref().expect("alpha has code");
+        let b = plan.code_of[1].as_deref().expect("beta has code");
+        assert_ne!(a, b);
+        assert!(b.contains("REQUIRED_MISSING"), "{b}");
+    }
+
+    #[test]
+    fn test_plan_dedup_keeps_distinct_source_models_standalone() {
+        let other = r#"
+            [Invoice.UUID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+        "#;
+        let (ir_a, src_a) = compile_named("alpha", PLAIN_ID);
+        let (ir_b, src_b) = compile_named("beta", other);
+        let spokes = [("alpha", &ir_a, &src_a), ("beta", &ir_b, &src_b)];
+        let plan = super::plan_spoke_dedup(&spokes, "super::hub");
+
+        // Nothing shared, nothing aliased: each spoke keeps a self-contained
+        // module with its structs inline.
+        assert!(plan.shared_modules.is_empty());
+        assert_eq!(plan.structs_module_of, [None, None]);
+        assert_eq!(plan.alias_of, [None, None]);
+        for code in &plan.code_of {
+            let code = code.as_deref().expect("standalone spoke has code");
+            assert!(code.contains("pub struct Invoice {"), "{code}");
+        }
     }
 
     #[test]
