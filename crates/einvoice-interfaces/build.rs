@@ -37,8 +37,8 @@ use std::path::{Path, PathBuf};
 use einvoice_dsl::compile::{CompileOutput, SpokeInput};
 use einvoice_dsl::ir::MappingIr;
 use einvoice_dsl::{
-    Severity, SourceModelMeta, SpokeDedupPlan, compile, covered_canonical_fields, generate_hub,
-    known_adapters, load_dir, plan_spoke_dedup, required_canonical_fields,
+    Severity, SourceModelMeta, SpokeDedupPlan, SpokeModule, compile, covered_canonical_fields,
+    generate_hub, known_adapters, load_dir, plan_spoke_dedup, required_canonical_fields,
 };
 
 /// One discovered spoke: its meta-derived names plus its compiled artifacts.
@@ -105,8 +105,10 @@ fn main() {
         let file = format!("{name}.rs");
         std::fs::write(out_dir.join(&file), text).unwrap_or_else(|e| panic!("write {file}: {e}"));
     }
-    for (spoke, code) in spokes.iter().zip(&plan.code_of) {
-        let Some(code) = code else { continue }; // aliased: no file of its own
+    for (spoke, module) in spokes.iter().zip(&plan.modules) {
+        let SpokeModule::Emit(code) = module else {
+            continue; // aliased: no file of its own
+        };
         let file = format!("{}.rs", spoke.slug);
         std::fs::write(out_dir.join(&file), code).unwrap_or_else(|e| panic!("write {file}: {e}"));
     }
@@ -180,13 +182,13 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
 
     // Per-spoke generated module. A spoke whose generated code is byte-identical
     // to an earlier spoke's re-exports that module instead of duplicating it.
-    for (spoke, alias) in spokes.iter().zip(&plan.alias_of) {
+    for (spoke, module) in spokes.iter().zip(&plan.modules) {
         let _ = writeln!(out, "pub mod {} {{", spoke.slug);
-        match alias {
-            Some(canonical) => {
+        match module {
+            SpokeModule::Alias(canonical) => {
                 let _ = writeln!(out, "    pub use super::{canonical}::*;");
             }
-            None => {
+            SpokeModule::Emit(_) => {
                 let _ = writeln!(
                     out,
                     "    include!(concat!(env!(\"OUT_DIR\"), \"/{}.rs\"));",

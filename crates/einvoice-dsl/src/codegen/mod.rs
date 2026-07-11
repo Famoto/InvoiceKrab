@@ -83,15 +83,8 @@ pub fn generate_spoke(ir: &MappingIr, source: &SourceModelMeta, hub_module: &str
         ir.meta.doc_format, ir.meta.mapping_version
     );
     out.push('\n');
-    out.push_str("use std::str::FromStr as _;\n");
-    out.push_str("use compact_str::{CompactString, ToCompactString as _};\n");
-    out.push_str("use rust_decimal::Decimal;\n");
     out.push_str("use serde::{Deserialize, Serialize};\n");
-    out.push_str(
-        "use einvoice_transformator::result::{MappingDiagnostic, MappingResult, Severity};\n",
-    );
-    out.push_str("use einvoice_transformator::{adapter, normalize, validate};\n");
-    let _ = writeln!(out, "use {hub_module}::*;");
+    mapper_imports(&mut out, hub_module);
     out.push('\n');
     source_section(&mut out, source);
     out.push('\n');
@@ -150,12 +143,17 @@ pub fn generate_mapper_module(
 pub struct SpokeDedupPlan {
     /// Shared structs modules to emit, as `(module_name, module_text)`.
     pub shared_modules: Vec<(String, String)>,
-    /// Per spoke: the shared structs module its mappers import from, if any.
-    pub structs_module_of: Vec<Option<String>>,
-    /// Per spoke: the earlier spoke slug whose module is byte-identical, if any.
-    pub alias_of: Vec<Option<String>>,
-    /// Per spoke: the module text to write — `None` when aliased.
-    pub code_of: Vec<Option<String>>,
+    /// Per spoke, in input order: its module text or the spoke it aliases.
+    pub modules: Vec<SpokeModule>,
+}
+
+/// One spoke's planned output.
+#[derive(Debug)]
+pub enum SpokeModule {
+    /// The spoke's module text — write it to `<slug>.rs`.
+    Emit(String),
+    /// Byte-identical to this earlier spoke's module: no file, alias it.
+    Alias(String),
 }
 
 /// Plans deduplicated codegen for `spokes` (`(slug, ir, source)` triples, in
@@ -215,8 +213,7 @@ pub fn plan_spoke_dedup(
     }
 
     let mut seen: Vec<(String, &str)> = Vec::new(); // (module text, canonical slug)
-    let mut alias_of: Vec<Option<String>> = vec![None; spokes.len()];
-    let mut code_of: Vec<Option<String>> = vec![None; spokes.len()];
+    let mut modules: Vec<SpokeModule> = Vec::with_capacity(spokes.len());
     for (i, &(slug, ir, source)) in spokes.iter().enumerate() {
         let code = match &structs_module_of[i] {
             Some(shared) => {
@@ -225,19 +222,17 @@ pub fn plan_spoke_dedup(
             None => generate_spoke(ir, source, hub_module),
         };
         match seen.iter().find(|(text, _)| body(text) == body(&code)) {
-            Some((_, canonical)) => alias_of[i] = Some(canonical.to_string()),
+            Some((_, canonical)) => modules.push(SpokeModule::Alias(canonical.to_string())),
             None => {
                 seen.push((code.clone(), slug));
-                code_of[i] = Some(code);
+                modules.push(SpokeModule::Emit(code));
             }
         }
     }
 
     SpokeDedupPlan {
         shared_modules,
-        structs_module_of,
-        alias_of,
-        code_of,
+        modules,
     }
 }
 
@@ -580,17 +575,16 @@ mod tests {
         assert_eq!(name, "shared_0");
         assert!(text.contains("Shared by: alpha, beta"), "{text}");
         assert!(text.contains("pub struct Invoice {"), "{text}");
-        assert_eq!(
-            plan.structs_module_of,
-            [Some("shared_0".to_string()), Some("shared_0".to_string())]
-        );
-
-        // The second spoke's module body is byte-identical: aliased, no file.
-        assert_eq!(plan.alias_of, [None, Some("alpha".to_string())]);
-        let first = plan.code_of[0].as_deref().expect("first spoke has code");
+        // The first spoke imports the shared structs; the second spoke's
+        // module body is byte-identical: aliased, no file.
+        let first = emitted(&plan.modules[0]);
         assert!(first.contains("pub use super::shared_0::*;"), "{first}");
         assert!(!first.contains("pub struct Invoice {"), "{first}");
-        assert!(plan.code_of[1].is_none());
+        assert!(
+            matches!(&plan.modules[1], super::SpokeModule::Alias(a) if a == "alpha"),
+            "{:?}",
+            plan.modules[1]
+        );
     }
 
     #[test]
@@ -610,9 +604,8 @@ mod tests {
         let plan = super::plan_spoke_dedup(&spokes, "super::hub");
 
         assert_eq!(plan.shared_modules.len(), 1);
-        assert_eq!(plan.alias_of, [None, None]);
-        let a = plan.code_of[0].as_deref().expect("alpha has code");
-        let b = plan.code_of[1].as_deref().expect("beta has code");
+        let a = emitted(&plan.modules[0]);
+        let b = emitted(&plan.modules[1]);
         assert_ne!(a, b);
         assert!(b.contains("REQUIRED_MISSING"), "{b}");
     }
@@ -632,11 +625,17 @@ mod tests {
         // Nothing shared, nothing aliased: each spoke keeps a self-contained
         // module with its structs inline.
         assert!(plan.shared_modules.is_empty());
-        assert_eq!(plan.structs_module_of, [None, None]);
-        assert_eq!(plan.alias_of, [None, None]);
-        for code in &plan.code_of {
-            let code = code.as_deref().expect("standalone spoke has code");
+        for module in &plan.modules {
+            let code = emitted(module);
             assert!(code.contains("pub struct Invoice {"), "{code}");
+        }
+    }
+
+    /// Unwraps an [`Emit`](super::SpokeModule::Emit) plan entry.
+    fn emitted(module: &super::SpokeModule) -> &str {
+        match module {
+            super::SpokeModule::Emit(code) => code,
+            super::SpokeModule::Alias(a) => panic!("expected emitted code, got alias of {a}"),
         }
     }
 

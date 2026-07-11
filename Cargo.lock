@@ -389,7 +389,6 @@ dependencies = [
  "insta",
  "rstest",
  "serde",
- "serde_json",
  "thiserror",
  "toml",
 ]

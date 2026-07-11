@@ -62,7 +62,7 @@ pub fn synthesize_source_model(
             continue;
         };
         let scope = id.nearest_collection_scope(|a| collections.contains_key(a));
-        let base = scope_struct(&scope, root, &collections);
+        let base = scope_struct(&scope, root);
         let segments = element_path(id, &scope, root);
         if segments.is_empty() {
             diags.push(synth_err(
@@ -93,7 +93,7 @@ pub fn synthesize_source_model(
 
 /// The struct a scope's nodes are placed into: the model root for root scope, or
 /// the collection's item struct for a collection scope.
-fn scope_struct(scope: &Scope, root: &str, _collections: &BTreeMap<NodeId, MappingType>) -> String {
+fn scope_struct(scope: &Scope, root: &str) -> String {
     match scope {
         Scope::Root => root.to_string(),
         Scope::Collection(coll) => item_struct_name(coll),

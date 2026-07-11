@@ -24,11 +24,6 @@ pub(crate) fn snake_case(s: &str) -> String {
     out
 }
 
-/// The `MainKey` field name for a canonical key.
-pub(crate) fn field_name(key: &str) -> String {
-    snake_case(key)
-}
-
 /// The generated item-struct name for a canonical collection key (e.g.
 /// `InvoiceLines` → `InvoiceLinesItem`).
 pub(super) fn item_struct_name(coll_key: &str) -> String {

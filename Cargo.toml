@@ -11,9 +11,16 @@ version = "0.1.0"
 edition = "2024"
 
 [profile.release]
-# fat LTO + 1 codegen unit = best runtime speed, slower compile. Drop to lto = "thin" if release builds get painful.
+# fat LTO + 1 codegen unit = best runtime speed (~10% over thin LTO on the
+# transform benches), slower compile. For local optimized iteration use
+# `--profile perf` (thin LTO: ~4x faster incremental rebuild, ~10% slower).
 lto = true
 codegen-units = 1
+
+[profile.perf]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

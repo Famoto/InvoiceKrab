@@ -8,14 +8,11 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
-
 /// Metadata for one typed source model.
 ///
 /// Synthesized from the mapping nodes via
-/// [`synthesize_source_model`](super::synthesize_source_model); the serde
-/// derives also let it round-trip as JSON for tooling.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// [`synthesize_source_model`](super::synthesize_source_model).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceModelMeta {
     /// Model id (e.g. `ubl-invoice:2.1`), from `[meta].source_model` or derived
     /// from `doc_format`/`format_version`.
@@ -27,14 +24,14 @@ pub struct SourceModelMeta {
 }
 
 /// A named struct's fields.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StructMeta {
     /// Fields by Rust identifier.
     pub fields: BTreeMap<String, FieldMeta>,
 }
 
 /// One field of a source struct.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldMeta {
     /// Wrapped in `Option<...>` (a `None` resolves to missing).
     pub optional: bool,
@@ -45,13 +42,11 @@ pub struct FieldMeta {
     /// The XML element/attribute name this field binds to (e.g. `ID`,
     /// `@currencyID`, `$text`). Drives the serde rename on the generated source
     /// struct; `None` means use the field name verbatim.
-    #[serde(default)]
     pub xml: Option<String>,
 }
 
 /// The element type of a field, after stripping `Option`/`Vec` wrappers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldType {
     /// A scalar leaf (its decode type is decided by the mapping node's `type`).
     Scalar,
@@ -193,18 +188,4 @@ pub(crate) fn ubl() -> SourceModelMeta {
         )
         .struct_def("InvoiceLine", &[("id", false, false, Scalar)])
         .build()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_metadata_json_roundtrips() {
-        // A build tool can load source metadata from a generated schema file.
-        let meta = ubl();
-        let json = serde_json::to_string(&meta).expect("serialize");
-        let back: SourceModelMeta = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(meta, back);
-    }
 }

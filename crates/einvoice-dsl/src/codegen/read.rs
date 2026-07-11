@@ -29,7 +29,7 @@ use super::access::{
     normalize_chain, take_expr,
 };
 use super::diag::DiagSpec;
-use super::naming::{field_name, item_struct_name};
+use super::naming::{item_struct_name, snake_case};
 use super::plan::{Frame, GenCtx};
 
 /// The target a read block assigns into: the struct variable (`main`/`item`),
@@ -268,7 +268,7 @@ fn read_clone_check_block(
     let pad = "    ".repeat(indent);
     let body = "    ".repeat(indent + 1);
     let key = node.clone_of.as_deref().expect("clone node");
-    let canonical = format!("{}.{}", target.struct_var, field_name(key));
+    let canonical = format!("{}.{}", target.struct_var, snake_case(key));
     let take = target.owned && !shared.contains(&node.source_path);
 
     let _ = writeln!(out, "{pad}// {}: copy of {key}, consistency check", node.id);
@@ -438,7 +438,7 @@ fn read_collection_block(
     let src_item_struct =
         collection_item_struct(ctx.source, frame.parent_struct, &coll.source_path);
     let hub_item = item_struct_name(coll_key);
-    let hub_field = field_name(coll_key);
+    let hub_field = snake_case(coll_key);
     let children = ctx.plan.children_of(&coll.id);
     let nested = ctx.plan.nested_collections_of(&coll.id);
     let clones = ctx.plan.clones_of(&coll.id);
@@ -587,7 +587,7 @@ fn decode_and_assign(
     target: &Target,
 ) {
     let pad = "    ".repeat(indent);
-    let field = field_name(key);
+    let field = snake_case(key);
     let lhs = format!("{}.{field}", target.struct_var);
 
     // Optional adapter: transform the raw string first (String -> String).

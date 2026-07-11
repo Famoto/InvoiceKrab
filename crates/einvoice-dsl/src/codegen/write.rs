@@ -25,7 +25,7 @@ use crate::types::MappingType;
 
 use super::access::{assign_target_expr, collection_item_struct, walk_segments};
 use super::diag::DiagSpec;
-use super::naming::field_name;
+use super::naming::snake_case;
 use super::plan::{Frame, GenCtx};
 
 /// The canonical keys written more than once within one scope: a `clone_of`
@@ -183,7 +183,7 @@ fn write_collection_block(
         let _ = writeln!(
             out,
             "{pad}let {hub_items} = std::mem::take(&mut {parent_hub}.{});",
-            field_name(coll_key)
+            snake_case(coll_key)
         );
         if crosses_boxed {
             let _ = writeln!(out, "{pad}if !{hub_items}.is_empty() {{");
@@ -197,7 +197,7 @@ fn write_collection_block(
             "{pad}for ({idx}, mut {hub_item}) in {hub_items}.into_iter().enumerate() {{"
         );
     } else {
-        let hub_len = format!("{parent_hub}.{}.len()", field_name(coll_key));
+        let hub_len = format!("{parent_hub}.{}.len()", snake_case(coll_key));
         if crosses_boxed {
             let _ = writeln!(out, "{pad}if {hub_len} > 0 {{");
             let _ = writeln!(out, "{pad}    {target}.reserve({hub_len});");
@@ -208,7 +208,7 @@ fn write_collection_block(
         let _ = writeln!(
             out,
             "{pad}for ({idx}, {hub_item}) in {parent_hub}.{}.iter().enumerate() {{",
-            field_name(coll_key)
+            snake_case(coll_key)
         );
     }
     let _ = writeln!(out, "{body}let mut {elem} = {src_item_struct}::default();");
@@ -321,7 +321,7 @@ fn write_scalar_block(
 ) {
     let key = hub_key(node);
     let path = &node.source_path;
-    let field = field_name(key);
+    let field = snake_case(key);
     let segs = walk_segments(source, start_struct, path).unwrap_or_default();
     // Only the leaf's own optionality picks the assignment form; interior
     // containers are boxed-optional and materialized by the target chain.

@@ -16,7 +16,7 @@ text.
 - `mod.rs` — module docs, the public entry points `generate_hub`
   (re-exported from `hub`) and `generate_spoke`, and the tests.
 - `naming.rs` — canonical-key → Rust identifier conversions (`snake_case`,
-  `field_name`, `item_struct_name`) and the canonical-type → Rust-type map.
+  `item_struct_name`) and the canonical-type → Rust-type map.
   These are intentionally distinct from the XML-name / `doc_format` conversions
   elsewhere in the crate (canonical keys are PascalCase, no acronym handling).
 - `hub.rs` — `generate_hub`: the `MainKey` struct + one item struct per

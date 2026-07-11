@@ -247,7 +247,7 @@ pub fn derive_hub<'a>(
                         });
                         continue;
                     }
-                    let rust_name = crate::codegen::naming::field_name(&key);
+                    let rust_name = crate::codegen::naming::snake_case(&key);
                     if let Some(existing_key) = field_names.get(&(scope.clone(), rust_name.clone()))
                         && *existing_key != key
                     {

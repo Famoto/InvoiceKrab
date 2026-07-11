@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 
 use crate::hub::{CanonicalField, CanonicalModel, CanonicalScope};
 
-use super::naming::{canonical_rust_type, field_name, item_struct_name};
+use super::naming::{canonical_rust_type, item_struct_name, snake_case};
 
 /// Generates the typed canonical hub module: the `MainKey` struct plus an item
 /// struct per canonical collection. Returns a self-contained module string.
@@ -61,14 +61,14 @@ fn hub_field_decl(out: &mut String, f: &CanonicalField) {
         let _ = writeln!(
             out,
             "    pub {}: Vec<{}>,",
-            field_name(&f.key),
+            snake_case(&f.key),
             item_struct_name(&f.key)
         );
     } else {
         let _ = writeln!(
             out,
             "    pub {}: Option<{}>,",
-            field_name(&f.key),
+            snake_case(&f.key),
             canonical_rust_type(f.ty)
         );
     }

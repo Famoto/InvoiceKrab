@@ -387,10 +387,8 @@ constant = "2.1"
 
 Rules:
 
-- The literal must parse under the node's `type` (E061) — a typo'd URN, a
- The literal must satisfy the node's documented type checks (E061); malformed
-  shapes fail the build instead of
-   surfacing in emitted documents. These are shape checks only (digits and
+- The literal must parse under the node's `type` (E061); shape checks only —
+  malformed values fail the build instead of surfacing in emitted documents.
 - Not valid on a collection node (E060).
 - Cannot be combined with `fallbacks`, `multiple`, `adapter`, or `normalize`
   (E062): the constant is emitted verbatim on write, so read-side collapse and

@@ -35,7 +35,6 @@
 //! hub conflicts (`E010`/`E011`) are caught earlier (parse / resolve / hub).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Not;
 
 use crate::error::{Diagnostic, Severity};
 use crate::ir::MappingIr;
@@ -344,11 +343,10 @@ fn constant_literal_error(ty: MappingType, value: &str) -> Option<String> {
                 .then(|| "expected a plain decimal number".to_string())
         }
         MappingType::Date => (!date_shaped(value)).then(|| "expected `YYYY-MM-DD`".to_string()),
-        MappingType::Datetime => (match (value.get(..10), value.as_bytes().get(10)) {
-            (Some(date), Some(b'T')) => date_shaped(date),
-            _ => false,
-        })
-        .not()
+        MappingType::Datetime => (!matches!(
+            (value.get(..10), value.as_bytes().get(10)),
+            (Some(date), Some(b'T')) if date_shaped(date)
+        ))
         .then(|| "expected `YYYY-MM-DDThh:mm:ss…`".to_string()),
         MappingType::Collection => unreachable!("E060 rejects collections before this check"),
     }
