@@ -51,7 +51,7 @@ tokio = { version = "1", features = [
 ] }
 # Per-frame body timeouts: bounds how long a slow client can pin a worker
 # and its memory reservation (tiny_http had no equivalent — see git history).
-tower-http = { version = "0.6", features = ["timeout"] }
+tower-http = { version = "0.7", features = ["timeout"] }
 # `http_body::Body` impl (the reservation-holding response body) and
 # `BodyExt::frame` for reading request bodies without an extra copy.
 http-body = "1"
