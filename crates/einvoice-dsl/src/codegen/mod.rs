@@ -575,6 +575,7 @@ mod tests {
             ty: FieldType::Struct("Party".into()),
             xml: Some("Party".into()),
             prefix: String::new(),
+            always_present: false,
             order: 0,
         };
         let attr = serde_attr(&field).expect("interior struct needs a serde attr");
@@ -1141,8 +1142,8 @@ mod tests {
     fn test_source_struct_emits_attributes_before_element_text() {
         let (ir, _, source) = compiled();
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
-        let attr = offset_in_struct(&out, "PayableAmount", "pub currency_id:");
-        let text = offset_in_struct(&out, "PayableAmount", "pub value:");
+        let attr = offset_in_struct(&out, "LegalMonetaryTotalPayableAmount", "pub currency_id:");
+        let text = offset_in_struct(&out, "LegalMonetaryTotalPayableAmount", "pub value:");
         assert!(attr < text, "{out}");
     }
 
@@ -1276,7 +1277,10 @@ mod tests {
 
         // Source model: the dated element is a valued container with the wire
         // attribute as an attribute field.
-        assert!(out.contains("pub struct DateTimeString {"), "{out}");
+        assert!(
+            out.contains("pub struct IssueDateTimeDateTimeString {"),
+            "{out}"
+        );
         assert!(out.contains("rename = \"@format\""), "{out}");
 
         // Reader: decode through the codec into the canonical ISO form, with a
@@ -1308,6 +1312,180 @@ mod tests {
         assert!(
             out.contains("let rendered = codec::encode_bool(value.clone(), \"1\", \"0\");"),
             "{out}"
+        );
+    }
+
+    #[test]
+    fn test_root_derivation_borrows_the_root_key_inside_the_collection() {
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.DocumentCurrencyCode]
+            type = "currency"
+            canonical_key = "DocumentCurrency"
+
+            [InvoiceLine]
+            type = "collection"
+            canonical_key = "InvoiceLines"
+
+            [InvoiceLine.LineExtensionAmount]
+            type = "decimal"
+            canonical_key = "LineNetAmount"
+
+            [InvoiceLine.LineExtensionAmount.currencyID]
+            xml = "@currencyID"
+            type = "currency"
+            clone_of = "$root.DocumentCurrency"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
+        // The root primary no longer moves the key out: it is read again per line.
+        assert!(!out.contains("main.document_currency.take()"), "{out}");
+        assert_eq!(
+            out.matches("if let Some(value) = &main.document_currency {")
+                .count(),
+            2,
+            "root primary + the per-line clone: {out}"
+        );
+        assert!(
+            out.contains("element0.line_extension_amount.get_or_insert_default().currency_id = Some(rendered);"),
+            "{out}"
+        );
+        // Reader: the per-line copy is compared against the root value.
+        assert!(
+            out.contains("if main.document_currency.as_ref() != Some(&found) {"),
+            "{out}"
+        );
+        assert!(out.contains("CLONE_MISMATCH"), "{out}");
+    }
+
+    #[test]
+    fn test_attribute_of_a_valued_element_follows_the_elements_value() {
+        let (ir, _, source) = compiled();
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
+        // PayableAmountCurrency is written only when PayableAmount has its value;
+        // the amount itself has no such guard.
+        assert!(
+            out.contains("if !rendered.is_empty() && Some(&source).and_then(|v0| v0.legal_monetary_total.as_ref()).and_then(|v1| v1.payable_amount.as_ref()).is_some_and(|owner| !owner.is_empty()) {"),
+            "{out}"
+        );
+        let amount = out
+            .find("// PayableAmount -> legal_monetary_total.payable_amount.value")
+            .unwrap();
+        let currency = out
+            .find("// PayableAmountCurrency -> legal_monetary_total.payable_amount.currency_id")
+            .unwrap();
+        assert!(
+            amount < currency,
+            "the value is written before its attribute: {out}"
+        );
+        // Not a valued element: plain non-empty guard.
+        assert!(out.contains("let rendered = value;\n        if !rendered.is_empty() {\n            source.id = Some(rendered);"), "{out}");
+    }
+
+    #[test]
+    fn test_parent_derivation_reads_the_enclosing_item() {
+        let (ir, _, source) = compile(
+            r#"
+            [InvoiceLine]
+            type = "collection"
+            canonical_key = "InvoiceLines"
+
+            [InvoiceLine.ID]
+            type = "identifier"
+            canonical_key = "LineId"
+
+            [InvoiceLine.AllowanceCharge]
+            type = "collection"
+            canonical_key = "LineAllowances"
+
+            [InvoiceLine.AllowanceCharge.Amount]
+            type = "decimal"
+            canonical_key = "LineAllowanceAmount"
+
+            [InvoiceLine.AllowanceCharge.LineRef]
+            type = "identifier"
+            clone_of = "$parent.LineId"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
+        assert!(!out.contains("hub_item0.line_id.take()"), "borrowed: {out}");
+        assert!(
+            out.contains("if let Some(value) = &hub_item0.line_id {"),
+            "{out}"
+        );
+        assert!(out.contains("element1.line_ref = Some(rendered);"), "{out}");
+        assert!(
+            out.contains("if item0.line_id.as_ref() != Some(&found) {"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn test_constant_with_an_owner_is_guarded_on_the_owners_content() {
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+
+            [Invoice.Party.PartyTaxScheme.CompanyID]
+            type = "identifier"
+            canonical_key = "SellerVatId"
+
+            [Invoice.Party.PartyTaxScheme.TaxScheme.ID]
+            type = "identifier"
+            constant = "VAT"
+
+            [Invoice.UBLVersionID]
+            type = "identifier"
+            constant = "2.1"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
+        // Owner = PartyTaxScheme (shared with CompanyID), not TaxScheme.
+        let guard = "if Some(&source).and_then(|v0| v0.party.as_ref()).and_then(|v1| v1.party_tax_scheme.as_ref()).is_some_and(|owner| !owner.is_empty()) {";
+        assert!(out.contains(guard), "{out}");
+        let guard_at = out.find(guard).unwrap();
+        let assign_at = out
+            .find("source.party.get_or_insert_default().party_tax_scheme.get_or_insert_default().tax_scheme.get_or_insert_default().id = Some(CompactString::from(\"VAT\"));")
+            .expect("constant assigned");
+        let company_at = out.find("source.party.get_or_insert_default().party_tax_scheme.get_or_insert_default().company_id = Some(rendered);").expect("content written");
+        assert!(
+            company_at < guard_at && guard_at < assign_at,
+            "constants come last: {out}"
+        );
+        // A root-level constant with no owner stays unconditional.
+        assert!(
+            out.contains("source.ubl_version_id = Some(CompactString::from(\"2.1\"));"),
+            "{out}"
+        );
+        assert!(!out.contains("ubl_version_id.is_some_and"), "{out}");
+    }
+
+    #[test]
+    fn test_required_structural_node_is_always_materialized() {
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber"
+
+            [Invoice.Transaction.Delivery]
+            required = true
+
+            [Invoice.Transaction.Delivery.ActualDate]
+            type = "date"
+            canonical_key = "ActualDeliveryDate"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
+        assert!(
+            out.contains("let _ = source.transaction.get_or_insert_default().delivery.get_or_insert_default();"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("let _ = source.transaction.get_or_insert_default();\n"),
+            "only the flagged element: {out}"
         );
     }
 

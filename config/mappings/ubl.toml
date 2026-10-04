@@ -42,13 +42,19 @@
 #     `AllowanceCharge` are single collections that carry the `ChargeIndicator`
 #     (true = charge BG-21/BG-28, false = allowance BG-20/27), so allowance vs
 #     charge is preserved as data rather than as two named groups.
-#   * Amounts/quantities map as scale-preserving decimals; their `@currencyID`/
-#     `@unitCode` attributes are not modelled except for the shared
-#     `PayableAmount`/`TaxTotalAmount` currency keys.
+#   * Amounts/quantities map as scale-preserving decimals. UBL requires
+#     `@currencyID` on every amount: the `PayableAmount`/`TaxTotalAmount`
+#     attributes carry their own canonical keys, every other amount's attribute
+#     is a clone of the document currency (`clone_of = "$root.DocumentCurrency"`
+#     inside collections, `"DocumentCurrency"` at the root). `@unitCode` is not
+#     modelled.
+#   * `cac:TaxScheme/cbc:ID` is mandatory wherever `PartyTaxScheme` or a
+#     `TaxCategory` appears; it is pinned to `VAT` by constants the writer emits
+#     only when the enclosing element has real content.
 [meta]
 doc_format = "ubl-invoice"
 format_version = "2.1"
-mapping_version = "2.2"
+mapping_version = "2.3"
 source_model = "ubl-invoice:2.1"
 canonical_model = "canonical-invoice:1.0"
 root = "Invoice"
@@ -253,6 +259,10 @@ type = "identifier"
 canonical_key = "SellerVatIdentifier"
 normalize = ["trim"]
 
+[Invoice.AccountingSupplierParty.Party.PartyTaxScheme.TaxScheme.ID]
+type = "identifier"
+constant = "VAT"
+
 [Invoice.AccountingSupplierParty.Party.PartyLegalEntity.RegistrationName]
 type = "string"
 canonical_key = "SellerName"
@@ -326,6 +336,10 @@ type = "identifier"
 canonical_key = "BuyerVatIdentifier"
 normalize = ["trim"]
 
+[Invoice.AccountingCustomerParty.Party.PartyTaxScheme.TaxScheme.ID]
+type = "identifier"
+constant = "VAT"
+
 [Invoice.AccountingCustomerParty.Party.PartyLegalEntity.RegistrationName]
 type = "string"
 canonical_key = "BuyerName"
@@ -396,6 +410,10 @@ normalize = ["trim", "uppercase"]
 [Invoice.TaxRepresentativeParty.PartyTaxScheme.CompanyID]
 type = "identifier"
 canonical_key = "SellerTaxRepresentativeVatIdentifier"
+
+[Invoice.TaxRepresentativeParty.PartyTaxScheme.TaxScheme.ID]
+type = "identifier"
+constant = "VAT"
 
 # ===========================================================================
 # DELIVERY INFORMATION (BG-13) + DELIVER TO ADDRESS (BG-15)
@@ -517,9 +535,19 @@ canonical_key = "AllowanceChargePercentage"
 type = "decimal"
 canonical_key = "AllowanceChargeAmount"
 
+[Invoice.AllowanceCharge.Amount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "$root.DocumentCurrency"
+
 [Invoice.AllowanceCharge.BaseAmount]
 type = "decimal"
 canonical_key = "AllowanceChargeBaseAmount"
+
+[Invoice.AllowanceCharge.BaseAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "$root.DocumentCurrency"
 
 [Invoice.AllowanceCharge.TaxCategory.ID]
 type = "string"
@@ -529,6 +557,10 @@ normalize = ["trim", "uppercase"]
 [Invoice.AllowanceCharge.TaxCategory.Percent]
 type = "decimal"
 canonical_key = "AllowanceChargeVatRate"
+
+[Invoice.AllowanceCharge.TaxCategory.TaxScheme.ID]
+type = "identifier"
+constant = "VAT"
 
 # ===========================================================================
 # TAX TOTAL (BT-110/111) + VAT BREAKDOWN (BG-23) — TaxTotal/TaxSubtotal (collection)
@@ -550,9 +582,19 @@ canonical_key = "VatBreakdown"
 type = "decimal"
 canonical_key = "VatCategoryTaxableAmount"
 
+[Invoice.TaxTotal.TaxSubtotal.TaxableAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "$root.DocumentCurrency"
+
 [Invoice.TaxTotal.TaxSubtotal.TaxAmount]
 type = "decimal"
 canonical_key = "VatCategoryTaxAmount"
+
+[Invoice.TaxTotal.TaxSubtotal.TaxAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "$root.DocumentCurrency"
 
 [Invoice.TaxTotal.TaxSubtotal.TaxCategory.ID]
 type = "string"
@@ -571,6 +613,11 @@ canonical_key = "VatExemptionReasonCode"
 type = "string"
 canonical_key = "VatExemptionReasonText"
 
+# The mandatory `TaxScheme/ID` of every VAT category, emitted with the category.
+[Invoice.TaxTotal.TaxSubtotal.TaxCategory.TaxScheme.ID]
+type = "identifier"
+constant = "VAT"
+
 # ===========================================================================
 # DOCUMENT TOTALS (BG-22) — LegalMonetaryTotal
 # ===========================================================================
@@ -578,29 +625,64 @@ canonical_key = "VatExemptionReasonText"
 type = "decimal"
 canonical_key = "SumOfInvoiceLineNetAmount"
 
+[Invoice.LegalMonetaryTotal.LineExtensionAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "DocumentCurrency"
+
 [Invoice.LegalMonetaryTotal.TaxExclusiveAmount]
 type = "decimal"
 canonical_key = "InvoiceTotalWithoutVat"
+
+[Invoice.LegalMonetaryTotal.TaxExclusiveAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "DocumentCurrency"
 
 [Invoice.LegalMonetaryTotal.TaxInclusiveAmount]
 type = "decimal"
 canonical_key = "InvoiceTotalWithVat"
 
+[Invoice.LegalMonetaryTotal.TaxInclusiveAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "DocumentCurrency"
+
 [Invoice.LegalMonetaryTotal.AllowanceTotalAmount]
 type = "decimal"
 canonical_key = "SumOfAllowancesDocumentLevel"
+
+[Invoice.LegalMonetaryTotal.AllowanceTotalAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "DocumentCurrency"
 
 [Invoice.LegalMonetaryTotal.ChargeTotalAmount]
 type = "decimal"
 canonical_key = "SumOfChargesDocumentLevel"
 
+[Invoice.LegalMonetaryTotal.ChargeTotalAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "DocumentCurrency"
+
 [Invoice.LegalMonetaryTotal.PrepaidAmount]
 type = "decimal"
 canonical_key = "PaidAmount"
 
+[Invoice.LegalMonetaryTotal.PrepaidAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "DocumentCurrency"
+
 [Invoice.LegalMonetaryTotal.PayableRoundingAmount]
 type = "decimal"
 canonical_key = "RoundingAmount"
+
+[Invoice.LegalMonetaryTotal.PayableRoundingAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "DocumentCurrency"
 
 # A valued element: its text is the payable amount, and its `currencyID`
 # attribute is a sibling leaf node. The compiler makes `PayableAmount` a struct
@@ -640,6 +722,11 @@ canonical_key = "Quantity"
 [InvoiceLine.LineExtensionAmount]
 type = "decimal"
 canonical_key = "LineNetAmount"
+
+[InvoiceLine.LineExtensionAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "$root.DocumentCurrency"
 
 [InvoiceLine.AccountingCost]
 type = "string"
@@ -688,9 +775,19 @@ canonical_key = "LineAllowanceChargePercentage"
 type = "decimal"
 canonical_key = "LineAllowanceChargeAmount"
 
+[InvoiceLine.AllowanceCharge.Amount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "$root.DocumentCurrency"
+
 [InvoiceLine.AllowanceCharge.BaseAmount]
 type = "decimal"
 canonical_key = "LineAllowanceChargeBaseAmount"
+
+[InvoiceLine.AllowanceCharge.BaseAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "$root.DocumentCurrency"
 
 # ITEM INFORMATION (BG-31)
 [InvoiceLine.Item.Description]
@@ -732,6 +829,10 @@ normalize = ["trim", "uppercase"]
 type = "decimal"
 canonical_key = "LineVatRate"
 
+[InvoiceLine.Item.ClassifiedTaxCategory.TaxScheme.ID]
+type = "identifier"
+constant = "VAT"
+
 # ITEM ATTRIBUTES (BG-32) — collection nested inside the invoice line's item.
 [InvoiceLine.Item.AdditionalItemProperty]
 type = "collection"
@@ -749,6 +850,11 @@ canonical_key = "ItemAttributeValue"
 [InvoiceLine.Price.PriceAmount]
 type = "decimal"
 canonical_key = "ItemNetPrice"
+
+[InvoiceLine.Price.PriceAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "$root.DocumentCurrency"
 
 [InvoiceLine.Price.BaseQuantity]
 type = "decimal"

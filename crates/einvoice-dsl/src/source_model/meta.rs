@@ -108,6 +108,11 @@ pub struct FieldMeta {
     /// Reading ignores prefixes, so this only shapes the serialize-side rename.
     /// Always empty for attributes and `$text`.
     pub prefix: String,
+    /// Interior struct fields only: the writer always materializes this element,
+    /// even empty (a structural node with `required = true`, for schemas that
+    /// make the element mandatory). Merged by *or* when several nodes
+    /// contribute to the field.
+    pub always_present: bool,
     /// Emission order among the struct's fields: the declaration position of
     /// the first mapping node that contributes to this field. An inferred
     /// interior element inherits the position of its first declared
@@ -117,10 +122,11 @@ pub struct FieldMeta {
 
 impl FieldMeta {
     /// Whether two definitions bind the same shape and XML name. Emission
-    /// `order` is deliberately excluded: two nodes contributing to one field
-    /// (a valued element and its attribute, two leaves under one interior)
-    /// legitimately carry different positions, and the field takes the
-    /// earliest.
+    /// `order` and `always_present` are deliberately excluded: two nodes
+    /// contributing to one field (a valued element and its attribute, two leaves
+    /// under one interior, a structural node and a leaf beneath it)
+    /// legitimately differ there, and the field takes the earliest order and
+    /// the *or* of the presence flags.
     pub fn same_binding(&self, other: &FieldMeta) -> bool {
         self.optional == other.optional
             && self.repeated == other.repeated
@@ -238,6 +244,7 @@ impl SourceModelBuilder {
                     ty: ty.clone(),
                     xml: None,
                     prefix: String::new(),
+                    always_present: false,
                     order,
                 },
             );
@@ -311,6 +318,7 @@ mod tests {
             ty: FieldType::Scalar,
             xml: Some(xml.to_string()),
             prefix: String::new(),
+            always_present: false,
             order,
         }
     }

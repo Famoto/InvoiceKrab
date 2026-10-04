@@ -9,7 +9,9 @@
 //!
 //! A `clone_of` node never fills the hub: after every primary assign in its
 //! scope, its path is read and decoded only to check the copy against the
-//! canonical value (`CLONE_MISMATCH` warning on disagreement).
+//! canonical value (`CLONE_MISMATCH` warning on disagreement). A `$parent.Key`
+//! / `$root.Key` clone compares against the enclosing scope's / the root's
+//! value, which is final by then (outer scalars are assigned before the loops).
 //!
 //! The reader **consumes** the source struct: paths read exactly once move
 //! their `String`s into the hub (`take`), so a large document's text is not
@@ -23,7 +25,7 @@ use std::fmt::Write as _;
 
 use crate::codec::{Codec, Pattern};
 use crate::multiple::MultiplePolicy;
-use crate::node::SourceNode;
+use crate::node::{DerivationScope, SourceNode};
 use crate::normalize::NormalizeOp;
 use crate::source_model::SourceModelMeta;
 use crate::types::MappingType;
@@ -118,7 +120,16 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
     // compare against is final.
     for clone in &ctx.plan.root_clones {
         out.push('\n');
-        read_clone_check_block(out, ctx, clone, &ctx.source.root, 1, &root_target, &shared);
+        read_clone_check_block(
+            out,
+            ctx,
+            clone,
+            &ctx.source.root,
+            1,
+            &root_target,
+            None,
+            &shared,
+        );
     }
 
     for coll in &ctx.plan.root_collections {
@@ -306,7 +317,9 @@ fn read_wire_checks(
 /// copy's path, decode it under the target key's type, and warn
 /// (`CLONE_MISMATCH`) when the decoded copy disagrees with the canonical value
 /// already assigned by the primary node. The copy never fills the hub; an
-/// absent copy is fine (the writer will emit it on the way out).
+/// absent copy is fine (the writer will emit it on the way out). `parent_hub`
+/// is the enclosing scope's hub variable (`None` at root) for `$parent` clones.
+#[allow(clippy::too_many_arguments)]
 fn read_clone_check_block(
     out: &mut String,
     ctx: &GenCtx,
@@ -314,12 +327,24 @@ fn read_clone_check_block(
     start_struct: &str,
     indent: usize,
     target: &Target,
+    parent_hub: Option<&str>,
     shared: &BTreeSet<String>,
 ) {
     let pad = "    ".repeat(indent);
     let body = "    ".repeat(indent + 1);
-    let key = node.clone_of.as_deref().expect("clone node");
-    let canonical = format!("{}.{}", target.struct_var, snake_case(key));
+    let derivation = node
+        .derivation()
+        .expect("clone node")
+        .expect("E093 rejects malformed derivations before codegen");
+    let key = derivation.key;
+    let hub_var = match derivation.scope {
+        DerivationScope::Own => target.struct_var,
+        DerivationScope::Root => "main",
+        DerivationScope::Parent => {
+            parent_hub.expect("E093 rejects `$parent` at root scope before codegen")
+        }
+    };
+    let canonical = format!("{hub_var}.{}", snake_case(key));
     let take = target.owned && !shared.contains(&node.source_path);
 
     let _ = writeln!(out, "{pad}// {}: copy of {key}, consistency check", node.id);
@@ -572,6 +597,7 @@ fn read_collection_block(
             &src_item_struct,
             indent + 1,
             &target,
+            Some(parent_hub),
             &child_shared,
         );
     }

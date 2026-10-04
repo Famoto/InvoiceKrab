@@ -1,12 +1,2 @@
-# Residual UBL 2.1 schema errors, one substring pattern per line. Delete a line
-# as soon as the fix lands; the harness fails on stale lines.
-
-# cac:TaxScheme/cbc:ID is mandatory inside PartyTaxScheme, TaxCategory and
-# ClassifiedTaxCategory: needs a constant that is emitted only when its parent
-# element is otherwise non-empty (DSL v2 directional semantics).
-PartyTaxScheme': Missing child element(s)
-TaxCategory': Missing child element(s)
-
-# Every UBL amount carries @currencyID: needs clone_of = "$root.DocumentCurrency"
-# on the amount attributes (DSL v2 cross-scope derivation).
-The attribute 'currencyID' is required but missing
+# No residual UBL 2.1 schema errors: the emitted document must validate.
+# Add a substring pattern per line only for a documented, temporary gap.

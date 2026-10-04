@@ -1,10 +1,2 @@
-# Residual Factur-X (CII D16B) schema errors, one substring pattern per line.
-# Delete a line as soon as the fix lands; the harness fails on stale lines.
-
-# ram:ApplicableTradeTax/ram:TypeCode ("VAT") is mandatory: a constant that is
-# emitted only when its parent element is otherwise non-empty.
-CategoryCode': This element is not expected
-
-# ram:ApplicableHeaderTradeDelivery is mandatory even when empty: needs a
-# structural node that is always materialized (`required = true`).
-Expected is ( {urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100}ApplicableHeaderTradeDelivery )
+# No residual Factur-X (CII D16B) schema errors: the emitted document must validate.
+# Add a substring pattern per line only for a documented, temporary gap.

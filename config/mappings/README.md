@@ -100,7 +100,9 @@ The rules, all applied by the compiler:
   follow that position.
 - An inferred interior element (`LegalMonetaryTotal`, `Party`, …) sits where its
   **first** declared descendant is. Later leaves under it do not move it, so a
-  parent's children stay contiguous wherever they are declared.
+  parent's children stay contiguous wherever they are declared. A structural
+  node counts as that first appearance, so declare it where the element belongs
+  in the sequence, not at the top of the file.
 - Attributes are emitted before child elements; an element's own text
   (`$text`) comes before its children. Neither has a schema order.
 - Reading is order-independent: a source document may list elements in any
@@ -144,7 +146,7 @@ defaults, or a node must appear in `[meta.namespaces]` (E080).
 
 An inferred interior element that needs a prefix the defaults would not give it
 is named by a **structural node**: a table with `ns` (plus optionally
-`description`) and no `type`:
+`description`, or `required = true` to force its emission) and no `type`:
 
 ```toml
 # CII: the root's three children are rsm:, everything beneath them ram:.
@@ -234,7 +236,7 @@ A node plays one of five roles, depending on which fields it declares:
 | **Helper** | neither `canonical_key` nor `clone_of` | read only when referenced as a fallback | never written |
 | **Constant** | `constant` (with or without `canonical_key`) | unchanged (fills hub if keyed) | always emits the fixed literal |
 | **Clone** | `clone_of` | consistency check only | mirrors the target key's value |
-| **Structural** | `ns` only, no `type` | nothing | names an interior element's prefix (see [Namespaces](#namespaces)) |
+| **Structural** | `ns` and/or `required = true`, no `type` | nothing | names an interior element's prefix (see [Namespaces](#namespaces)) or forces its emission (see [Constants](#constants-pinning-write-side-values)) |
 
 ### Node fields reference
 
@@ -256,6 +258,7 @@ A node plays one of five roles, depending on which fields it declares:
 | `description` | string | Human note, reports only. |
 | `disabled` | bool | Remove this node from the effective mapping (useful with [inheritance](#inheritance)). |
 | `ns` | string | Namespace prefix of this node's own element on write (see [Namespaces](#namespaces)). Alone on a `type`-less table it makes a structural node. |
+| `replace` | bool | Under [inheritance](#inheritance), replace the inherited node whole instead of merging over it. |
 
 Any other field is rejected (E001) — typos never silently no-op.
 
@@ -466,6 +469,31 @@ primary, the alternative path as a keyless helper, and chain them.
 `constant` fixes the value a spoke **writes**, regardless of what the hub
 carries. The read side is untouched.
 
+A constant is written where the schema would otherwise see a hole, never on
+its own: its *owner* — the deepest interior element on its path that other
+mapped nodes also write into — must be non-empty. So `TaxScheme/ID = "VAT"`
+under `PartyTaxScheme` appears exactly when the party has a
+`PartyTaxScheme/CompanyID`, and `TypeCode = "VAT"` under CII's
+`ApplicableTradeTax` appears with each breakdown. A constant that shares no
+interior element with real content (`UBLVersionID` at the root) is written
+unconditionally; inside a collection, on every non-empty item.
+
+```toml
+# Written only when PartyTaxScheme carries a CompanyID.
+[Invoice.AccountingSupplierParty.Party.PartyTaxScheme.TaxScheme.ID]
+type = "identifier"
+constant = "VAT"
+```
+
+The complement, an element the schema makes mandatory even when empty, is a
+**structural node with `required = true`**: the writer always materializes it.
+
+```toml
+# CII: emitted as <ram:ApplicableHeaderTradeDelivery/> even with no delivery data.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery]
+required = true
+```
+
 This is how a spoke pins spec-mandated values — a CIUS `CustomizationID` URN,
 a `UBLVersionID` — without leaking another format's value into its output:
 
@@ -518,10 +546,23 @@ clone_of = "InvoiceNumber"
   copy against the canonical value and emits a `CLONE_MISMATCH` warning when
   the copies disagree.
 
-Rules: the target key must be declared by a primary node in the same scope
-(E071) with the same type (E072). A clone is *only* a mirror — it cannot also
-declare `canonical_key`, `constant`, `fallbacks`, `multiple`, or `adapter`,
-and a collection cannot be a clone (E070).
+A clone may reach outside its own scope: `$parent.Key` names a key of the
+enclosing collection's scope, `$root.Key` a key of the invoice root. This is
+how every amount gets the document currency UBL's schema demands on it:
+
+```toml
+[InvoiceLine.LineExtensionAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "$root.DocumentCurrency"
+```
+
+Rules: the derivation is `Key`, `$parent.Key` or `$root.Key` — anything else,
+or `$parent` at the root, is E093; the target key must be declared by a
+primary node in the referenced scope (E071) with the same type (E072). A clone
+is *only* a mirror — it cannot also declare `canonical_key`, `constant`,
+`fallbacks`, `multiple`, or `adapter`, and a collection cannot be a clone
+(E070).
 
 ---
 
@@ -594,8 +635,10 @@ Currently known:
 ancestor-first, so the child starts from the parent's full node set and only
 declares its deltas:
 
-- Re-declaring a node id **replaces the whole base node** — no field merge.
-  Restate every field you want to keep. The node keeps the base's declaration
+- Re-declaring a node id **merges over the base node**: fields you set win,
+  fields you omit keep the base's values, so a CIUS states only its delta.
+  `replace = true` opts back into whole-node replacement (omitted fields then
+  take their defaults). Either way the node keeps the base's declaration
   position, so the element stays where the base emits it.
 - Nodes the child adds are emitted after every base node, in the child's own
   declaration order (see [Declaration order is schema order](#declaration-order-is-schema-order)).
@@ -609,9 +652,9 @@ declares its deltas:
 Missing parents and inheritance cycles fail the build.
 
 [xrechnung.toml](xrechnung.toml) is the reference CIUS: its own `[meta]`
-identity, a `detect` marker, and a single whole-node override making
-`CustomizationID` required — everything else (~150 nodes) folds in from
-[ubl.toml](ubl.toml) unchanged:
+identity, a `detect` marker, and a one-line override making `CustomizationID`
+required — everything else (~150 nodes) folds in from [ubl.toml](ubl.toml)
+unchanged:
 
 ```toml
 [meta]
@@ -624,12 +667,9 @@ root = "Invoice"
 inherits = "ubl-invoice:2.1"
 detect = ["xrechnung"]
 
-# Whole-node replacement: every field restated, not just `required`.
+# Merges over the base node: only the delta is stated.
 [Invoice.CustomizationID]
-type = "identifier"
-canonical_key = "SpecificationId"
 required = true
-normalize = ["trim"]
 ```
 
 ---
@@ -770,7 +810,7 @@ Validation reports **every** problem in one run, never just the first error.
 | `E061` | `constant` literal does not parse under the node's `type` |
 | `E062` | `constant` combined with `fallbacks`, `multiple`, `adapter`, `normalize`, or `codec` |
 | `E070` | `clone_of` on a collection, or combined with `canonical_key`, `constant`, `fallbacks`, `multiple`, or `adapter` |
-| `E071` | `clone_of` target key not declared by a primary node in the same scope |
+| `E071` | `clone_of` target key not declared by a primary node in the referenced scope |
 | `E072` | `clone_of` node's `type` differs from its target's |
 | `E080` | Namespace prefix used by `root_ns`, `ns_defaults`, or a node's `ns` but not declared in `[meta.namespaces]` |
 | `E081` | `ns` on an attribute or `$text` leaf (never prefixed) |
@@ -778,6 +818,7 @@ Validation reports **every** problem in one run, never just the first error.
 | `E084` | Unknown codec id |
 | `E085` | `codec` on a collection, or codec `for_type` differs from the node's `type` |
 | `E087` | Codec wire attribute collides with an attribute node on the same element |
+| `E093` | Malformed `clone_of` derivation (`$sibling.Key`, `$root.A.B`), or `$parent` at root scope |
 | `W050` | `adapter` is deprecated (warning): use `normalize` or a codec |
 
 Runtime (per-document) diagnostics — missing required values, type validation

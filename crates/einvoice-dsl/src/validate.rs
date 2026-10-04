@@ -27,9 +27,11 @@
 //!   apply to it).
 //! - `E070` `clone_of` on a collection node, or combined with `canonical_key`,
 //!   `constant`, `fallbacks`, `multiple`, or `adapter`.
-//! - `E071` `clone_of` target key not declared by a primary node in the same
-//!   scope.
+//! - `E071` `clone_of` target key not declared by a primary node in the
+//!   referenced scope (the node's own, `$parent`, or `$root`).
 //! - `E072` `clone_of` node's `type` differs from its target's.
+//! - `E093` `clone_of` derivation path is malformed (`$sibling.Key`,
+//!   `$root.Lines.LineId`), or `$parent` is used at root scope.
 //! - `E084` unknown codec id.
 //! - `E085` codec on a collection, or codec `for_type` differs from the node's
 //!   `type`.
@@ -43,7 +45,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::codec::CodecTable;
 use crate::error::{Diagnostic, Severity};
 use crate::ir::MappingIr;
-use crate::node::{NodeId, Scope, SourceNode};
+use crate::node::{DerivationScope, NodeId, Scope, SourceNode};
 use crate::source_model::{PathError, SourceModelMeta, resolve_path_from};
 use crate::types::MappingType;
 
@@ -361,8 +363,9 @@ fn constant_literal_error(ty: MappingType, value: &str) -> Option<String> {
     }
 }
 
-/// Validates a node's `clone_of`: role exclusions (E070), target key existence
-/// in the node's scope (E071), and type agreement with the target node (E072).
+/// Validates a node's `clone_of`: role exclusions (E070), a well-formed
+/// derivation path that resolves to a scope (E093), target key existence in
+/// that scope (E071), and type agreement with the target node (E072).
 ///
 /// A clone is a write-only mirror plus a read-side consistency check, so it
 /// cannot also be a primary (`canonical_key`), a `constant`, or carry read
@@ -401,19 +404,47 @@ fn check_clone_of(node: &SourceNode, ir: &MappingIr, diags: &mut Vec<Diagnostic>
         }
     }
 
-    // The target key must be declared by a primary node in the same scope.
+    // Resolve the derivation to the scope the key must be declared in.
+    let derivation = match crate::node::parse_derivation(target_key) {
+        Ok(d) => d,
+        Err(reason) => {
+            diags.push(err("E093", &node.id, format!("invalid clone_of: {reason}")));
+            return;
+        }
+    };
+    let target_scope = match derivation.scope {
+        DerivationScope::Own => node.scope.clone(),
+        DerivationScope::Root => Scope::Root,
+        DerivationScope::Parent => match &node.scope {
+            Scope::Collection(coll) => match ir.nodes.get(coll) {
+                Some(coll_node) => coll_node.scope.clone(),
+                None => return,
+            },
+            Scope::Root => {
+                diags.push(err(
+                    "E093",
+                    &node.id,
+                    format!("invalid clone_of `{target_key}`: a root-scope node has no `$parent`"),
+                ));
+                return;
+            }
+        },
+    };
+    let key = derivation.key;
     let Some(target) = ir
         .nodes
         .values()
-        .find(|n| n.canonical_key.as_deref() == Some(target_key) && n.scope == node.scope)
+        .find(|n| n.canonical_key.as_deref() == Some(key) && n.scope == target_scope)
     else {
+        let where_ = match derivation.scope {
+            DerivationScope::Own => "in this scope",
+            DerivationScope::Parent => "in the parent scope",
+            DerivationScope::Root => "at the root",
+        };
         diags.push(err(
             "E071",
             &node.id,
-            format!(
-                "clone_of target `{target_key}` is not a canonical key declared \
-                 in this scope"
-            ),
+            format!("clone_of target `{key}` is not a canonical key declared {where_}"),
         ));
         return;
     };
@@ -422,7 +453,7 @@ fn check_clone_of(node: &SourceNode, ir: &MappingIr, diags: &mut Vec<Diagnostic>
             "E072",
             &node.id,
             format!(
-                "clone of `{target_key}` is declared `{}` but the target is `{}`; \
+                "clone of `{key}` is declared `{}` but the target is `{}`; \
                  the types must match",
                 node.source_type, target.source_type
             ),
@@ -574,6 +605,70 @@ mod tests {
         .into_iter()
         .map(|c| (c.id.clone(), c))
         .collect()
+    }
+
+    const ROOT_CURRENCY_LINES: &str = r#"[Invoice.DocumentCurrencyCode]
+            type = "currency"
+            canonical_key = "DocumentCurrency"
+
+            [InvoiceLine]
+            type = "collection"
+            canonical_key = "Lines"
+
+            [InvoiceLine.ID]
+            type = "identifier"
+            canonical_key = "LineId"
+
+            [InvoiceLine.AllowanceCharge]
+            type = "collection"
+            canonical_key = "LineCharges"
+
+            [InvoiceLine.AllowanceCharge.Amount]
+            type = "decimal"
+            canonical_key = "ChargeAmount""#;
+
+    #[test]
+    fn test_root_and_parent_derivations_resolve() {
+        let diags = run(&format!(
+            "{ROOT_CURRENCY_LINES}\n\n[InvoiceLine.AllowanceCharge.Amount.currencyID]\nxml = \"@currencyID\"\ntype = \"currency\"\nclone_of = \"$root.DocumentCurrency\"\n\n[InvoiceLine.AllowanceCharge.Ref]\ntype = \"identifier\"\nclone_of = \"$parent.LineId\""
+        ));
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn test_parent_derivation_at_root_is_e093() {
+        let diags = run(&format!(
+            "{ROOT_CURRENCY_LINES}\n\n[Invoice.Ref]\ntype = \"currency\"\nclone_of = \"$parent.DocumentCurrency\""
+        ));
+        assert_eq!(codes(&diags), ["E093"], "{diags:?}");
+    }
+
+    #[test]
+    fn test_malformed_derivation_is_e093() {
+        for bad in ["$sibling.DocumentCurrency", "$root.Lines.LineId", "$root"] {
+            let diags = run(&format!(
+                "{ROOT_CURRENCY_LINES}\n\n[InvoiceLine.Ref]\ntype = \"identifier\"\nclone_of = \"{bad}\""
+            ));
+            assert_eq!(codes(&diags), ["E093"], "{bad}: {diags:?}");
+        }
+    }
+
+    #[test]
+    fn test_root_derivation_of_a_line_key_is_e071() {
+        // `LineId` lives in the line scope, not at the root.
+        let diags = run(&format!(
+            "{ROOT_CURRENCY_LINES}\n\n[InvoiceLine.AllowanceCharge.Ref]\ntype = \"identifier\"\nclone_of = \"$root.LineId\""
+        ));
+        assert_eq!(codes(&diags), ["E071"], "{diags:?}");
+        assert!(diags[0].message.contains("at the root"));
+    }
+
+    #[test]
+    fn test_root_derivation_type_mismatch_is_e072() {
+        let diags = run(&format!(
+            "{ROOT_CURRENCY_LINES}\n\n[InvoiceLine.Ref]\ntype = \"string\"\nclone_of = \"$root.DocumentCurrency\""
+        ));
+        assert_eq!(codes(&diags), ["E072"], "{diags:?}");
     }
 
     #[test]

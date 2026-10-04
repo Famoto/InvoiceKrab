@@ -6,11 +6,11 @@
 //! are then O(log n) map gets instead of re-scanning every node. All buckets
 //! preserve the IR's deterministic id order, since `ir.nodes` is a `BTreeMap`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::codec::{Codec, CodecTable};
 use crate::ir::MappingIr;
-use crate::node::{NodeId, Scope, SourceNode};
+use crate::node::{DerivationScope, NodeId, Scope, SourceNode};
 use crate::source_model::SourceModelMeta;
 
 /// The invariant context threaded through the reader/writer generators: the IR,
@@ -74,7 +74,15 @@ pub(super) struct MappingPlan<'a> {
     constants_by_collection: BTreeMap<&'a NodeId, Vec<&'a SourceNode>>,
     /// Scalar `clone_of` children of each collection node.
     clones_by_collection: BTreeMap<&'a NodeId, Vec<&'a SourceNode>>,
+    /// Canonical keys that `$parent` / `$root` clones in *deeper* scopes read,
+    /// by the scope that owns the key. The writer must keep these keys borrowed
+    /// (not moved) when it writes their primary, since the inner scopes read
+    /// them again.
+    derived_into: BTreeMap<Scope, BTreeSet<String>>,
 }
+
+/// The empty key set, for scopes nothing derives from.
+static NO_KEYS: BTreeSet<String> = BTreeSet::new();
 
 impl<'a> MappingPlan<'a> {
     /// Classifies every node in `ir` in a single pass.
@@ -87,8 +95,25 @@ impl<'a> MappingPlan<'a> {
         let mut nested_by_collection: BTreeMap<&NodeId, Vec<&SourceNode>> = BTreeMap::new();
         let mut constants_by_collection: BTreeMap<&NodeId, Vec<&SourceNode>> = BTreeMap::new();
         let mut clones_by_collection: BTreeMap<&NodeId, Vec<&SourceNode>> = BTreeMap::new();
+        let mut derived_into: BTreeMap<Scope, BTreeSet<String>> = BTreeMap::new();
 
         for node in ir.nodes.values() {
+            if let Some(Ok(derivation)) = node.derivation() {
+                let owner = match derivation.scope {
+                    DerivationScope::Own => None,
+                    DerivationScope::Root => Some(Scope::Root),
+                    DerivationScope::Parent => match &node.scope {
+                        Scope::Collection(coll) => ir.nodes.get(coll).map(|c| c.scope.clone()),
+                        Scope::Root => None,
+                    },
+                };
+                if let Some(owner) = owner {
+                    derived_into
+                        .entry(owner)
+                        .or_default()
+                        .insert(derivation.key.to_string());
+                }
+            }
             match &node.scope {
                 Scope::Root => {
                     if node.is_collection() {
@@ -139,7 +164,14 @@ impl<'a> MappingPlan<'a> {
             nested_by_collection,
             constants_by_collection,
             clones_by_collection,
+            derived_into,
         }
+    }
+
+    /// The canonical keys of `scope` that clones in deeper scopes derive from
+    /// (`$parent.Key` / `$root.Key`).
+    pub(super) fn derived_keys(&self, scope: &Scope) -> &BTreeSet<String> {
+        self.derived_into.get(scope).unwrap_or(&NO_KEYS)
     }
 
     /// The mapped scalar children of a collection node, in id order.

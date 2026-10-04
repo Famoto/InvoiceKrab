@@ -57,6 +57,9 @@ impl NamespaceConfig {
 /// - A leaf with descendant nodes is a *valued container* (a struct with a
 ///   `$text` `value` field plus its descendants' fields); a leaf without
 ///   descendants is a scalar field; a `collection` node is a `Vec<Item>` field.
+/// - Every interior element, valued container and collection item gets its own
+///   struct, named from its element path (`InvoiceLineItem`), so same-named
+///   elements under different parents never share a struct or a field order.
 /// - Every scalar leaf is `Option<String>` (or `Vec<String>` with `multiple`);
 ///   `required` is enforced by the generated reader/writer as a
 ///   `REQUIRED_MISSING` diagnostic, never by failing deserialization.
@@ -75,6 +78,8 @@ impl NamespaceConfig {
 ///   "102" }`) is a valued container even without descendants: its struct gets
 ///   one attribute field per wire attribute, which the writer sets alongside
 ///   the encoded value.
+/// - An interior element named by a structural node with `required = true` is
+///   flagged `always_present`: the writer materializes it even when empty.
 ///
 /// Namespace diagnostics (all errors): `E080` a prefix used by `root_ns`, the
 /// defaults, or a node's `ns` is not declared in `[meta.namespaces]`; `E081`
@@ -181,6 +186,7 @@ pub fn synthesize_source_model_with(
             id,
             ns,
             codecs,
+            root,
         ) {
             Ok(path) => {
                 source_paths.insert(id.clone(), path);
@@ -245,14 +251,24 @@ fn element_prefix(
 fn scope_struct(scope: &Scope, root: &str) -> String {
     match scope {
         Scope::Root => root.to_string(),
-        Scope::Collection(coll) => item_struct_name(coll),
+        Scope::Collection(coll) => struct_name_for(coll, root),
     }
 }
 
-/// The item-struct name for a collection node: the CamelCase of its last id
-/// segment (the repeated element's local name).
-fn item_struct_name(coll: &NodeId) -> String {
-    camel_case(coll.segments().last().unwrap_or(""))
+/// The struct name of the element at `id`: the CamelCase of its id segments
+/// (the root segment dropped), joined. One struct per element *path* —
+/// `InvoiceLine.Item` → `InvoiceLineItem`,
+/// `Invoice.AccountingSupplierParty.Party` → `AccountingSupplierPartyParty` —
+/// so two elements that share a local name (CII's header and line
+/// `ApplicableTradeTax`) never share a struct, and each keeps its own field
+/// order. Collection item structs are named the same way from the collection's
+/// id.
+fn struct_name_for(id: &NodeId, root: &str) -> String {
+    let mut segs = id.segments().peekable();
+    if segs.peek() == Some(&root) && id.segments().count() > 1 {
+        segs.next();
+    }
+    segs.map(camel_case).collect()
 }
 
 /// A node's XML element path within its scope: its id segments with the scope
@@ -306,6 +322,7 @@ fn insert_node(
     id: &NodeId,
     ns: &NamespaceConfig,
     codecs: &CodecTable,
+    root: &str,
 ) -> Result<String, (&'static str, String)> {
     let e024 = |msg: String| ("E024", msg);
     // The codec's wire attributes, if the node names a known codec that has
@@ -329,8 +346,8 @@ fn insert_node(
     let mut path_parts: Vec<String> = Vec::new();
     for (i, seg) in segments[..segments.len() - 1].iter().enumerate() {
         let field = snake_case(seg);
-        let struct_name = camel_case(seg);
         let interior_id = NodeId::new(all[..stripped + i + 1].join("."));
+        let struct_name = struct_name_for(&interior_id, root);
         upsert_field(
             structs,
             &current,
@@ -341,6 +358,9 @@ fn insert_node(
                 ty: FieldType::Struct(struct_name.clone()),
                 xml: Some(seg.clone()),
                 prefix: element_prefix(active, &interior_id, ns),
+                always_present: active
+                    .get(&interior_id)
+                    .is_some_and(RawNode::is_always_present),
                 order: node.position,
             },
         )
@@ -371,7 +391,7 @@ fn insert_node(
             ));
         }
         let field = snake_case(last);
-        let item = item_struct_name(id);
+        let item = struct_name_for(id, root);
         let rename = node.xml.clone().unwrap_or_else(|| last.clone());
         upsert_field(
             structs,
@@ -383,6 +403,7 @@ fn insert_node(
                 ty: FieldType::Struct(item.clone()),
                 xml: Some(rename),
                 prefix: own_prefix(&ns.aggregate_prefix),
+                always_present: false,
                 order: node.position,
             },
         )
@@ -420,6 +441,7 @@ fn insert_node(
                 ty: FieldType::Scalar,
                 xml: Some(xml.to_string()),
                 prefix: String::new(),
+                always_present: false,
                 order: node.position,
             },
         )
@@ -453,6 +475,7 @@ fn insert_node(
                 ty: FieldType::Scalar,
                 xml: Some("$text".to_string()),
                 prefix: String::new(),
+                always_present: false,
                 order: node.position,
             },
         )
@@ -473,7 +496,7 @@ fn insert_node(
             ));
         }
         let field = snake_case(last);
-        let struct_name = camel_case(last);
+        let struct_name = struct_name_for(id, root);
         let rename = node.xml.clone().unwrap_or_else(|| last.clone());
         upsert_field(
             structs,
@@ -485,6 +508,7 @@ fn insert_node(
                 ty: FieldType::Struct(struct_name.clone()),
                 xml: Some(rename),
                 prefix: own_prefix(&ns.leaf_prefix),
+                always_present: false,
                 order: node.position,
             },
         )
@@ -500,6 +524,7 @@ fn insert_node(
                 ty: FieldType::Scalar,
                 xml: Some("$text".to_string()),
                 prefix: String::new(),
+                always_present: false,
                 order: node.position,
             },
         )
@@ -525,6 +550,7 @@ fn insert_node(
                     ty: FieldType::Scalar,
                     xml: Some(format!("@{attr}")),
                     prefix: String::new(),
+                    always_present: false,
                     order: node.position,
                 },
             )
@@ -550,6 +576,7 @@ fn insert_node(
             ty: FieldType::Scalar,
             xml: Some(rename),
             prefix: own_prefix(&ns.leaf_prefix),
+            always_present: false,
             order: node.position,
         },
     )
@@ -575,8 +602,8 @@ fn has_descendant(active: &BTreeMap<NodeId, RawNode>, id: &NodeId) -> bool {
 
 /// Inserts `field` into struct `struct_name`, creating the struct if absent.
 /// Re-inserting an identically bound field is fine (two nodes contributing to
-/// the same struct) and keeps the earliest emission `order`; a conflicting
-/// redefinition is an error (E024).
+/// the same struct): it keeps the earliest emission `order` and *or*s the
+/// `always_present` flag; a conflicting redefinition is an error (E024).
 fn upsert_field(
     structs: &mut BTreeMap<String, StructMeta>,
     struct_name: &str,
@@ -590,6 +617,7 @@ fn upsert_field(
         )),
         Some(existing) => {
             existing.order = existing.order.min(meta.order);
+            existing.always_present |= meta.always_present;
             Ok(())
         }
         None => {
@@ -743,10 +771,10 @@ mod tests {
         // LegalMonetaryTotal.payable_amount: PayableAmount struct.
         assert_eq!(
             model.structs["LegalMonetaryTotal"].fields["payable_amount"].ty,
-            Struct("PayableAmount".into())
+            Struct("LegalMonetaryTotalPayableAmount".into())
         );
         // PayableAmount has a $text value field and the currencyID attribute.
-        let pa = &model.structs["PayableAmount"];
+        let pa = &model.structs["LegalMonetaryTotalPayableAmount"];
         assert_eq!(pa.fields["value"].xml.as_deref(), Some("$text"));
         assert!(pa.fields["value"].optional, "value leaf is always Option");
         assert_eq!(pa.fields["currency_id"].xml.as_deref(), Some("@currencyID"));
@@ -781,9 +809,9 @@ mod tests {
         assert_eq!(model.structs["InvoiceLine"].fields["id"].ty, Scalar);
         assert_eq!(
             model.structs["InvoiceLine"].fields["item"].ty,
-            Struct("Item".into())
+            Struct("InvoiceLineItem".into())
         );
-        assert_eq!(model.structs["Item"].fields["name"].ty, Scalar);
+        assert_eq!(model.structs["InvoiceLineItem"].fields["name"].ty, Scalar);
         assert_eq!(paths[&NodeId::new("InvoiceLine")], "invoice_line");
         assert_eq!(paths[&NodeId::new("InvoiceLine.ID")], "id");
         assert_eq!(paths[&NodeId::new("InvoiceLine.Item.Name")], "item.name");
@@ -1039,7 +1067,7 @@ mod tests {
             codec = "cii-date-102""#,
         )]);
         assert!(diags.is_empty(), "{diags:?}");
-        let dts = &model.structs["DateTimeString"];
+        let dts = &model.structs["IssueDateTimeDateTimeString"];
         assert_eq!(dts.fields["value"].xml.as_deref(), Some("$text"));
         let format = &dts.fields["format"];
         assert_eq!(format.xml.as_deref(), Some("@format"));
@@ -1048,7 +1076,10 @@ mod tests {
             paths[&NodeId::new("Invoice.IssueDateTime.DateTimeString")],
             "issue_date_time.date_time_string.value"
         );
-        assert_eq!(ordered(&model, "DateTimeString"), ["format", "value"]);
+        assert_eq!(
+            ordered(&model, "IssueDateTimeDateTimeString"),
+            ["format", "value"]
+        );
     }
 
     #[test]
@@ -1135,7 +1166,7 @@ mod tests {
         );
         assert_eq!(prefix_of(&model, "Invoice", "invoice_line"), "cac");
         assert_eq!(prefix_of(&model, "InvoiceLine", "item"), "cac");
-        assert_eq!(prefix_of(&model, "Item", "name"), "cbc");
+        assert_eq!(prefix_of(&model, "InvoiceLineItem", "name"), "cbc");
         assert_eq!(model.namespaces.root_prefix, "");
         assert_eq!(model.namespaces.declared.len(), 4);
     }
@@ -1156,8 +1187,8 @@ mod tests {
             &ubl_ns(),
         );
         assert_eq!(prefix_of(&model, "Totals", "payable_amount"), "cbc");
-        assert_eq!(prefix_of(&model, "PayableAmount", "currency_id"), "");
-        assert_eq!(prefix_of(&model, "PayableAmount", "value"), "");
+        assert_eq!(prefix_of(&model, "TotalsPayableAmount", "currency_id"), "");
+        assert_eq!(prefix_of(&model, "TotalsPayableAmount", "value"), "");
     }
 
     #[test]
@@ -1191,7 +1222,7 @@ mod tests {
             "inferred interior"
         );
         assert_eq!(
-            prefix_of(&model, "IssueDate", "date_time_string"),
+            prefix_of(&model, "WrapperIssueDate", "date_time_string"),
             "udt",
             "node ns"
         );
@@ -1200,6 +1231,18 @@ mod tests {
             "udt",
             "collection ns"
         );
+    }
+
+    #[test]
+    fn test_synth_required_structural_node_marks_interior_always_present() {
+        let (model, _) = synth(&[
+            ("Invoice.Delivery", "required = true"),
+            ("Invoice.Delivery.ActualDeliveryDate", r#"type = "date""#),
+            ("Invoice.Totals.Amount", r#"type = "decimal""#),
+        ]);
+        assert!(model.structs["Invoice"].fields["delivery"].always_present);
+        assert!(!model.structs["Invoice"].fields["totals"].always_present);
+        assert!(!model.structs["Delivery"].fields["actual_delivery_date"].always_present);
     }
 
     #[test]
@@ -1328,5 +1371,50 @@ mod tests {
             "ubl:2.1",
         );
         assert!(diags.iter().any(|d| d.code == "E024"), "{diags:?}");
+    }
+
+    #[test]
+    fn test_struct_names_are_unique_per_element_path() {
+        // Two `TaxCategory` elements under different parents get distinct
+        // structs, each ordered by its own declarations.
+        let (model, _) = synth(&[
+            (
+                "Invoice.AllowanceCharge",
+                r#"type = "collection"
+                canonical_key = "Charges""#,
+            ),
+            (
+                "Invoice.AllowanceCharge.TaxCategory.ID",
+                r#"type = "string""#,
+            ),
+            (
+                "InvoiceLine",
+                r#"type = "collection"
+                canonical_key = "Lines""#,
+            ),
+            (
+                "InvoiceLine.Item.TaxCategory.Percent",
+                r#"type = "decimal""#,
+            ),
+            ("InvoiceLine.Item.TaxCategory.ID", r#"type = "string""#),
+        ]);
+        assert_eq!(ordered(&model, "AllowanceChargeTaxCategory"), ["id"]);
+        assert_eq!(
+            ordered(&model, "InvoiceLineItemTaxCategory"),
+            ["percent", "id"]
+        );
+        assert!(!model.structs.contains_key("TaxCategory"));
+        assert_eq!(
+            struct_name_for(&NodeId::new("Invoice.A.B"), "Invoice"),
+            "AB"
+        );
+        assert_eq!(
+            struct_name_for(&NodeId::new("InvoiceLine"), "Invoice"),
+            "InvoiceLine"
+        );
+        assert_eq!(
+            struct_name_for(&NodeId::new("Invoice"), "Invoice"),
+            "Invoice"
+        );
     }
 }

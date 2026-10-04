@@ -43,7 +43,7 @@
 [meta]
 doc_format = "cii-invoice"
 format_version = "16931"
-mapping_version = "1.3"
+mapping_version = "1.4"
 source_model = "cii-invoice:en16931"
 canonical_model = "canonical-invoice:1.0"
 root = "CrossIndustryInvoice"
@@ -201,6 +201,10 @@ canonical_key = "Quantity"
 # --- LINE TRADE SETTLEMENT — LINE VAT (BG-30), period (BT-134/135),
 # net amount (BT-131), object id (BT-128), accounting ref (BT-133),
 # line allowances/charges (BG-27/28) ---
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.ApplicableTradeTax.TypeCode]
+type = "identifier"
+constant = "VAT"
+
 [CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.ApplicableTradeTax.CategoryCode]
 type = "string"
 canonical_key = "LineVatCategoryCode"
@@ -491,6 +495,13 @@ canonical_key = "ProjectReference"
 # HEADER TRADE DELIVERY (BG-13) — ACTUAL DELIVERY (BT-72),
 # DELIVER TO (BG-15/BT-70/71), DESPATCH/RECEIVING ADVICE (BT-16/BT-15)
 # ===========================================================================
+# `ApplicableHeaderTradeDelivery` is mandatory in the schema even when the
+# invoice carries no delivery information: always materialized on write.
+# Declared here, in sequence position, because a structural node is the first
+# appearance of its element and so fixes where the element is emitted.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery]
+required = true
+
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.ShipToTradeParty.ID]
 type = "identifier"
 canonical_key = "DeliverToLocationIdentifier"
@@ -615,6 +626,11 @@ canonical_key = "VatBreakdown"
 type = "decimal"
 canonical_key = "VatCategoryTaxAmount"
 
+# Mandatory tax type code of every VAT breakdown; emitted with the breakdown.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.ApplicableTradeTax.TypeCode]
+type = "identifier"
+constant = "VAT"
+
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.ApplicableTradeTax.ExemptionReason]
 type = "string"
 canonical_key = "VatExemptionReasonText"
@@ -679,6 +695,10 @@ canonical_key = "AllowanceChargeReasonCode"
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeAllowanceCharge.Reason]
 type = "string"
 canonical_key = "AllowanceChargeReason"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeAllowanceCharge.CategoryTradeTax.TypeCode]
+type = "identifier"
+constant = "VAT"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeAllowanceCharge.CategoryTradeTax.CategoryCode]
 type = "string"

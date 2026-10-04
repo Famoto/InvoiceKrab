@@ -4,13 +4,29 @@
 //! each canonical field back to its primary `source_path`, rendering the typed
 //! value to its source `String` form. Fallbacks and helper nodes are skipped.
 //!
-//! A node with a `constant` is written from that literal instead of the hub:
-//! at root unconditionally, inside a collection only on non-empty items (so a
-//! constant never resurrects an otherwise-empty element).
+//! A node with a `constant` is written from that literal instead of the hub,
+//! but only where the schema would otherwise see a hole: its *owner* — the
+//! deepest interior element on its path that other mapped nodes also write
+//! into — must be non-empty (so `PartyTaxScheme/TaxScheme/ID = "VAT"` appears
+//! exactly when the party has a `PartyTaxScheme/CompanyID`). A constant with
+//! no such owner is written unconditionally at root and, inside a collection,
+//! on every non-empty item, so a constant never resurrects an otherwise-empty
+//! element. Constants are written last in their scope, after everything that
+//! could fill their owner.
+//!
+//! A structural node with `required = true` names an interior element the
+//! writer always materializes, even empty, for schemas that make it mandatory
+//! (CII's `ApplicableHeaderTradeDelivery`).
 //!
 //! A `clone_of` node fans its target key's hub value out to a second source
 //! path — how a format stores one canonical value in several places (currency
-//! attributes, duplicated VAT ids).
+//! attributes, duplicated VAT ids). `$parent.Key` and `$root.Key` clones read
+//! the enclosing scope's / the root's hub value instead, which therefore stays
+//! a borrow (its primary never moves it).
+//!
+//! An attribute of a *valued* element (`PayableAmount/@currencyID`) is written
+//! only when the element has its text value, so an absent amount never shows up
+//! as an empty element carrying just its currency.
 //!
 //! A node with a `codec` renders the canonical value through the codec's
 //! encoder and sets the codec's wire attributes on the element next to it
@@ -24,8 +40,8 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use crate::codec::{Codec, Pattern};
-use crate::node::SourceNode;
-use crate::source_model::SourceModelMeta;
+use crate::node::{DerivationScope, Scope, SourceNode};
+use crate::source_model::{FieldType, SourceModelMeta};
 use crate::types::MappingType;
 
 use super::access::{assign_target_expr, collection_item_struct, walk_segments};
@@ -35,18 +51,20 @@ use super::plan::{Frame, GenCtx};
 
 /// The canonical keys written more than once within one scope: a `clone_of`
 /// node fans its target key out to a second source path, so the key is read
-/// from the hub twice. These must stay borrow + clone reads of the hub; unique
-/// keys move out. Nodes with a `constant` never read the hub, so they don't
-/// count.
+/// from the hub twice, and `derived` are the keys clones in deeper scopes read
+/// through `$parent` / `$root`. These must stay borrow + clone reads of the
+/// hub; unique keys move out. Nodes with a `constant` never read the hub, and
+/// a clone reading another scope's key does not count here, so neither counts.
 fn shared_hub_keys(
     scalars: &[&SourceNode],
     clones: &[&SourceNode],
     collections: &[&SourceNode],
+    derived: &BTreeSet<String>,
 ) -> BTreeSet<String> {
     let mut seen: BTreeSet<&str> = BTreeSet::new();
-    let mut shared = BTreeSet::new();
+    let mut shared: BTreeSet<String> = derived.clone();
     for node in scalars.iter().chain(clones).chain(collections) {
-        if node.constant.is_some() {
+        if node.constant.is_some() || derivation_scope(node) != DerivationScope::Own {
             continue;
         }
         let key = hub_key(node);
@@ -58,12 +76,29 @@ fn shared_hub_keys(
 }
 
 /// The hub key a node writes from: its own `canonical_key`, or the mirrored
-/// key for a `clone_of` node.
+/// key (scope prefix stripped) for a `clone_of` node.
 fn hub_key(node: &SourceNode) -> &str {
-    node.canonical_key
-        .as_deref()
-        .or(node.clone_of.as_deref())
-        .expect("mapped or clone node")
+    match node.derivation() {
+        Some(Ok(d)) => d.key,
+        Some(Err(_)) => node.clone_of.as_deref().expect("clone node"),
+        None => node.canonical_key.as_deref().expect("mapped node"),
+    }
+}
+
+/// Which scope a node reads its hub value from (`Own` for every non-clone).
+fn derivation_scope(node: &SourceNode) -> DerivationScope {
+    match node.derivation() {
+        Some(Ok(d)) => d.scope,
+        _ => DerivationScope::Own,
+    }
+}
+
+/// The hub variables a write block can read from: its own scope's, and the
+/// enclosing scope's for `$parent` clones (`None` at root). `$root` clones
+/// always read `main`.
+struct HubVars<'a> {
+    own: &'a str,
+    parent: Option<&'a str>,
 }
 
 /// Emits the `write(mut main: MainKey) -> MappingResult<Root>` function into
@@ -84,11 +119,12 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
         &ctx.plan.root_scalars,
         &ctx.plan.root_clones,
         &ctx.plan.root_collections,
+        ctx.plan.derived_keys(&Scope::Root),
     );
-    for node in &ctx.plan.root_constants {
-        out.push('\n');
-        write_constant_block(out, ctx.source, node, &ctx.source.root, "source", 1);
-    }
+    let root_vars = HubVars {
+        own: "main",
+        parent: None,
+    };
     for node in ctx
         .plan
         .root_scalars
@@ -102,7 +138,7 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
             ctx,
             node,
             &ctx.source.root,
-            "main",
+            &root_vars,
             "source",
             None,
             1,
@@ -128,9 +164,95 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
         );
     }
 
+    // Constants and always-present elements go last: their owner guards look
+    // at what every other node in the scope has written.
+    let root_content = scope_content_paths(
+        &ctx.plan.root_scalars,
+        &ctx.plan.root_clones,
+        &ctx.plan.root_collections,
+    );
+    for node in &ctx.plan.root_constants {
+        out.push('\n');
+        write_constant_block(
+            out,
+            ctx.source,
+            node,
+            &ctx.source.root,
+            "source",
+            1,
+            &root_content,
+        );
+    }
+    write_always_present(out, ctx.source, &ctx.source.root, "source", 1);
+
     out.push('\n');
     out.push_str("    MappingResult::new(Some(source), diagnostics)\n");
     out.push_str("}\n");
+}
+
+/// The source paths of every node in a scope that writes real content
+/// (primaries, clones, collections — not constants): what a constant's owner
+/// guard is measured against.
+fn scope_content_paths<'a>(
+    scalars: &[&'a SourceNode],
+    clones: &[&'a SourceNode],
+    collections: &[&'a SourceNode],
+) -> Vec<&'a str> {
+    scalars
+        .iter()
+        .chain(clones)
+        .chain(collections)
+        .filter(|n| n.constant.is_none())
+        .map(|n| n.source_path.as_str())
+        .collect()
+}
+
+/// Emits, for every interior element under `start_struct` flagged
+/// `always_present` (a structural node with `required = true`), the
+/// materialization that makes the writer emit it even when empty.
+fn write_always_present(
+    out: &mut String,
+    source: &SourceModelMeta,
+    start_struct: &str,
+    src_var: &str,
+    indent: usize,
+) {
+    let pad = "    ".repeat(indent);
+    for path in always_present_paths(source, start_struct, "") {
+        let _ = writeln!(out, "{pad}// always present -> {path}");
+        let _ = writeln!(
+            out,
+            "{pad}let _ = {}.get_or_insert_default();",
+            assign_target_expr(source, start_struct, &path, src_var)
+        );
+    }
+}
+
+/// The dotted paths (from `start_struct`, through non-repeated interior
+/// structs only) of every field flagged `always_present`, in emission order.
+fn always_present_paths(source: &SourceModelMeta, start_struct: &str, prefix: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(meta) = source.structs.get(start_struct) else {
+        return out;
+    };
+    for (name, field) in meta.ordered_fields() {
+        let FieldType::Struct(inner) = &field.ty else {
+            continue;
+        };
+        if field.repeated {
+            continue;
+        }
+        let path = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}.{name}")
+        };
+        if field.always_present {
+            out.push(path.clone());
+        }
+        out.extend(always_present_paths(source, inner, &path));
+    }
+    out
 }
 
 /// Emits the write loop for one collection node: builds a source element per hub
@@ -152,7 +274,12 @@ fn write_collection_block(
     let nested = ctx.plan.nested_collections_of(&coll.id);
     let clones = ctx.plan.clones_of(&coll.id);
     let owned = frame.owned && !shared.contains(coll_key);
-    let child_shared = shared_hub_keys(children, clones, nested);
+    let child_shared = shared_hub_keys(
+        children,
+        clones,
+        nested,
+        ctx.plan.derived_keys(&Scope::Collection(coll.id.clone())),
+    );
 
     let depth = frame.depth;
     let indent = frame.indent;
@@ -164,6 +291,10 @@ fn write_collection_block(
     let count = format!("written_count{depth}");
     let pad = "    ".repeat(indent);
     let body = "    ".repeat(indent + 1);
+    let child_vars = HubVars {
+        own: &hub_item,
+        parent: Some(parent_hub),
+    };
 
     let _ = writeln!(
         out,
@@ -227,7 +358,7 @@ fn write_collection_block(
             ctx,
             child,
             &src_item_struct,
-            &hub_item,
+            &child_vars,
             &elem,
             Some(&idx),
             indent + 1,
@@ -251,6 +382,7 @@ fn write_collection_block(
         );
     }
     let _ = writeln!(out, "{body}if !{elem}.is_empty() {{");
+    let content = scope_content_paths(children, clones, nested);
     for constant in ctx.plan.constants_of(&coll.id) {
         write_constant_block(
             out,
@@ -259,8 +391,10 @@ fn write_collection_block(
             &src_item_struct,
             &elem,
             indent + 2,
+            &content,
         );
     }
+    write_always_present(out, ctx.source, &src_item_struct, &elem, indent + 2);
     let _ = writeln!(out, "{body}    {target}.push({elem});");
     let _ = writeln!(out, "{body}    {count} += 1;");
     let _ = writeln!(out, "{body}}}");
@@ -282,7 +416,12 @@ fn write_collection_block(
 
 /// Emits the assignment of a node's `constant` literal to its source path. The
 /// hub is never consulted; the literal was validated against the node's `type`
-/// at compile time (E061), so it is emitted verbatim.
+/// at compile time (E061), so it is emitted verbatim. When the constant has an
+/// *owner* — the deepest interior element on its path that one of
+/// `scope_content` also writes into — the assignment is guarded on that owner
+/// being non-empty, so the constant completes real content instead of
+/// conjuring an element on its own.
+#[allow(clippy::too_many_arguments)]
 fn write_constant_block(
     out: &mut String,
     source: &SourceModelMeta,
@@ -290,6 +429,7 @@ fn write_constant_block(
     start_struct: &str,
     src_var: &str,
     indent: usize,
+    scope_content: &[&str],
 ) {
     let lit = node.constant.as_deref().expect("constant node");
     let path = &node.source_path;
@@ -299,14 +439,88 @@ fn write_constant_block(
         .last()
         .is_some_and(|s| s.optional);
     let value = format!("CompactString::from({lit:?})");
+    let assign = if optional {
+        format!("{target} = Some({value});")
+    } else {
+        format!("{target} = {value};")
+    };
 
     let pad = "    ".repeat(indent);
     let _ = writeln!(out, "{pad}// constant -> {path}");
-    if optional {
-        let _ = writeln!(out, "{pad}{target} = Some({value});");
-    } else {
-        let _ = writeln!(out, "{pad}{target} = {value};");
+    match constant_owner(path, scope_content) {
+        Some(owner) => {
+            let owner_ref = struct_ref_expr(source, start_struct, &owner, src_var);
+            let _ = writeln!(
+                out,
+                "{pad}if {owner_ref}.is_some_and(|owner| !owner.is_empty()) {{"
+            );
+            let _ = writeln!(out, "{pad}    {assign}");
+            let _ = writeln!(out, "{pad}}}");
+        }
+        None => {
+            let _ = writeln!(out, "{pad}{assign}");
+        }
     }
+}
+
+/// For an attribute leaf whose parent struct is a valued element (it carries a
+/// `$text` `value` field), the `Option<&Struct>` expression reaching that
+/// element; `None` for element leaves and for attributes of pure containers.
+fn valued_element_guard(
+    source: &SourceModelMeta,
+    start_struct: &str,
+    path: &str,
+    src_var: &str,
+) -> Option<String> {
+    let (parent_path, leaf) = path.rsplit_once('.')?;
+    let segs = walk_segments(source, start_struct, parent_path).ok()?;
+    let parent_struct = segs.last()?.struct_name.as_deref()?;
+    let parent = source.structs.get(parent_struct)?;
+    let leaf_meta = parent.fields.get(leaf)?;
+    if !leaf_meta.is_attribute() {
+        return None;
+    }
+    let has_value = parent.fields.get("value").is_some_and(|f| f.is_text());
+    has_value.then(|| struct_ref_expr(source, start_struct, parent_path, src_var))
+}
+
+/// The owner of a constant at `path`: its longest proper path prefix that some
+/// content path in the scope also lies under, or `None` when the constant
+/// shares no interior element with real content.
+fn constant_owner(path: &str, scope_content: &[&str]) -> Option<String> {
+    let segs: Vec<&str> = path.split('.').collect();
+    (1..segs.len()).rev().find_map(|len| {
+        let prefix = segs[..len].join(".");
+        let under = format!("{prefix}.");
+        scope_content
+            .iter()
+            .any(|p| p.starts_with(&under))
+            .then_some(prefix)
+    })
+}
+
+/// The `Option<&Struct>` expression reaching the interior struct at `path`
+/// without materializing anything: `Some(&src).and_then(|v0| v0.a.as_ref())…`.
+fn struct_ref_expr(
+    source: &SourceModelMeta,
+    start_struct: &str,
+    path: &str,
+    src_var: &str,
+) -> String {
+    let Ok(segs) = walk_segments(source, start_struct, path) else {
+        return format!(
+            "compile_error!(\"unresolved owner path `{path}` against `{start_struct}`\")"
+        );
+    };
+    let mut expr = format!("Some(&{src_var})");
+    for (i, seg) in segs.iter().enumerate() {
+        if seg.optional {
+            expr = format!("{expr}.and_then(|v{i}| v{i}.{}.as_ref())", seg.name);
+        } else {
+            expr = format!("{expr}.map(|v{i}| &v{i}.{})", seg.name);
+        }
+    }
+    expr
 }
 
 /// Emits the write of one canonical field back to its source path, rendering the
@@ -319,7 +533,7 @@ fn write_scalar_block(
     ctx: &GenCtx,
     node: &SourceNode,
     start_struct: &str,
-    hub_var: &str,
+    hub_vars: &HubVars,
     src_var: &str,
     index_var: Option<&str>,
     indent: usize,
@@ -328,6 +542,18 @@ fn write_scalar_block(
     let source = ctx.source;
     let codec = ctx.codec_of(node);
     let key = hub_key(node);
+    // A `$parent` / `$root` clone reads another scope's hub value, which is
+    // always a borrow: the owning scope writes the key itself.
+    let (hub_var, take) = match derivation_scope(node) {
+        DerivationScope::Own => (hub_vars.own, take),
+        DerivationScope::Root => ("main", false),
+        DerivationScope::Parent => (
+            hub_vars
+                .parent
+                .expect("E093 rejects `$parent` at root scope before codegen"),
+            false,
+        ),
+    };
     let path = &node.source_path;
     let field = snake_case(key);
     let segs = walk_segments(source, start_struct, path).unwrap_or_default();
@@ -342,6 +568,11 @@ fn write_scalar_block(
     // The mutable place to assign into: boxed interiors materialize on demand,
     // and only inside the non-empty guard below, so no empty subtree is built.
     let target = assign_target_expr(source, start_struct, path, src_var);
+    // An attribute of a valued element follows the element: it is written only
+    // when the element's own text value is present (the element struct is
+    // non-empty before the attribute is added — attributes are written after
+    // their element's value, in id order).
+    let element_guard = valued_element_guard(source, start_struct, path, src_var);
     // Render the typed value to a source string. Decimals/booleans render
     // fresh (inline, no heap for short renderings); strings move when taken,
     // clone when the hub value is shared.
@@ -364,7 +595,17 @@ fn write_scalar_block(
             let _ = writeln!(out, "{pad}    let rendered = {rendered};");
         }
     }
-    let _ = writeln!(out, "{pad}    if !rendered.is_empty() {{");
+    match &element_guard {
+        Some(guard) => {
+            let _ = writeln!(
+                out,
+                "{pad}    if !rendered.is_empty() && {guard}.is_some_and(|owner| !owner.is_empty()) {{"
+            );
+        }
+        None => {
+            let _ = writeln!(out, "{pad}    if !rendered.is_empty() {{");
+        }
+    }
     if repeated_leaf {
         let _ = writeln!(out, "{pad}        {target}.push(rendered);");
     } else if optional {

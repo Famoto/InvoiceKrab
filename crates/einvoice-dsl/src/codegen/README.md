@@ -56,9 +56,13 @@ rejected) emits a `compile_error!` at the access site rather than plausible but
 wrong code, so a validation/codegen gap fails loudly with a clear message.
 
 A node with a `constant` is write-only from the hub's perspective: the writer
-assigns the literal at the source path (at root unconditionally, inside a
-collection only on non-empty items), the hub value — if the node also has a
-`canonical_key` — is ignored on write, and the reader is unaffected.
+assigns the literal at the source path, the hub value — if the node also has a
+`canonical_key` — is ignored on write, and the reader is unaffected. The
+assignment is guarded on the constant's *owner* (the deepest interior element
+it shares with real content) being non-empty; a constant with no owner is
+unconditional at root and per non-empty item in a collection. Constants are
+written last in their scope, after the content their guards inspect, and a
+structural node with `required = true` is then materialized unconditionally.
 
 A node with a `codec` decodes the source text through the codec's pattern on
 read (`codec::decode_date(raw, "YYYYMMDD")`, `CODEC_INVALID` on mismatch,
@@ -71,7 +75,9 @@ writer fans the key's hub value out to the clone's path too (the key then
 stays a borrow + clone instead of moving), and the reader — after every
 primary assign in the scope — decodes the copy only to compare it against the
 canonical value, warning `CLONE_MISMATCH` when a document's copies disagree.
-The hub is never filled from a clone.
+The hub is never filled from a clone. A `$parent.Key` / `$root.Key` clone
+reads (and compares against) the enclosing scope's / the root's hub value;
+the planner records such keys so their primaries borrow instead of move.
 
 ## Testing
 

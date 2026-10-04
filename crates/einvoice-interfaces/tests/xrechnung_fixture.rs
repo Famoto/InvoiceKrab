@@ -249,3 +249,93 @@ fn test_cii_date_codec_diagnostics_on_read() {
         result.diagnostics
     );
 }
+
+#[test]
+fn test_ubl_amounts_carry_the_document_currency_and_tax_schemes_are_pinned() {
+    let engine = Engine::new();
+    let out = engine
+        .transform(Spoke::UblInvoice, Spoke::UblInvoice, &xrechnung())
+        .expect("fixture is well-formed XML");
+    assert!(!out.has_errors(), "{:?}", out.diagnostics);
+    let xml = out.value.expect("writer yields a document");
+
+    // Every emitted amount carries the document currency, derived through
+    // `$root.DocumentCurrency` inside the lines and tax subtotals.
+    for amount in [
+        "<cbc:LineExtensionAmount currencyID=\"EUR\">1000.00</cbc:LineExtensionAmount>",
+        "<cbc:TaxExclusiveAmount currencyID=\"EUR\">1000.00</cbc:TaxExclusiveAmount>",
+        "<cbc:TaxableAmount currencyID=\"EUR\">1000.00</cbc:TaxableAmount>",
+        "<cbc:PriceAmount currencyID=\"EUR\">80.00</cbc:PriceAmount>",
+        "<cbc:LineExtensionAmount currencyID=\"EUR\">800.00</cbc:LineExtensionAmount>",
+    ] {
+        assert!(xml.contains(amount), "{amount}\n{xml}");
+    }
+    // Amounts the source does not carry are not conjured up by their currency.
+    assert!(!xml.contains("AllowanceTotalAmount"), "{xml}");
+    assert!(!xml.contains("PrepaidAmount"), "{xml}");
+
+    // The mandatory TaxScheme/ID completes every tax scheme and category…
+    assert_eq!(
+        xml.matches("<cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>")
+            .count(),
+        5,
+        "seller + buyer PartyTaxScheme, one TaxSubtotal category, two line categories: {xml}"
+    );
+}
+
+#[test]
+fn test_tax_scheme_constant_is_not_written_without_its_owner() {
+    // No PartyTaxScheme/CompanyID anywhere: the constant has nothing to
+    // complete, so no TaxScheme (and no PartyTaxScheme) is emitted.
+    let engine = Engine::new();
+    let doc = br#"<Invoice>
+        <ID>INV-1</ID>
+        <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
+        <AccountingSupplierParty><Party><PartyLegalEntity><RegistrationName>Seller</RegistrationName></PartyLegalEntity></Party></AccountingSupplierParty>
+        <LegalMonetaryTotal><PayableAmount currencyID="EUR">1.00</PayableAmount></LegalMonetaryTotal>
+        <InvoiceLine><ID>1</ID><InvoicedQuantity>1</InvoicedQuantity><Item><Name>X</Name></Item></InvoiceLine>
+    </Invoice>"#;
+    let out = engine
+        .transform(Spoke::UblInvoice, Spoke::UblInvoice, doc)
+        .expect("well-formed");
+    assert!(!out.has_errors(), "{:?}", out.diagnostics);
+    let xml = out.value.expect("document");
+    assert!(
+        xml.contains("<cbc:RegistrationName>Seller</cbc:RegistrationName>"),
+        "{xml}"
+    );
+    assert!(!xml.contains("TaxScheme"), "{xml}");
+    assert!(
+        !xml.contains("ClassifiedTaxCategory"),
+        "no category, no scheme: {xml}"
+    );
+}
+
+#[test]
+fn test_cii_output_pins_vat_type_codes_and_materializes_the_delivery_element() {
+    let engine = Engine::new();
+    let out = engine
+        .transform(Spoke::UblInvoice, Spoke::FacturxInvoice, &xrechnung())
+        .expect("fixture is well-formed XML");
+    assert!(!out.has_errors(), "{:?}", out.diagnostics);
+    let xml = out.value.expect("document");
+    assert!(
+        xml.contains("<ram:ApplicableHeaderTradeAgreement>"),
+        "{xml}"
+    );
+    // Mandatory even though the fixture has no delivery data.
+    assert!(
+        xml.contains("</ram:ApplicableHeaderTradeAgreement><ram:ApplicableHeaderTradeDelivery/><ram:ApplicableHeaderTradeSettlement>"),
+        "{xml}"
+    );
+    // TypeCode precedes CategoryCode in every tax group, as the schema orders it.
+    assert_eq!(
+        xml.matches("<ram:TypeCode>VAT</ram:TypeCode>").count(),
+        3,
+        "two line taxes + one header breakdown: {xml}"
+    );
+    assert!(
+        xml.contains("<ram:CalculatedAmount>190.00</ram:CalculatedAmount><ram:TypeCode>VAT</ram:TypeCode><ram:BasisAmount>1000.00</ram:BasisAmount>"),
+        "{xml}"
+    );
+}

@@ -59,9 +59,10 @@ codecs ─► TOML mappings ─► parse ─► resolve(inherit, disabled)
 
 1. `parse_mapping` turns one TOML document into a `ParsedMapping`, rejecting
    unknown keys (E001) and stamping each node's declaration `position`.
-2. `build_ir` resolves the inheritance chain (an override keeps the base
-   position; new nodes append; omitted namespace meta is filled from the
-   ancestors), drops disabled nodes, **synthesizes the `SourceModelMeta` and
+2. `build_ir` resolves the inheritance chain (an override merges over the base
+   node, or replaces it with `replace = true`, and keeps its position; new
+   nodes append; omitted namespace meta is filled from the ancestors), drops
+   disabled nodes, **synthesizes the `SourceModelMeta` and
    each node's `source_path` from the node ids** (each field carrying the
    emission `order` of its first contributing node and the namespace prefix it
    is written with; structural `ns`-only nodes are consumed here), and
@@ -70,7 +71,8 @@ codecs ─► TOML mappings ─► parse ─► resolve(inherit, disabled)
    enforcing cross-spoke type/scope consistency.
 4. `validate` checks canonical scopes, fallbacks (existence, type, cycles),
    adapters (deprecated, W050), codecs (known id, matching type), constants,
-   and `clone_of` mirrors (role exclusions, target key, type agreement); the
+   and `clone_of` mirrors (role exclusions, `$parent`/`$root` derivation
+   paths, target key in the referenced scope, type agreement); the
    synthesized source model is consistent by construction.
 5. `compile` aggregates diagnostics from every stage in deterministic order.
 6. `report` renders comparison views; `generate_hub` emits the typed `MainKey`

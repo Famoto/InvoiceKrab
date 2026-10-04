@@ -3,16 +3,18 @@
 //! Three ordered transforms turn parsed raw nodes into effective ones:
 //!
 //! 1. [`merge_inheritance`] — fold an inheritance chain (ancestor → … → leaf).
-//!    Overrides are *full-node replacements*: a later node wholly replaces an
-//!    earlier node of the same id. Declaration positions are merged too: an
-//!    override keeps the base node's position (it stays where the base put the
-//!    element), and nodes new to a later mapping are appended after everything
-//!    already merged, in their own declaration order.
+//!    A later declaration of an id *merges* over the earlier one: fields it
+//!    sets win, fields it omits keep the base value, so a CIUS restates only
+//!    its delta (`required = true`). `replace = true` opts back into whole-node
+//!    replacement. Declaration positions are merged too: an override keeps the
+//!    base node's position (it stays where the base put the element), and nodes
+//!    new to a later mapping are appended after everything already merged, in
+//!    their own declaration order.
 //! 2. [`remove_disabled`] — drop disabled nodes and the descendants of any
 //!    disabled collection, whose scope no longer exists. Runs *before* defaults.
-//! 3. [`apply_defaults`] — materialize defaults onto each surviving active node
-//!    default values. An omitted field takes its default, never the parent's
-//!    value, because inheritance already replaced whole nodes.
+//! 3. [`apply_defaults`] — materialize defaults onto each surviving active node.
+//!    An omitted field takes its default — after the merge, so a field a child
+//!    omits still carries the base's value.
 //!
 //! Ordering matters: inheritance, then disabled removal, then defaults. The
 //! [`crate::ir::build_ir`] entry point chains them.
@@ -27,9 +29,10 @@ use crate::types::MappingType;
 /// Folds an inheritance chain into one raw node set.
 ///
 /// `chain` is ordered ancestor-first, leaf-last. A node id present in a later
-/// mapping fully replaces the earlier one; new ids are added.
+/// mapping merges field-wise over the earlier one ([`RawNode::merged_with`]);
+/// with `replace = true` it replaces it whole. New ids are added.
 ///
-/// Positions: an override takes over the replaced node's position, so a CIUS
+/// Positions: an override takes over the overridden node's position, so a CIUS
 /// that restates a node does not move the element. Ids new to a later mapping
 /// are offset past every position merged so far, so they follow the base's
 /// nodes in the later mapping's own declaration order.
@@ -44,10 +47,14 @@ pub fn merge_inheritance(chain: &[ParsedMapping]) -> BTreeMap<NodeId, RawNode> {
             .max()
             .unwrap_or(0);
         for (id, node) in &mapping.nodes {
-            let mut node = node.clone();
-            node.position = match merged.get(id) {
-                Some(existing) => existing.position,
-                None => offset + node.position,
+            let node = match merged.get(id) {
+                Some(existing) => existing.merged_with(node),
+                None => {
+                    let mut node = node.clone();
+                    node.position += offset;
+                    node.replace = None;
+                    node
+                }
             };
             merged.insert(id.clone(), node);
         }
@@ -361,18 +368,51 @@ mod tests {
     }
 
     #[test]
-    fn test_inheritance_override_replaces_whole_node() {
-        // Parent node has required=true + a fallback; child re-declares the node
-        // with neither. Full-node replacement: the omitted `required`/`fallbacks`
-        // revert to defaults, they are NOT inherited from the parent.
+    fn test_inheritance_override_merges_over_the_base_node() {
+        // The base has type + fallback; the child restates only `required`. The
+        // merge keeps the base's type and fallback and takes the child's
+        // `required` — the CIUS delta is all the child has to write.
+        let parent = parsed(
+            r#"[Invoice.ID]
+            type = "identifier"
+            fallbacks = ["Invoice.UUID"]
+
+            [Invoice.UUID]
+            type = "identifier""#,
+        );
+        let child = parsed(
+            r#"[Invoice.ID]
+            required = true"#,
+        );
+        let merged = merge_inheritance(&[parent, child]);
+        let active = remove_disabled(merged);
+        let (_m, paths, _sd) = synthesize_source_model(&active, "Invoice", "s:1");
+        let (nodes, diags) = apply_defaults(&active, &paths);
+        assert!(diags.is_empty(), "{diags:?}");
+        let n = &nodes[&NodeId::new("Invoice.ID")];
+        assert_eq!(
+            n.source_type,
+            MappingType::Identifier,
+            "type kept from base"
+        );
+        assert!(n.required, "child's delta applied");
+        assert_eq!(n.fallbacks, [NodeId::new("Invoice.UUID")], "fallback kept");
+    }
+
+    #[test]
+    fn test_inheritance_replace_true_discards_the_base_node() {
         let parent = parsed(
             r#"[Invoice.ID]
             type = "identifier"
             required = true
-            fallbacks = ["Invoice.UUID"]"#,
+            fallbacks = ["Invoice.UUID"]
+
+            [Invoice.UUID]
+            type = "identifier""#,
         );
         let child = parsed(
             r#"[Invoice.ID]
+            replace = true
             type = "identifier""#,
         );
         let merged = merge_inheritance(&[parent, child]);
@@ -380,8 +420,7 @@ mod tests {
         let (_m, paths, _sd) = synthesize_source_model(&active, "Invoice", "s:1");
         let (nodes, _) = apply_defaults(&active, &paths);
         let n = &nodes[&NodeId::new("Invoice.ID")];
-        assert_eq!(n.source_path, "id");
-        assert!(!n.required, "omitted field reverts to default, not parent");
+        assert!(!n.required, "replaced whole: omitted fields take defaults");
         assert!(n.fallbacks.is_empty());
     }
 
