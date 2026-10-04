@@ -38,8 +38,12 @@ fn generate_one_struct(out: &mut String, name: &str, meta: &StructMeta) {
     generate_is_empty_impl(out, name, meta);
 }
 
-/// Emits a small structural emptiness predicate used by writer pruning and
-/// serde `skip_serializing_if` hooks on generated container fields.
+/// Appends a structural emptiness predicate used by writer pruning to `out`.
+///
+/// The generated predicate returns true when every field is absent or empty,
+/// including for a struct with no fields. Present containers are checked
+/// recursively; repeated fields must have no items, even if their items are
+/// themselves empty.
 fn generate_is_empty_impl(out: &mut String, name: &str, meta: &StructMeta) {
     let _ = writeln!(out, "impl {name} {{");
     out.push_str("    pub fn is_empty(&self) -> bool {\n");

@@ -42,6 +42,7 @@ impl StructMeta {
     /// order of their own; child elements follow the mapping's declaration
     /// order, which the author keeps aligned with the XSD sequence.
     pub fn ordered_fields(&self) -> Vec<(&String, &FieldMeta)> {
+        /// Assigns sort priority: attributes (0), element text (1), children (2).
         fn rank(field: &FieldMeta) -> u8 {
             if field.is_attribute() {
                 0

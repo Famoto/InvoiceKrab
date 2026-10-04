@@ -42,6 +42,18 @@ pub struct ParsedMapping {
 }
 
 /// Parses a spoke mapping document.
+///
+/// Returns its metadata and raw nodes keyed by dotted id. Node positions are
+/// zero-based and assigned parent-first, visiting each table's children in
+/// first-appearance order, so a table's descendants stay grouped together.
+/// Tables containing only sub-tables do not become nodes; a metadata-only
+/// document produces an empty node map.
+///
+/// # Errors
+///
+/// Returns a `ConfigError` for invalid TOML (including duplicate tables),
+/// missing or invalid `[meta]`, invalid or unknown node fields, or a non-table
+/// top-level value outside `meta`.
 pub fn parse_mapping(src: &str) -> Result<ParsedMapping, ConfigError> {
     // Step 1: parse TOML. A whole-document parse surfaces syntax errors and
     // duplicate-table errors (node uniqueness) with spans.
@@ -86,6 +98,10 @@ pub fn parse_mapping(src: &str) -> Result<ParsedMapping, ConfigError> {
 /// running document-order counter stamped onto each node as it is created, so a
 /// node's position reflects where its table (or, for sub-tables, the first
 /// appearance of its parent) stands in the document.
+///
+/// Returns a `ConfigError` identifying the node if its own fields or a
+/// descendant's fields cannot be deserialized as a `RawNode`. Nodes already
+/// inserted and increments to `next_position` are retained on error.
 fn flatten(
     id: NodeId,
     table: &toml::Table,

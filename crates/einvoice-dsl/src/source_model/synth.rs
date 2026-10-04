@@ -135,6 +135,20 @@ fn element_path(id: &NodeId, scope: &Scope, root: &str) -> Vec<String> {
 /// Inserts one node's element path into the struct table, creating interior
 /// structs as needed, and returns the node's `source_path` (dotted snake field
 /// path relative to its scope struct).
+///
+/// `base` names the scope struct; `segments` is the element path within it.
+/// Compatible existing fields keep the earliest contributing node position.
+///
+/// # Errors
+///
+/// Returns an error message for incompatible field bindings or `multiple` on a
+/// collection, attribute, `$text` leaf, or valued container. Earlier changes to
+/// `structs` are retained on error. The caller converts these errors into
+/// `E024` diagnostics and continues processing other nodes.
+///
+/// # Panics
+///
+/// Panics if `segments` is empty.
 fn insert_node(
     structs: &mut BTreeMap<String, StructMeta>,
     base: &str,
