@@ -60,6 +60,7 @@ mod write;
 
 pub use hub::generate_hub;
 
+use crate::codec::CodecTable;
 use crate::ir::MappingIr;
 use crate::source_model::SourceModelMeta;
 
@@ -73,7 +74,12 @@ use std::fmt::Write as _;
 /// `hub_module` is the Rust path to the generated hub module (e.g. `super::hub`);
 /// the emitted module glob-imports `MainKey` and the item structs from it. The
 /// output is deterministic for identical inputs.
-pub fn generate_spoke(ir: &MappingIr, source: &SourceModelMeta, hub_module: &str) -> String {
+pub fn generate_spoke(
+    ir: &MappingIr,
+    source: &SourceModelMeta,
+    codecs: &CodecTable,
+    hub_module: &str,
+) -> String {
     let mut out = String::new();
 
     // Plain `//` comments (not `//!`): the output is `include!`d into a module,
@@ -91,7 +97,7 @@ pub fn generate_spoke(ir: &MappingIr, source: &SourceModelMeta, hub_module: &str
     out.push('\n');
     source_section(&mut out, source);
     out.push('\n');
-    mapper_section(&mut out, ir, source);
+    mapper_section(&mut out, ir, source, codecs);
 
     out
 }
@@ -120,6 +126,7 @@ pub fn generate_source_module(source: &SourceModelMeta) -> String {
 pub fn generate_mapper_module(
     ir: &MappingIr,
     source: &SourceModelMeta,
+    codecs: &CodecTable,
     hub_module: &str,
     structs_module: &str,
 ) -> String {
@@ -136,7 +143,7 @@ pub fn generate_mapper_module(
     out.push('\n');
     mapper_imports(&mut out, hub_module);
     out.push('\n');
-    mapper_section(&mut out, ir, source);
+    mapper_section(&mut out, ir, source, codecs);
     out
 }
 
@@ -175,6 +182,7 @@ pub enum SpokeModule {
 /// comparisons use the body after the first blank line.
 pub fn plan_spoke_dedup(
     spokes: &[(&str, &MappingIr, &SourceModelMeta)],
+    codecs: &CodecTable,
     hub_module: &str,
 ) -> SpokeDedupPlan {
     fn body(text: &str) -> &str {
@@ -220,9 +228,9 @@ pub fn plan_spoke_dedup(
     for (i, &(slug, ir, source)) in spokes.iter().enumerate() {
         let code = match &structs_module_of[i] {
             Some(shared) => {
-                generate_mapper_module(ir, source, hub_module, &format!("super::{shared}"))
+                generate_mapper_module(ir, source, codecs, hub_module, &format!("super::{shared}"))
             }
-            None => generate_spoke(ir, source, hub_module),
+            None => generate_spoke(ir, source, codecs, hub_module),
         };
         match seen.iter().find(|(text, _)| body(text) == body(&code)) {
             Some((_, canonical)) => modules.push(SpokeModule::Alias(canonical.to_string())),
@@ -255,12 +263,12 @@ fn mapper_imports(out: &mut String, hub_module: &str) {
     out.push_str(
         "use einvoice_transformator::result::{MappingDiagnostic, MappingResult, Severity};\n",
     );
-    out.push_str("use einvoice_transformator::{adapter, normalize, validate};\n");
+    out.push_str("use einvoice_transformator::{adapter, codec, normalize, validate};\n");
     let _ = writeln!(out, "use {hub_module}::*;");
 }
 
 /// Emits the `read` and `write` mapper functions.
-fn mapper_section(out: &mut String, ir: &MappingIr, source: &SourceModelMeta) {
+fn mapper_section(out: &mut String, ir: &MappingIr, source: &SourceModelMeta, codecs: &CodecTable) {
     // The IR classification is the same for both mappers, so build it once and
     // share it across the reader and writer generators.
     let plan = MappingPlan::build(ir);
@@ -268,6 +276,7 @@ fn mapper_section(out: &mut String, ir: &MappingIr, source: &SourceModelMeta) {
         ir,
         source,
         plan: &plan,
+        codecs,
     };
     read::generate_read(out, &ctx, &source.root);
     out.push('\n');
@@ -279,10 +288,35 @@ mod tests {
     use super::naming::snake_case;
     use super::source::serde_attr;
     use super::{generate_hub, generate_spoke};
+    use crate::codec::CodecTable;
     use crate::hub::{CanonicalModel, derive_hub};
-    use crate::ir::{MappingIr, build_ir};
+    use crate::ir::{MappingIr, build_ir, build_ir_with};
     use crate::parse::parse_mapping;
     use crate::source_model::{FieldMeta, FieldType, SourceModelMeta};
+
+    fn no_codecs() -> CodecTable {
+        CodecTable::new()
+    }
+
+    /// The CII `102` date codec (wire `@format = 102`) plus a boolean codec.
+    fn cii_codecs() -> CodecTable {
+        crate::codec::parse_codecs(
+            r#"
+            [codec.cii-date-102]
+            for_type = "date"
+            lexical = "YYYYMMDD"
+            wire = { "@format" = "102" }
+
+            [codec.boolean-1-0]
+            for_type = "boolean"
+            lexical = "1|0"
+            "#,
+        )
+        .expect("codecs parse")
+        .into_iter()
+        .map(|c| (c.id.clone(), c))
+        .collect()
+    }
 
     const UBL: &str = r#"
         [meta]
@@ -363,7 +397,7 @@ mod tests {
     #[test]
     fn test_generate_spoke_emits_source_structs_and_mappers() {
         let (ir, _, source) = compiled();
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // typed source struct with XML rename; every leaf is Option + default
         // so absent elements parse (required is a reader diagnostic).
         assert!(out.contains("pub struct Invoice {"), "{out}");
@@ -391,7 +425,7 @@ mod tests {
     #[test]
     fn test_reader_assigns_typed_fields_and_validates() {
         let (ir, _, source) = compiled();
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // currency is validated; identifier carried verbatim; decimal parsed.
         assert!(out.contains("validate::is_currency(raw.trim())"), "{out}");
         assert!(out.contains("main.document_currency = Some(raw);"), "{out}");
@@ -414,7 +448,7 @@ mod tests {
     #[test]
     fn test_reader_omits_required_missing_branch_for_optional_fields() {
         let (ir, _, source) = compiled();
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // Optional fields must not carry a dead `else if false { … }`
         // diagnostic block; required fields keep a plain `else` branch.
         assert!(!out.contains("else if false"), "{out}");
@@ -443,7 +477,13 @@ mod tests {
     #[test]
     fn test_generate_mapper_module_reexports_structs_and_omits_them() {
         let (ir, _, source) = compiled();
-        let out = super::generate_mapper_module(&ir, &source, "super::hub", "super::shared_0");
+        let out = super::generate_mapper_module(
+            &ir,
+            &source,
+            &no_codecs(),
+            "super::hub",
+            "super::shared_0",
+        );
         // Structs come from the shared module, re-exported for callers.
         assert!(out.contains("pub use super::shared_0::*;"), "{out}");
         assert!(!out.contains("pub struct Invoice {"), "{out}");
@@ -464,9 +504,15 @@ mod tests {
         // The split pair must carry the same structs and mappers the monolith
         // does, so build-time dedup can swap representations freely.
         let (ir, _, source) = compiled();
-        let monolith = generate_spoke(&ir, &source, "super::hub");
+        let monolith = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         let src = super::generate_source_module(&source);
-        let map = super::generate_mapper_module(&ir, &source, "super::hub", "super::shared_0");
+        let map = super::generate_mapper_module(
+            &ir,
+            &source,
+            &no_codecs(),
+            "super::hub",
+            "super::shared_0",
+        );
         for needle in ["pub struct Invoice {", "pub fn from_xml", "pub fn to_xml"] {
             assert!(
                 monolith.contains(needle) && src.contains(needle),
@@ -487,7 +533,7 @@ mod tests {
     #[test]
     fn test_writer_renders_typed_values() {
         let (ir, _, source) = compiled();
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         assert!(
             out.contains("if let Some(value) = main.invoice_number.take() {"),
             "{out}"
@@ -572,7 +618,7 @@ mod tests {
         let (ir_a, src_a) = compile_named("alpha", PLAIN_ID);
         let (ir_b, src_b) = compile_named("beta", PLAIN_ID);
         let spokes = [("alpha", &ir_a, &src_a), ("beta", &ir_b, &src_b)];
-        let plan = super::plan_spoke_dedup(&spokes, "super::hub");
+        let plan = super::plan_spoke_dedup(&spokes, &no_codecs(), "super::hub");
 
         // One shared structs module, its header naming every sharer.
         assert_eq!(plan.shared_modules.len(), 1);
@@ -606,7 +652,7 @@ mod tests {
         let (ir_a, src_a) = compile_named("alpha", PLAIN_ID);
         let (ir_b, src_b) = compile_named("beta", strict);
         let spokes = [("alpha", &ir_a, &src_a), ("beta", &ir_b, &src_b)];
-        let plan = super::plan_spoke_dedup(&spokes, "super::hub");
+        let plan = super::plan_spoke_dedup(&spokes, &no_codecs(), "super::hub");
 
         assert_eq!(plan.shared_modules.len(), 1);
         let a = emitted(&plan.modules[0]);
@@ -625,7 +671,7 @@ mod tests {
         let (ir_a, src_a) = compile_named("alpha", PLAIN_ID);
         let (ir_b, src_b) = compile_named("beta", other);
         let spokes = [("alpha", &ir_a, &src_a), ("beta", &ir_b, &src_b)];
-        let plan = super::plan_spoke_dedup(&spokes, "super::hub");
+        let plan = super::plan_spoke_dedup(&spokes, &no_codecs(), "super::hub");
 
         // Nothing shared, nothing aliased: each spoke keeps a self-contained
         // module with its structs inline.
@@ -647,7 +693,7 @@ mod tests {
     #[test]
     fn test_generated_source_structs_have_empty_pruning_hooks() {
         let (ir, _, source) = compiled();
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
 
         assert!(out.contains("impl InvoiceLine {"), "{out}");
         assert!(out.contains("pub fn is_empty(&self) -> bool {"), "{out}");
@@ -703,7 +749,7 @@ mod tests {
         );
 
         // Spoke: nested read/write loops consume the inner Vec, keyed by depth.
-        let spoke = generate_spoke(&ir, &source, "super::hub");
+        let spoke = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         assert!(
             spoke.contains("let elements1 = std::mem::take(&mut element0.allowance_charge);"),
             "{spoke}"
@@ -743,7 +789,7 @@ mod tests {
             normalize = ["trim", "empty_as_missing"]
             "#,
         );
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // Source struct: repeated scalar leaf.
         assert!(out.contains("pub note: Vec<CompactString>,"), "{out}");
         // Reader: consume the repeated leaf, collect normalized values, join
@@ -770,7 +816,7 @@ mod tests {
                 multiple = "{policy}"
                 "#
             ));
-            let out = generate_spoke(&ir, &source, "super::hub");
+            let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
             assert!(out.contains("if values.len() > 1 {"), "{out}");
             assert!(out.contains("MULTIPLE_VALUES"), "{out}");
             assert!(out.contains(severity), "{policy}: {out}");
@@ -780,7 +826,7 @@ mod tests {
     #[test]
     fn test_reader_moves_unique_source_values() {
         let (ir, _, source) = compiled();
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // The reader consumes the source struct so uniquely-read values move
         // into the hub instead of being cloned.
         assert!(
@@ -827,7 +873,7 @@ mod tests {
             type = "identifier"
             "#,
         );
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         assert!(!out.contains("source.uuid.take()"), "{out}");
         assert!(out.contains("source.uuid.as_ref()"), "{out}");
         assert!(out.contains("source.id.take()"), "{out}");
@@ -837,7 +883,7 @@ mod tests {
     #[test]
     fn test_writer_moves_hub_values() {
         let (ir, _, source) = compiled();
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // The writer consumes the hub so values move into the target struct.
         assert!(
             out.contains("pub fn write(mut main: MainKey) -> MappingResult<Invoice>"),
@@ -871,7 +917,7 @@ mod tests {
             canonical_key = "LineId"
             "#,
         );
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // Reader: absent wrapper yields an empty Vec, no insertion.
         assert!(
             out.contains(
@@ -904,7 +950,7 @@ mod tests {
             constant = "2.1"
             "#,
         );
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // Writer pins the literal at the source path.
         assert!(
             out.contains("source.ubl_version_id = Some(CompactString::from(\"2.1\"));"),
@@ -925,7 +971,7 @@ mod tests {
             constant = "urn:cen.eu:en16931:2017"
             "#,
         );
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // Reader fills the hub from the document as usual.
         assert!(out.contains("source.customization_id.take()"), "{out}");
         assert!(out.contains("main.specification_id = Some(raw);"), "{out}");
@@ -956,7 +1002,7 @@ mod tests {
             constant = "380"
             "#,
         );
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // The constant assignment sits inside the non-empty guard, before the
         // push: it never resurrects an otherwise-empty item.
         let guard = out
@@ -984,7 +1030,7 @@ mod tests {
             clone_of = "InvoiceNumber"
             "#,
         );
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // The hub key is written twice (primary + clone), so both writes borrow
         // instead of moving.
         assert_eq!(
@@ -1014,7 +1060,7 @@ mod tests {
             clone_of = "InvoiceNumber"
             "#,
         );
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // Only the primary fills the hub.
         assert_eq!(
             out.matches("main.invoice_number = Some(raw);").count(),
@@ -1044,7 +1090,7 @@ mod tests {
             clone_of = "LineId"
             "#,
         );
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // Writer: both element fields written from the same hub item key.
         assert_eq!(
             out.matches("if let Some(value) = &hub_item0.line_id {")
@@ -1080,7 +1126,7 @@ mod tests {
         // alphabetically (`document_currency_code` < `id` < `invoice_line` <
         // `legal_monetary_total`).
         let (ir, _, source) = compiled();
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         let id = offset_in_struct(&out, "Invoice", "pub id:");
         let currency = offset_in_struct(&out, "Invoice", "pub document_currency_code:");
         let totals = offset_in_struct(&out, "Invoice", "pub legal_monetary_total:");
@@ -1094,7 +1140,7 @@ mod tests {
     #[test]
     fn test_source_struct_emits_attributes_before_element_text() {
         let (ir, _, source) = compiled();
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         let attr = offset_in_struct(&out, "PayableAmount", "pub currency_id:");
         let text = offset_in_struct(&out, "PayableAmount", "pub value:");
         assert!(attr < text, "{out}");
@@ -1141,7 +1187,7 @@ mod tests {
     #[test]
     fn test_namespaced_fields_get_split_renames() {
         let (ir, source) = compiled_namespaced();
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // Written prefixed, read by local name.
         assert!(
             out.contains("#[serde(rename(serialize = \"cbc:ID\", deserialize = \"ID\"), default, skip_serializing_if = \"Option::is_none\")]"),
@@ -1165,7 +1211,7 @@ mod tests {
     #[test]
     fn test_namespaced_root_carries_xmlns_markers_and_prefixed_root_tag() {
         let (ir, source) = compiled_namespaced();
-        let out = generate_spoke(&ir, &source, "super::hub");
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // One marker type per declared namespace, serializing as its URI.
         assert!(out.contains("pub struct XmlnsDefault;"), "{out}");
         assert!(out.contains("pub struct XmlnsCbc;"), "{out}");
@@ -1221,12 +1267,57 @@ mod tests {
     }
 
     #[test]
+    fn test_codec_decodes_on_read_checks_wire_and_encodes_on_write() {
+        let codecs = cii_codecs();
+        let src = "[meta]\ndoc_format = \"cii\"\nformat_version = \"1\"\nmapping_version = \"1\"\ncanonical_model = \"c:1\"\nroot = \"Invoice\"\n\n[Invoice.IssueDateTime.DateTimeString]\ntype = \"date\"\ncanonical_key = \"IssueDate\"\ncodec = \"cii-date-102\"\n\n[Invoice.Paid]\ntype = \"boolean\"\ncanonical_key = \"Paid\"\ncodec = \"boolean-1-0\"\n";
+        let (ir, source, diags) = build_ir_with(&[parse_mapping(src).expect("parses")], &codecs);
+        assert!(diags.is_empty(), "{diags:?}");
+        let out = generate_spoke(&ir, &source, &codecs, "super::hub");
+
+        // Source model: the dated element is a valued container with the wire
+        // attribute as an attribute field.
+        assert!(out.contains("pub struct DateTimeString {"), "{out}");
+        assert!(out.contains("rename = \"@format\""), "{out}");
+
+        // Reader: decode through the codec into the canonical ISO form, with a
+        // CODEC_INVALID diagnostic on mismatch; warn when the document's wire
+        // attribute disagrees with the codec's.
+        assert!(
+            out.contains("match codec::decode_date(raw.trim(), \"YYYYMMDD\") {"),
+            "{out}"
+        );
+        assert!(out.contains("CODEC_INVALID"), "{out}");
+        assert!(out.contains("CODEC_WIRE_MISMATCH"), "{out}");
+        assert!(
+            out.contains("match codec::decode_bool(raw.trim(), \"1\", \"0\") {"),
+            "{out}"
+        );
+
+        // Writer: encode through the codec and set the wire attribute next to
+        // the value.
+        assert!(
+            out.contains("match codec::encode_date(value.as_str(), \"YYYYMMDD\") {"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "source.issue_date_time.get_or_insert_default().date_time_string.get_or_insert_default().format = Some(CompactString::from(\"102\"));"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("let rendered = codec::encode_bool(value.clone(), \"1\", \"0\");"),
+            "{out}"
+        );
+    }
+
+    #[test]
     fn test_generation_is_deterministic() {
         let (ir, hub, source) = compiled();
         assert_eq!(generate_hub(&hub), generate_hub(&hub));
         assert_eq!(
-            generate_spoke(&ir, &source, "super::hub"),
-            generate_spoke(&ir, &source, "super::hub")
+            generate_spoke(&ir, &source, &no_codecs(), "super::hub"),
+            generate_spoke(&ir, &source, &no_codecs(), "super::hub")
         );
     }
 }

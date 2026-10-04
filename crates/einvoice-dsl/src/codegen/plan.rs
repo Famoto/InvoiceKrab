@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::codec::{Codec, CodecTable};
 use crate::ir::MappingIr;
 use crate::node::{NodeId, Scope, SourceNode};
 use crate::source_model::SourceModelMeta;
@@ -20,6 +21,16 @@ pub(super) struct GenCtx<'a> {
     pub(super) ir: &'a MappingIr,
     pub(super) source: &'a SourceModelMeta,
     pub(super) plan: &'a MappingPlan<'a>,
+    /// The shared codec table; a node's `codec` resolves against it.
+    pub(super) codecs: &'a CodecTable,
+}
+
+impl GenCtx<'_> {
+    /// The codec a node names, if any and known (validation E084 rejects an
+    /// unknown id, so an unresolved codec here is a build that already failed).
+    pub(super) fn codec_of(&self, node: &SourceNode) -> Option<&Codec> {
+        node.codec.as_deref().and_then(|id| self.codecs.get(id))
+    }
 }
 
 /// The per-recursion location for a collection block: how deep it is (for unique

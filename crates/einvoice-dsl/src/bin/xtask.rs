@@ -1,33 +1,35 @@
 //! `xtask`: the developer CLI over the mapping compiler.
 //!
-//! Thin command layer. Each command loads the mappings directory through the
-//! same [`einvoice_dsl::loader`] the `einvoice-interfaces` build script uses —
-//! inheritance chains resolved, disabled bases skipped, slugs from
-//! `[meta].doc_format` — compiles every spoke through [`einvoice_dsl::compile`]
-//! with the compiler-known adapters, and renders the result. What `check`
-//! accepts, the real build accepts; there is no second loading path.
+//! Thin command layer. Each command loads the `config/` directory (codecs,
+//! then mappings) through the same [`einvoice_dsl::loader`] the
+//! `einvoice-interfaces` build script uses — inheritance chains resolved,
+//! disabled bases skipped, slugs from `[meta].doc_format` — compiles every
+//! spoke through [`einvoice_dsl::compile`] with the compiler-known adapters and
+//! the loaded codecs, and renders the result. What `check` accepts, the real
+//! build accepts; there is no second loading path.
 //!
 //! # Commands
 //!
-//! - `check  <dir>` — compile the mappings; print every diagnostic (R9: all of
-//!   them). Exits non-zero on any error-severity diagnostic.
-//! - `report <dir>` — print the canonical coverage matrix and the gap report.
+//! - `check  <config-dir>` — compile the mappings; print every diagnostic (R9:
+//!   all of them). Exits non-zero on any error-severity diagnostic.
+//! - `report <config-dir>` — print the canonical coverage matrix and the gap
+//!   report.
 //!
-//! Run as `cargo run -p einvoice-dsl -- check mappings`.
+//! Run as `cargo run -p einvoice-dsl -- check config`.
 
 use std::path::Path;
 use std::process::ExitCode;
 
 use einvoice_dsl::compile::{CompileOutput, SpokeInput, compile, known_adapters};
 use einvoice_dsl::error::Severity;
-use einvoice_dsl::loader::load_dir;
+use einvoice_dsl::loader::load_config;
 use einvoice_dsl::report::{coverage_matrix, gap_report, render_coverage_markdown};
 
 const USAGE: &str = "\
-usage: xtask <command> <mappings-dir>
+usage: xtask <command> <config-dir>
 
 commands:
-  check  <dir>   compile every spoke mapping; report all diagnostics
+  check  <dir>   compile every spoke mapping (with <dir>/codecs); report all diagnostics
   report <dir>   print the canonical coverage matrix and gap report
 ";
 
@@ -66,18 +68,19 @@ fn usage() -> CommandOutput {
     }
 }
 
-/// Loads the mappings directory, compiles it, and hands the result to `render`.
+/// Loads the config directory (codecs + mappings), compiles it, and hands the
+/// result to `render`.
 fn with_spokes(
     dir: Option<&String>,
     render: impl FnOnce(CompileOutput) -> CommandOutput,
 ) -> CommandOutput {
     let Some(dir) = dir else {
         return CommandOutput {
-            stdout: format!("error: a mappings directory is required\n\n{USAGE}"),
+            stdout: format!("error: a config directory is required\n\n{USAGE}"),
             exit_code: 2,
         };
     };
-    let loaded = match load_dir(Path::new(dir)) {
+    let loaded = match load_config(Path::new(dir)) {
         Ok(l) => l,
         Err(e) => {
             return CommandOutput {
@@ -94,7 +97,7 @@ fn with_spokes(
             chain: &s.chain,
         })
         .collect();
-    let out = compile(&spokes, &known_adapters());
+    let out = compile(&spokes, &known_adapters(), &loaded.codecs);
     render(out)
 }
 
@@ -181,7 +184,7 @@ mod tests {
                 chain,
             })
             .collect();
-        compile(&spokes, &BTreeSet::new())
+        compile(&spokes, &BTreeSet::new(), &Default::default())
     }
 
     #[test]
@@ -239,11 +242,12 @@ mod tests {
     }
 
     #[test]
-    fn test_check_real_mappings_dir_uses_shared_loader() {
-        // End-to-end over the workspace `mappings/`: inheritance chains resolve
-        // (xrechnung/peppol/facturx inherit their bases) and the disabled CII
-        // base emits no spoke — exactly what the build script compiles.
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mappings");
+    fn test_check_real_config_dir_uses_shared_loader() {
+        // End-to-end over the workspace `config/`: codecs load, inheritance
+        // chains resolve (xrechnung/peppol/facturx inherit their bases) and the
+        // disabled CII base emits no spoke — exactly what the build script
+        // compiles.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config");
         let rendered = with_spokes(Some(&dir.display().to_string()), |out| {
             assert!(!out.has_errors(), "{:?}", out.diagnostics);
             assert!(

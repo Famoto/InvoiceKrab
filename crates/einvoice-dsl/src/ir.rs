@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::codec::CodecTable;
 use crate::error::Diagnostic;
 use crate::meta::MappingMeta;
 use crate::node::{NodeId, SourceNode};
@@ -30,7 +31,8 @@ pub struct MappingIr {
     pub nodes: BTreeMap<NodeId, SourceNode>,
 }
 
-/// Builds the IR from an inheritance chain (ancestor-first, leaf-last).
+/// Builds the IR from an inheritance chain (ancestor-first, leaf-last) with no
+/// codecs available; see [`build_ir_with`].
 ///
 /// Also *synthesizes* the typed source model from the merged nodes
 /// ([`synthesize_source_model`]) — the struct tree and each node's `source_path`
@@ -43,6 +45,15 @@ pub struct MappingIr {
 ///
 /// Panics if `chain` is empty; the caller must supply at least the leaf mapping.
 pub fn build_ir(chain: &[ParsedMapping]) -> (MappingIr, SourceModelMeta, Vec<Diagnostic>) {
+    build_ir_with(chain, &CodecTable::new())
+}
+
+/// [`build_ir`] with the shared codec table: a node's `codec` may add the
+/// codec's wire attributes to the synthesized source model.
+pub fn build_ir_with(
+    chain: &[ParsedMapping],
+    codecs: &CodecTable,
+) -> (MappingIr, SourceModelMeta, Vec<Diagnostic>) {
     let (leaf, ancestors) = chain
         .split_last()
         .expect("inheritance chain must contain at least the leaf mapping");
@@ -67,7 +78,8 @@ pub fn build_ir(chain: &[ParsedMapping]) -> (MappingIr, SourceModelMeta, Vec<Dia
 
     let merged = merge_inheritance(chain);
     let active = remove_disabled(merged);
-    let (source, paths, mut diags) = synthesize_source_model_with(&active, &root, &model_id, &ns);
+    let (source, paths, mut diags) =
+        synthesize_source_model_with(&active, &root, &model_id, &ns, codecs);
     let (nodes, default_diags) = apply_defaults(&active, &paths);
     diags.extend(default_diags);
 

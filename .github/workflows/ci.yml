@@ -29,8 +29,8 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Check mappings
-        run: cargo run --locked -p einvoice-dsl -- check mappings
+      - name: Check mappings and codecs
+        run: cargo run --locked -p einvoice-dsl -- check config
 
       - name: Check workspace
         run: cargo check --workspace --all-targets --locked

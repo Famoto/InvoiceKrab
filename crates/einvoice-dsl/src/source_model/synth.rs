@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::codec::CodecTable;
 use crate::error::{Diagnostic, Severity};
 use crate::node::{NodeId, RawNode, Scope};
 use crate::types::MappingType;
@@ -70,27 +71,44 @@ impl NamespaceConfig {
 ///   interior element named by a *structural node* (`ns` only, no `type`)
 ///   takes that node's `ns`. Attributes and `$text` are never prefixed.
 ///
+/// - A node whose `codec` carries *wire attributes* (`wire = { "@format" =
+///   "102" }`) is a valued container even without descendants: its struct gets
+///   one attribute field per wire attribute, which the writer sets alongside
+///   the encoded value.
+///
 /// Namespace diagnostics (all errors): `E080` a prefix used by `root_ns`, the
 /// defaults, or a node's `ns` is not declared in `[meta.namespaces]`; `E081`
 /// `ns` on an attribute or `$text` leaf; `E083` a structural node that names no
 /// element (no typed node beneath it, or the root, whose prefix is `root_ns`).
+/// Codec diagnostic: `E087` a wire attribute that collides with an attribute
+/// node the mapping declares on the same element. (Unknown codec ids and type
+/// mismatches are the validator's E084/E085.)
 ///
 /// This entry point uses the default [`NamespaceConfig`] (nothing prefixed or
-/// declared); [`synthesize_source_model_with`] takes the mapping's.
+/// declared) and no codecs; [`synthesize_source_model_with`] takes the
+/// mapping's.
 pub fn synthesize_source_model(
     active: &BTreeMap<NodeId, RawNode>,
     root: &str,
     model_id: &str,
 ) -> (SourceModelMeta, BTreeMap<NodeId, String>, Vec<Diagnostic>) {
-    synthesize_source_model_with(active, root, model_id, &NamespaceConfig::default())
+    synthesize_source_model_with(
+        active,
+        root,
+        model_id,
+        &NamespaceConfig::default(),
+        &CodecTable::new(),
+    )
 }
 
-/// [`synthesize_source_model`] with an explicit namespace configuration.
+/// [`synthesize_source_model`] with an explicit namespace configuration and
+/// the shared codec table.
 pub fn synthesize_source_model_with(
     active: &BTreeMap<NodeId, RawNode>,
     root: &str,
     model_id: &str,
     ns: &NamespaceConfig,
+    codecs: &CodecTable,
 ) -> (SourceModelMeta, BTreeMap<NodeId, String>, Vec<Diagnostic>) {
     let mut structs: BTreeMap<String, StructMeta> = BTreeMap::new();
     structs.insert(root.to_string(), StructMeta::default());
@@ -153,7 +171,17 @@ pub fn synthesize_source_model_with(
             continue;
         }
 
-        match insert_node(&mut structs, &base, &segments, node, ty, active, id, ns) {
+        match insert_node(
+            &mut structs,
+            &base,
+            &segments,
+            node,
+            ty,
+            active,
+            id,
+            ns,
+            codecs,
+        ) {
             Ok(path) => {
                 source_paths.insert(id.clone(), path);
             }
@@ -277,8 +305,17 @@ fn insert_node(
     active: &BTreeMap<NodeId, RawNode>,
     id: &NodeId,
     ns: &NamespaceConfig,
+    codecs: &CodecTable,
 ) -> Result<String, (&'static str, String)> {
     let e024 = |msg: String| ("E024", msg);
+    // The codec's wire attributes, if the node names a known codec that has
+    // any: they make the element a valued container with attribute fields.
+    let wire: Vec<&String> = node
+        .codec
+        .as_deref()
+        .and_then(|c| codecs.get(c))
+        .map(|c| c.wire.keys().collect())
+        .unwrap_or_default();
     // The node's own prefix: its `ns`, else the default for its kind.
     let own_prefix = |default: &str| node.ns.clone().unwrap_or_else(|| default.to_string());
     // Full ids of the interior segments: `segments` is the id minus the scope
@@ -424,10 +461,11 @@ fn insert_node(
         return Ok(path_parts.join("."));
     }
 
-    // A typed element with descendant nodes is a *valued container*: its own
-    // value is the element text, carried by a `$text` `value` field inside a
-    // struct that also holds its descendants (e.g. an `@currencyID` attribute).
-    if has_descendant(active, id) {
+    // A typed element with descendant nodes — or with codec wire attributes — is
+    // a *valued container*: its own value is the element text, carried by a
+    // `$text` `value` field inside a struct that also holds its descendants
+    // (e.g. an `@currencyID` attribute) and the wire attributes.
+    if has_descendant(active, id) || !wire.is_empty() {
         if multi {
             return Err(e024(
                 "`multiple` is not valid on a valued container (model the repetition as a collection instead)"
@@ -466,6 +504,32 @@ fn insert_node(
             },
         )
         .map_err(e024)?;
+        for attr in wire {
+            // A declared attribute node on the same element would compete with
+            // the codec for the attribute's value.
+            if active.contains_key(&NodeId::new(format!("{id}.{attr}"))) {
+                return Err((
+                    "E087",
+                    format!(
+                        "codec wire attribute `@{attr}` collides with the attribute node `{id}.{attr}`"
+                    ),
+                ));
+            }
+            upsert_field(
+                structs,
+                &struct_name,
+                &snake_case(attr),
+                FieldMeta {
+                    optional: true,
+                    repeated: false,
+                    ty: FieldType::Scalar,
+                    xml: Some(format!("@{attr}")),
+                    prefix: String::new(),
+                    order: node.position,
+                },
+            )
+            .map_err(e024)?;
+        }
         path_parts.push(field);
         path_parts.push("value".to_string());
         return Ok(path_parts.join("."));
@@ -923,10 +987,114 @@ mod tests {
     }
 
     fn synth_ns(pairs: &[(&str, &str)], ns: &NamespaceConfig) -> SourceModelMeta {
-        let (model, _, diags) =
-            synthesize_source_model_with(&nodes(pairs), "Invoice", "ubl:2.1", ns);
+        let (model, _, diags) = synthesize_source_model_with(
+            &nodes(pairs),
+            "Invoice",
+            "ubl:2.1",
+            ns,
+            &CodecTable::new(),
+        );
         assert!(diags.is_empty(), "unexpected synth diagnostics: {diags:?}");
         model
+    }
+
+    /// A codec table holding the CII `102` date codec (wire `@format = 102`)
+    /// and a wire-less ISO date codec.
+    fn codecs() -> CodecTable {
+        crate::codec::parse_codecs(
+            r#"
+            [codec.cii-date-102]
+            for_type = "date"
+            lexical = "YYYYMMDD"
+            wire = { "@format" = "102" }
+
+            [codec.date-iso]
+            for_type = "date"
+            lexical = "YYYY-MM-DD"
+            "#,
+        )
+        .expect("codecs parse")
+        .into_iter()
+        .map(|c| (c.id.clone(), c))
+        .collect()
+    }
+
+    fn synth_codecs(
+        pairs: &[(&str, &str)],
+    ) -> (SourceModelMeta, BTreeMap<NodeId, String>, Vec<Diagnostic>) {
+        synthesize_source_model_with(
+            &nodes(pairs),
+            "Invoice",
+            "cii:1",
+            &NamespaceConfig::default(),
+            &codecs(),
+        )
+    }
+
+    #[test]
+    fn test_synth_codec_wire_attribute_makes_a_valued_container() {
+        let (model, paths, diags) = synth_codecs(&[(
+            "Invoice.IssueDateTime.DateTimeString",
+            r#"type = "date"
+            codec = "cii-date-102""#,
+        )]);
+        assert!(diags.is_empty(), "{diags:?}");
+        let dts = &model.structs["DateTimeString"];
+        assert_eq!(dts.fields["value"].xml.as_deref(), Some("$text"));
+        let format = &dts.fields["format"];
+        assert_eq!(format.xml.as_deref(), Some("@format"));
+        assert!(format.optional && format.is_attribute());
+        assert_eq!(
+            paths[&NodeId::new("Invoice.IssueDateTime.DateTimeString")],
+            "issue_date_time.date_time_string.value"
+        );
+        assert_eq!(ordered(&model, "DateTimeString"), ["format", "value"]);
+    }
+
+    #[test]
+    fn test_synth_codec_without_wire_stays_a_plain_leaf() {
+        let (model, paths, diags) = synth_codecs(&[(
+            "Invoice.IssueDate",
+            r#"type = "date"
+            codec = "date-iso""#,
+        )]);
+        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(model.structs["Invoice"].fields["issue_date"].ty, Scalar);
+        assert_eq!(paths[&NodeId::new("Invoice.IssueDate")], "issue_date");
+    }
+
+    #[test]
+    fn test_synth_unknown_codec_is_left_to_the_validator() {
+        // Synthesis places the node as if it had no codec; E084 is validate's.
+        let (model, _, diags) = synth_codecs(&[(
+            "Invoice.IssueDate",
+            r#"type = "date"
+            codec = "nope""#,
+        )]);
+        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(model.structs["Invoice"].fields["issue_date"].ty, Scalar);
+    }
+
+    #[test]
+    fn test_synth_wire_attribute_colliding_with_attribute_node_is_e087() {
+        let (_, _, diags) = synth_codecs(&[
+            (
+                "Invoice.IssueDateTime.DateTimeString",
+                r#"type = "date"
+                codec = "cii-date-102""#,
+            ),
+            (
+                "Invoice.IssueDateTime.DateTimeString.format",
+                r#"xml = "@format"
+                type = "string""#,
+            ),
+        ]);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "E087" && d.message.contains("@format")),
+            "{diags:?}"
+        );
     }
 
     fn prefix_of<'a>(model: &'a SourceModelMeta, st: &str, field: &str) -> &'a str {
@@ -1045,6 +1213,7 @@ mod tests {
             "Invoice",
             "ubl:2.1",
             &ubl_ns(),
+            &CodecTable::new(),
         );
         assert!(
             diags
@@ -1061,6 +1230,7 @@ mod tests {
             "Invoice",
             "ubl:2.1",
             &bad_meta,
+            &CodecTable::new(),
         );
         let e080: Vec<&str> = diags
             .iter()
@@ -1087,6 +1257,7 @@ mod tests {
             "Invoice",
             "ubl:2.1",
             &ns,
+            &CodecTable::new(),
         );
         assert!(diags.is_empty(), "{diags:?}");
     }
@@ -1102,6 +1273,7 @@ mod tests {
                 "Invoice",
                 "ubl:2.1",
                 &ubl_ns(),
+                &CodecTable::new(),
             );
             assert!(diags.iter().any(|d| d.code == "E081"), "{body}: {diags:?}");
         }
@@ -1117,6 +1289,7 @@ mod tests {
             "Invoice",
             "ubl:2.1",
             &ubl_ns(),
+            &CodecTable::new(),
         );
         assert!(
             diags
@@ -1132,6 +1305,7 @@ mod tests {
             "Invoice",
             "ubl:2.1",
             &ubl_ns(),
+            &CodecTable::new(),
         );
         assert!(
             diags

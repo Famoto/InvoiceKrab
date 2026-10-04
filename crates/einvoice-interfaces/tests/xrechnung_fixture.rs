@@ -165,3 +165,87 @@ fn test_transform_emits_elements_in_the_fixtures_schema_order() {
         ]
     );
 }
+
+#[test]
+fn test_cii_dates_round_trip_through_the_format_102_codec() {
+    // UBL ISO dates become CII format-102 dates with the wire attribute on the
+    // way out, and come back as ISO dates on the way in.
+    let engine = Engine::new();
+    let facturx = engine
+        .transform(Spoke::UblInvoice, Spoke::FacturxInvoice, &xrechnung())
+        .expect("fixture is well-formed XML");
+    assert!(!facturx.has_errors(), "{:?}", facturx.diagnostics);
+    let xml = facturx.value.expect("writer yields a document");
+    assert!(
+        xml.contains(r#"<udt:DateTimeString format="102">20260415</udt:DateTimeString>"#),
+        "{xml}"
+    );
+    assert!(
+        xml.contains(r#"<udt:DateTimeString format="102">20260515</udt:DateTimeString>"#),
+        "due date: {xml}"
+    );
+    assert!(
+        !xml.contains("2026-04-15"),
+        "no ISO date leaks into CII: {xml}"
+    );
+
+    let back = engine
+        .transform(Spoke::FacturxInvoice, Spoke::UblInvoice, xml.as_bytes())
+        .expect("emitted Factur-X is well-formed");
+    assert!(!back.has_errors(), "{:?}", back.diagnostics);
+    let ubl = back.value.expect("document");
+    assert!(
+        ubl.contains("<cbc:IssueDate>2026-04-15</cbc:IssueDate>"),
+        "{ubl}"
+    );
+    assert!(
+        ubl.contains("<cbc:DueDate>2026-05-15</cbc:DueDate>"),
+        "{ubl}"
+    );
+}
+
+#[test]
+fn test_cii_date_codec_diagnostics_on_read() {
+    let engine = Engine::new();
+    // A date not in the codec's lexical form is a CODEC_INVALID error; a wire
+    // attribute that disagrees with the codec is a CODEC_WIRE_MISMATCH warning.
+    let doc = br#"<CrossIndustryInvoice>
+        <ExchangedDocument>
+            <ID>INV-1</ID>
+            <IssueDateTime><DateTimeString format="610">2026-04-15</DateTimeString></IssueDateTime>
+        </ExchangedDocument>
+        <SupplyChainTradeTransaction>
+            <IncludedSupplyChainTradeLineItem><AssociatedDocumentLineDocument><LineID>1</LineID></AssociatedDocumentLineDocument></IncludedSupplyChainTradeLineItem>
+            <ApplicableHeaderTradeSettlement>
+                <SpecifiedTradePaymentTerms><DueDateDateTime><DateTimeString format="102">20260515</DateTimeString></DueDateDateTime></SpecifiedTradePaymentTerms>
+            </ApplicableHeaderTradeSettlement>
+        </SupplyChainTradeTransaction>
+    </CrossIndustryInvoice>"#;
+    let result = engine
+        .to_hub(Spoke::FacturxInvoice, doc)
+        .expect("well-formed");
+    let hub = result.value.expect("reader always yields a hub");
+    assert_eq!(hub.issue_date, None, "undecodable date is not assigned");
+    assert_eq!(
+        hub.due_date.as_deref(),
+        Some("2026-05-15"),
+        "format 102 decodes"
+    );
+    assert!(
+        result.diagnostics.iter().any(|d| {
+            d.code == "CODEC_INVALID"
+                && d.source_node
+                    == "CrossIndustryInvoice.ExchangedDocument.IssueDateTime.DateTimeString"
+        }),
+        "{:?}",
+        result.diagnostics
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| { d.code == "CODEC_WIRE_MISMATCH" && d.message.contains("610") }),
+        "{:?}",
+        result.diagnostics
+    );
+}

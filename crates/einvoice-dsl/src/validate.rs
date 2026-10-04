@@ -30,12 +30,17 @@
 //! - `E071` `clone_of` target key not declared by a primary node in the same
 //!   scope.
 //! - `E072` `clone_of` node's `type` differs from its target's.
+//! - `E084` unknown codec id.
+//! - `E085` codec on a collection, or codec `for_type` differs from the node's
+//!   `type`.
+//! - `W050` `adapter` is deprecated (warning): use `normalize` or a codec.
 //!
 //! Unknown TOML fields (`E001`), missing `path`/`type` (`E002`), and cross-spoke
 //! hub conflicts (`E010`/`E011`) are caught earlier (parse / resolve / hub).
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::codec::CodecTable;
 use crate::error::{Diagnostic, Severity};
 use crate::ir::MappingIr;
 use crate::node::{NodeId, Scope, SourceNode};
@@ -50,6 +55,8 @@ pub struct ValidationInput<'a> {
     pub source: &'a SourceModelMeta,
     /// Known adapter names. Empty means none are known.
     pub adapters: &'a BTreeSet<String>,
+    /// The shared codec table a node's `codec` must name.
+    pub codecs: &'a CodecTable,
 }
 
 /// Validates one mapping, returning every diagnostic in deterministic order.
@@ -62,6 +69,7 @@ pub fn validate(input: &ValidationInput) -> Vec<Diagnostic> {
         check_structural(node, &mut diags);
         check_fallbacks(node, input.ir, &mut diags);
         check_adapter(node, input.adapters, &mut diags);
+        check_codec(node, input.codecs, &mut diags);
         check_constant(node, &mut diags);
         check_clone_of(node, input.ir, &mut diags);
     }
@@ -295,6 +303,7 @@ fn check_constant(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
         (node.multiple.is_some(), "multiple"),
         (node.adapter.is_some(), "adapter"),
         (!node.normalize.is_empty(), "normalize"),
+        (node.codec.is_some(), "codec"),
     ] {
         if set {
             diags.push(err(
@@ -422,10 +431,48 @@ fn check_clone_of(node: &SourceNode, ir: &MappingIr, diags: &mut Vec<Diagnostic>
 }
 
 fn check_adapter(node: &SourceNode, adapters: &BTreeSet<String>, diags: &mut Vec<Diagnostic>) {
-    if let Some(name) = &node.adapter
-        && !adapters.contains(name)
-    {
+    let Some(name) = &node.adapter else {
+        return;
+    };
+    if !adapters.contains(name) {
         diags.push(err("E050", &node.id, format!("unknown adapter `{name}`")));
+    }
+    diags.push(Diagnostic {
+        code: "W050".to_string(),
+        severity: Severity::Warning,
+        source_node: Some(node.id.to_string()),
+        message: format!(
+            "`adapter = \"{name}\"` is deprecated and will be removed; use `normalize` or a `codec`"
+        ),
+        span: None,
+    });
+}
+
+/// `E084`/`E085`: a node's `codec` must name a known codec whose `for_type` is
+/// the node's own scalar type.
+fn check_codec(node: &SourceNode, codecs: &CodecTable, diags: &mut Vec<Diagnostic>) {
+    let Some(id) = &node.codec else {
+        return;
+    };
+    if node.is_collection() {
+        diags.push(err(
+            "E085",
+            &node.id,
+            "`codec` is only valid on a scalar node".to_string(),
+        ));
+        return;
+    }
+    match codecs.get(id) {
+        None => diags.push(err("E084", &node.id, format!("unknown codec `{id}`"))),
+        Some(codec) if codec.for_type != node.source_type => diags.push(err(
+            "E085",
+            &node.id,
+            format!(
+                "codec `{id}` is for `{}` values but the node's type is `{}`",
+                codec.for_type, node.source_type
+            ),
+        )),
+        Some(_) => {}
     }
 }
 
@@ -506,12 +553,103 @@ mod tests {
     }
 
     fn run_with_adapters(body: &str, adapters: &BTreeSet<String>) -> Vec<Diagnostic> {
+        run_with(body, adapters, &CodecTable::new())
+    }
+
+    fn run_with(body: &str, adapters: &BTreeSet<String>, codecs: &CodecTable) -> Vec<Diagnostic> {
         let (ir, source) = compiled(body);
         validate(&ValidationInput {
             ir: &ir,
             source: &source,
             adapters,
+            codecs,
         })
+    }
+
+    fn date_codecs() -> CodecTable {
+        crate::codec::parse_codecs(
+            "[codec.cii-date-102]\nfor_type = \"date\"\nlexical = \"YYYYMMDD\"\nwire = { \"@format\" = \"102\" }",
+        )
+        .expect("codecs parse")
+        .into_iter()
+        .map(|c| (c.id.clone(), c))
+        .collect()
+    }
+
+    #[test]
+    fn test_known_codec_of_matching_type_is_clean() {
+        let diags = run_with(
+            r#"[Invoice.IssueDate]
+            type = "date"
+            canonical_key = "IssueDate"
+            codec = "cii-date-102""#,
+            &BTreeSet::new(),
+            &date_codecs(),
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn test_unknown_codec_is_e084() {
+        let diags = run_with(
+            r#"[Invoice.IssueDate]
+            type = "date"
+            codec = "nope""#,
+            &BTreeSet::new(),
+            &date_codecs(),
+        );
+        assert_eq!(codes(&diags), ["E084"]);
+    }
+
+    #[test]
+    fn test_codec_type_mismatch_is_e085() {
+        let diags = run_with(
+            r#"[Invoice.Note]
+            type = "string"
+            codec = "cii-date-102""#,
+            &BTreeSet::new(),
+            &date_codecs(),
+        );
+        assert_eq!(codes(&diags), ["E085"]);
+        assert!(diags[0].message.contains("`date`") && diags[0].message.contains("`string`"));
+    }
+
+    #[test]
+    fn test_codec_on_collection_is_e085() {
+        let diags = run_with(
+            r#"[Lines]
+            type = "collection"
+            codec = "cii-date-102""#,
+            &BTreeSet::new(),
+            &date_codecs(),
+        );
+        assert!(codes(&diags).contains(&"E085"), "{diags:?}");
+    }
+
+    #[test]
+    fn test_constant_with_codec_is_e062() {
+        let diags = run_with(
+            r#"[Invoice.IssueDate]
+            type = "date"
+            constant = "2026-01-01"
+            codec = "cii-date-102""#,
+            &BTreeSet::new(),
+            &date_codecs(),
+        );
+        assert!(codes(&diags).contains(&"E062"), "{diags:?}");
+    }
+
+    #[test]
+    fn test_adapter_is_deprecated_w050() {
+        let adapters: BTreeSet<String> = ["known".to_string()].into_iter().collect();
+        let diags = run_with_adapters(
+            r#"[Invoice.X]
+            type = "string"
+            adapter = "known""#,
+            &adapters,
+        );
+        assert_eq!(codes(&diags), ["W050"]);
+        assert_eq!(diags[0].severity, Severity::Warning);
     }
 
     fn codes(diags: &[Diagnostic]) -> Vec<&str> {
@@ -679,7 +817,7 @@ mod tests {
         let diags = run(r#"[Invoice.ID]
             type = "identifier"
             adapter = "nope""#);
-        assert_eq!(codes(&diags), ["E050"]);
+        assert_eq!(codes(&diags), ["E050", "W050"]);
     }
 
     #[test]
@@ -691,7 +829,11 @@ mod tests {
             adapter = "known""#,
             &adapters,
         );
-        assert!(diags.is_empty());
+        assert_eq!(
+            codes(&diags),
+            ["W050"],
+            "known: only the deprecation warning"
+        );
     }
 
     #[test]

@@ -4,7 +4,8 @@
 
 `einvoice-interfaces` is the **public engine API and CLI** — the crate that wires
 the build-time compiler (`einvoice-dsl`) to the runtime helpers
-(`einvoice-transformator`). Its `build.rs` scans the workspace `mappings/`
+(`einvoice-transformator`). Its `build.rs` loads the workspace `config/`
+directory — the shared codecs in `config/codecs/`, then the `config/mappings/`
 directory, resolves each spoke's inheritance chain (ancestor-first; a
 `[meta].disabled = true` mapping stays resolvable as a parent but emits no
 spoke), compiles everything through `einvoice_dsl::compile`, and generates the

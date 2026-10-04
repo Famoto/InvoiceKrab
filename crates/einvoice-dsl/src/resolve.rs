@@ -143,6 +143,7 @@ pub fn apply_defaults(
                 clone_of: raw.clone_of.clone(),
                 description: raw.description.clone(),
                 ns: raw.ns.clone(),
+                codec: raw.codec.clone(),
             },
         );
     }
@@ -197,7 +198,13 @@ mod tests {
             .collect(),
             ..Default::default()
         };
-        let (_model, paths, sdiags) = synthesize_source_model_with(&active, "Invoice", "s:1", &ns);
+        let (_model, paths, sdiags) = synthesize_source_model_with(
+            &active,
+            "Invoice",
+            "s:1",
+            &ns,
+            &crate::codec::CodecTable::new(),
+        );
         assert!(
             sdiags.is_empty(),
             "unexpected synth diagnostics: {sdiags:?}"
@@ -226,6 +233,7 @@ mod tests {
         assert_eq!(n.min_items, None);
         assert_eq!(n.adapter, None);
         assert_eq!(n.constant, None, "undeclared constant stays None");
+        assert_eq!(n.codec, None);
         assert_eq!(n.scope, Scope::Root);
     }
 

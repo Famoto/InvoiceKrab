@@ -1,6 +1,6 @@
 //! The canonical-key authoring aid (an authoring view over the derived hub).
 //!
-//! Writing a spoke `mappings/*.toml` means attaching source nodes to canonical
+//! Writing a spoke `config/mappings/*.toml` means attaching source nodes to canonical
 //! `canonical_key`s. Those keys are not declared in one central place: the hub is
 //! *derived* as the union of every `canonical_key` across every spoke (see
 //! `einvoice-dsl`'s `derive_hub`). That makes it easy, while writing a new

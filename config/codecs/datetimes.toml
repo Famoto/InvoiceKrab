@@ -1,0 +1,15 @@
+# Shared date-time codecs: the hub holds ISO `YYYY-MM-DDThh:mm:ss`.
+#
+# Pattern tokens: YYYY MM DD hh mm ss, with `-` `.` `/` `:` `T` and space as
+# separators; `ss` is optional (decoding without it yields `:00` seconds).
+
+# ISO 8601 date-time, the hub's own form.
+[codec.datetime-iso]
+for_type = "datetime"
+lexical = "YYYY-MM-DDThh:mm:ss"
+
+# UN/CEFACT date-time format 204 (CCYYMMDDHHMMSS), CII / Factur-X.
+[codec.cii-datetime-204]
+for_type = "datetime"
+lexical = "YYYYMMDDhhmmss"
+wire = { "@format" = "204" }

@@ -11,9 +11,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::codec::CodecTable;
 use crate::error::{Diagnostic, Severity};
 use crate::hub::{CanonicalModel, derive_hub};
-use crate::ir::{MappingIr, build_ir};
+use crate::ir::{MappingIr, build_ir_with};
 use crate::parse::ParsedMapping;
 use crate::source_model::SourceModelMeta;
 use crate::validate::{ValidationInput, validate};
@@ -65,14 +66,20 @@ impl CompileOutput {
 }
 
 /// Compiles a set of spokes into IRs + the derived hub + aggregated diagnostics.
-pub fn compile(spokes: &[SpokeInput], adapters: &BTreeSet<String>) -> CompileOutput {
+/// `codecs` is the shared codec table (loaded from `config/codecs/`) that nodes
+/// may name with `codec`.
+pub fn compile(
+    spokes: &[SpokeInput],
+    adapters: &BTreeSet<String>,
+    codecs: &CodecTable,
+) -> CompileOutput {
     let mut irs = BTreeMap::new();
     let mut sources: BTreeMap<String, SourceModelMeta> = BTreeMap::new();
     let mut diagnostics = Vec::new();
 
     // Stage 1–6 per spoke: build the normalized IR + synthesize its source model.
     for spoke in spokes {
-        let (ir, source, ir_diags) = build_ir(spoke.chain);
+        let (ir, source, ir_diags) = build_ir_with(spoke.chain, codecs);
         diagnostics.extend(prefix_spoke(&spoke.id, ir_diags));
         irs.insert(spoke.id.clone(), ir);
         sources.insert(spoke.id.clone(), source);
@@ -90,6 +97,7 @@ pub fn compile(spokes: &[SpokeInput], adapters: &BTreeSet<String>) -> CompileOut
             ir,
             source: &sources[&spoke.id],
             adapters,
+            codecs,
         });
         diagnostics.extend(prefix_spoke(&spoke.id, diags));
     }
@@ -162,7 +170,7 @@ mod tests {
                 chain: std::slice::from_ref(&b),
             },
         ];
-        let out = compile(&spokes, &BTreeSet::new());
+        let out = compile(&spokes, &BTreeSet::new(), &CodecTable::new());
         assert!(!out.has_errors(), "{:?}", out.diagnostics);
         assert_eq!(out.irs.len(), 2);
         assert_eq!(out.hub.len(), 1, "shared canonical key merges");
@@ -195,7 +203,7 @@ mod tests {
                 chain: std::slice::from_ref(&b),
             },
         ];
-        let out = compile(&spokes, &BTreeSet::new());
+        let out = compile(&spokes, &BTreeSet::new(), &CodecTable::new());
         assert!(out.has_errors());
         let codes: Vec<&str> = out.diagnostics.iter().map(|d| d.code.as_str()).collect();
         assert!(codes.contains(&"E010"), "cross-spoke conflict: {codes:?}");
@@ -217,7 +225,7 @@ mod tests {
             id: "a".into(),
             chain: std::slice::from_ref(&a),
         }];
-        let out = compile(&spokes, &BTreeSet::new());
+        let out = compile(&spokes, &BTreeSet::new(), &CodecTable::new());
         let source = out.sources.get("a").expect("source for spoke `a`");
         assert_eq!(source.root, "Doc");
         assert!(source.structs.contains_key("Doc"));
@@ -238,7 +246,7 @@ mod tests {
             id: "a".into(),
             chain: std::slice::from_ref(&a),
         }];
-        let out = compile(&spokes, &known_adapters());
+        let out = compile(&spokes, &known_adapters(), &CodecTable::new());
         assert!(!out.has_errors(), "{:?}", out.diagnostics);
     }
 
@@ -254,8 +262,8 @@ mod tests {
             id: "a".into(),
             chain: std::slice::from_ref(&a),
         }];
-        let first = compile(&spokes, &BTreeSet::new());
-        let second = compile(&spokes, &BTreeSet::new());
+        let first = compile(&spokes, &BTreeSet::new(), &CodecTable::new());
+        let second = compile(&spokes, &BTreeSet::new(), &CodecTable::new());
         assert_eq!(first.irs, second.irs);
         assert_eq!(first.hub, second.hub);
         assert_eq!(first.diagnostics, second.diagnostics);

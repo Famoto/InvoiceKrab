@@ -1,8 +1,11 @@
 //! Reader generation: `read(mut source: Root) -> MappingResult<MainKey>`.
 //!
 //! Per node: reads the source field, applies the normalize chain, falls back
-//! through `fallbacks`, decodes/validates by `type`, applies an optional
-//! `adapter`, enforces `required`/`min_items`, and assigns into the typed hub.
+//! through `fallbacks`, decodes/validates by `type` (through the node's `codec`
+//! when it has one: the lexical form becomes the canonical form, a mismatch is
+//! `CODEC_INVALID`, and a wire attribute that disagrees with the codec's is
+//! `CODEC_WIRE_MISMATCH`), applies an optional `adapter`, enforces
+//! `required`/`min_items`, and assigns into the typed hub.
 //!
 //! A `clone_of` node never fills the hub: after every primary assign in its
 //! scope, its path is read and decoded only to check the copy against the
@@ -18,6 +21,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+use crate::codec::{Codec, Pattern};
 use crate::multiple::MultiplePolicy;
 use crate::node::SourceNode;
 use crate::normalize::NormalizeOp;
@@ -175,6 +179,9 @@ fn read_scalar_block(
         );
     } else {
         let _ = writeln!(out, "{pad}// {} -> {key}", node.id);
+        if let Some(codec) = ctx.codec_of(node) {
+            read_wire_checks(out, ctx, node, codec, key, start_struct, indent, target);
+        }
         let binding = if node.fallbacks.is_empty() {
             "value"
         } else {
@@ -234,7 +241,7 @@ fn read_scalar_block(
     // Decode + assign; only a required field gets the missing-value branch,
     // so optional fields emit no dead diagnostic code.
     let _ = writeln!(out, "{pad}if let Some(raw) = value {{");
-    decode_and_assign(out, node, key, indent + 1, target);
+    decode_and_assign(out, node, ctx.codec_of(node), key, indent + 1, target);
     if node.required {
         let _ = writeln!(out, "{pad}}} else {{");
         DiagSpec::new(
@@ -249,6 +256,50 @@ fn read_scalar_block(
         .emit(out, &format!("{pad}    "));
     }
     let _ = writeln!(out, "{pad}}}");
+}
+
+/// Emits, for each wire attribute of the node's codec, a warning when the
+/// document carries the attribute with a different value than the codec
+/// writes (`<DateTimeString format="610">` under a `102` codec). The attribute
+/// lives on the node's element struct, next to the `$text` value the node's
+/// path ends in.
+#[allow(clippy::too_many_arguments)]
+fn read_wire_checks(
+    out: &mut String,
+    ctx: &GenCtx,
+    node: &SourceNode,
+    codec: &Codec,
+    key: &str,
+    start_struct: &str,
+    indent: usize,
+    target: &Target,
+) {
+    let Some(element_path) = node.source_path.strip_suffix(".value") else {
+        return;
+    };
+    let pad = "    ".repeat(indent);
+    for (attr, expected) in &codec.wire {
+        let attr_path = format!("{element_path}.{}", snake_case(attr));
+        let access = access_expr(ctx.source, start_struct, &attr_path, target.base_var);
+        let _ = writeln!(out, "{pad}if let Some(found) = {access} {{");
+        let _ = writeln!(out, "{pad}    if found != {expected:?} {{");
+        let msg = format!(
+            "format!(\"attribute `{attr}` is `{{found}}`, codec `{}` writes `{expected}`\")",
+            codec.id
+        );
+        DiagSpec::new(
+            "Severity::Warning",
+            "CODEC_WIRE_MISMATCH",
+            node.id.as_str(),
+            &msg,
+        )
+        .key(key)
+        .path(&attr_path)
+        .index(target.index_var)
+        .emit(out, &format!("{pad}        "));
+        let _ = writeln!(out, "{pad}    }}");
+        let _ = writeln!(out, "{pad}}}");
+    }
 }
 
 /// Emits the consistency check for one `clone_of` node: read + normalize the
@@ -290,6 +341,7 @@ fn read_clone_check_block(
     decode_body(
         out,
         node,
+        ctx.codec_of(node),
         key,
         &"    ".repeat(indent + 2),
         "clone_value",
@@ -582,6 +634,7 @@ fn read_one_value(
 fn decode_and_assign(
     out: &mut String,
     node: &SourceNode,
+    codec: Option<&Codec>,
     key: &str,
     indent: usize,
     target: &Target,
@@ -613,7 +666,7 @@ fn decode_and_assign(
         (pad.clone(), false)
     };
 
-    decode_body(out, node, key, &decode_pad, &lhs, target);
+    decode_body(out, node, codec, key, &decode_pad, &lhs, target);
 
     if has_adapter_wrap {
         let _ = writeln!(out, "{pad}}}");
@@ -621,14 +674,56 @@ fn decode_and_assign(
 }
 
 /// Emits the type-specific decode of `raw: String` into the typed `lhs` field.
+/// With a `codec`, the raw lexical form is decoded into the canonical form
+/// first (`CODEC_INVALID` when it does not match the codec's pattern).
+#[allow(clippy::too_many_arguments)]
 fn decode_body(
     out: &mut String,
     node: &SourceNode,
+    codec: Option<&Codec>,
     key: &str,
     pad: &str,
     lhs: &str,
     target: &Target,
 ) {
+    if let Some(codec) = codec {
+        let (call, ok) = match (&codec.pattern, node.source_type) {
+            (Pattern::Temporal(_), MappingType::Date) => (
+                format!("codec::decode_date(raw.trim(), {:?})", codec.lexical),
+                format!("Some(iso) => {lhs} = Some(iso),"),
+            ),
+            (Pattern::Temporal(_), MappingType::Datetime) => (
+                format!("codec::decode_datetime(raw.trim(), {:?})", codec.lexical),
+                format!("Some(iso) => {lhs} = Some(iso),"),
+            ),
+            (Pattern::Boolean { yes, no }, MappingType::Boolean) => (
+                format!("codec::decode_bool(raw.trim(), {yes:?}, {no:?})"),
+                format!("Some(b) => {lhs} = Some(b),"),
+            ),
+            // Type / codec disagreement is validation's E085; nothing sane to emit.
+            _ => (
+                format!(
+                    "compile_error!(\"codec `{}` does not fit a `{}` node\")",
+                    codec.id, node.source_type
+                ),
+                String::new(),
+            ),
+        };
+        let _ = writeln!(out, "{pad}match {call} {{");
+        let _ = writeln!(out, "{pad}    {ok}");
+        let _ = writeln!(out, "{pad}    None => {{");
+        let msg = format!(
+            "format!(\"`{{raw}}` does not match codec `{}` ({})\")",
+            codec.id, codec.lexical
+        );
+        DiagSpec::new("Severity::Error", "CODEC_INVALID", node.id.as_str(), &msg)
+            .key(key)
+            .index(target.index_var)
+            .emit(out, &format!("{pad}        "));
+        let _ = writeln!(out, "{pad}    }}");
+        let _ = writeln!(out, "{pad}}}");
+        return;
+    }
     match node.source_type {
         MappingType::Decimal => {
             let _ = writeln!(out, "{pad}match Decimal::from_str(raw.trim()) {{");

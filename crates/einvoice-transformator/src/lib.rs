@@ -16,7 +16,10 @@
 //! - [`validate`] — lexical shape checks for `currency`/`date`/`datetime`/
 //!   `unit_code`, called by generated code before a field is built.
 //! - [`adapter`] — the string-based [`Adapter`] contract for named, deterministic
-//!   conversions.
+//!   conversions (deprecated in favour of `normalize` and codecs).
+//! - [`codec`] — lexical codecs: pattern-driven date / date-time / boolean
+//!   decode and encode between the hub's canonical forms and a format's wire
+//!   forms.
 //! - [`result`] — [`MappingResult`] and [`MappingDiagnostic`], the structured
 //!   mapper output and runtime diagnostic model.
 //!
@@ -33,11 +36,15 @@
 //! API.
 
 pub mod adapter;
+pub mod codec;
 pub mod normalize;
 pub mod result;
 pub mod validate;
 
 pub use adapter::{Adapter, AdapterError, uppercase_currency};
+pub use codec::{
+    decode_bool, decode_date, decode_datetime, encode_bool, encode_date, encode_datetime,
+};
 pub use normalize::{empty_as_missing, lowercase, trim, uppercase};
 pub use result::{MappingDiagnostic, MappingResult, Severity};
 pub use validate::{is_currency, is_date, is_datetime, is_unit_code};

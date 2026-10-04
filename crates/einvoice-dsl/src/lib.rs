@@ -14,10 +14,11 @@
 //! # Pipeline
 //!
 //! ```text
-//! TOML mapping ─► parse ─► resolve(inherit, disabled, defaults)
+//! codecs + TOML mapping ─► parse ─► resolve(inherit, disabled, defaults)
 //!              ─► derive hub ─► validate ─► MappingIr ─► reports / codegen
 //! ```
 
+pub mod codec;
 pub mod codegen;
 pub mod compile;
 pub mod error;
@@ -35,12 +36,13 @@ pub mod source_model;
 pub mod types;
 pub mod validate;
 
+pub use codec::{Codec, CodecTable, Pattern, Token, compile_pattern, parse_codecs};
 pub use codegen::{SpokeDedupPlan, SpokeModule, generate_hub, plan_spoke_dedup};
 pub use compile::{CompileOutput, KNOWN_ADAPTERS, SpokeInput, compile, known_adapters};
 pub use error::{ConfigError, Diagnostic, Severity};
 pub use hub::{CanonicalField, CanonicalModel, CanonicalScope, canonical_scope_of, derive_hub};
-pub use ir::{MappingIr, build_ir};
-pub use loader::{LoadOutput, LoadedSpoke, load_dir, slug_of};
+pub use ir::{MappingIr, build_ir, build_ir_with};
+pub use loader::{LoadOutput, LoadedSpoke, load_config, load_dir, slug_of};
 pub use meta::MappingMeta;
 pub use multiple::MultiplePolicy;
 pub use node::{NodeId, RawNode, Scope, SourceNode};

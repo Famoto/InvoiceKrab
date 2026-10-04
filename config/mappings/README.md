@@ -1,7 +1,8 @@
 # The KrabInvoice Mapping DSL
 
 Every document format KrabInvoice speaks is described by one TOML file in this
-directory — a **spoke**. At build time the DSL compiler turns each spoke into
+directory (`config/mappings/`) — a **spoke**. The lexical codecs all spokes
+share live beside it in [`config/codecs/`](../codecs/). At build time the DSL compiler turns each spoke into
 native, type-checked Rust: a typed source struct, a `read` mapper (XML → canonical
 hub) and a `write` mapper (hub → XML). The runtime never sees the TOML.
 
@@ -28,7 +29,8 @@ pointing at the offending node.
 - [Fallbacks](#fallbacks)
 - [Constants: pinning write-side values](#constants-pinning-write-side-values)
 - [Clones: one value, several places](#clones-one-value-several-places)
-- [Adapters](#adapters)
+- [Codecs](#codecs)
+- [Adapters (deprecated)](#adapters-deprecated)
 - [Inheritance](#inheritance)
 - [Auto-detection](#auto-detection)
 - [A complete example](#a-complete-example)
@@ -249,7 +251,8 @@ A node plays one of five roles, depending on which fields it declares:
 | `min_items` | int | Minimum item count for a `collection` node (E041 elsewhere). |
 | `constant` | string | Fixed write-side literal (see [Constants](#constants-pinning-write-side-values)). |
 | `clone_of` | string | Canonical key this node mirrors (see [Clones](#clones-one-value-several-places)). |
-| `adapter` | string | Name of a compiler-known value adapter (see [Adapters](#adapters)). |
+| `codec` | string | Id of a shared lexical codec for a `date`, `datetime` or `boolean` node (see [Codecs](#codecs)). |
+| `adapter` | string | *Deprecated* (W050): name of a compiler-known value adapter (see [Adapters](#adapters-deprecated)). |
 | `description` | string | Human note, reports only. |
 | `disabled` | bool | Remove this node from the effective mapping (useful with [inheritance](#inheritance)). |
 | `ns` | string | Namespace prefix of this node's own element on write (see [Namespaces](#namespaces)). Alone on a `type`-less table it makes a structural node. |
@@ -270,7 +273,8 @@ field overrides only that leaf binding:
 Interior segments are always taken verbatim from the id and cannot be renamed.
 
 A node whose text is a value *and* which has attribute children (a "valued
-element") is handled automatically: the compiler synthesizes a struct with a
+element") — or whose [codec](#codecs) carries wire attributes — is handled
+automatically: the compiler synthesizes a struct with a
 text value field plus the attribute fields, all from the ids:
 
 ```toml
@@ -485,9 +489,9 @@ Rules:
 - The literal must parse under the node's `type` (E061); shape checks only —
   malformed values fail the build instead of surfacing in emitted documents.
 - Not valid on a collection node (E060).
-- Cannot be combined with `fallbacks`, `multiple`, `adapter`, or `normalize`
-  (E062): the constant is emitted verbatim on write, so read-side collapse and
-  transform features don't apply.
+- Cannot be combined with `fallbacks`, `multiple`, `adapter`, `normalize`, or
+  `codec` (E062): the constant is emitted verbatim on write, so read-side
+  collapse and transform features don't apply.
 
 ---
 
@@ -521,19 +525,65 @@ and a collection cannot be a clone (E070).
 
 ---
 
-## Adapters
+## Codecs
+
+The hub stores dates as ISO `YYYY-MM-DD`, date-times as ISO
+`YYYY-MM-DDThh:mm:ss`, and booleans natively. Formats write them differently —
+CII needs `<udt:DateTimeString format="102">20260718</udt:DateTimeString>` — so
+the translation is declared once as a **codec** in
+[`config/codecs/*.toml`](../codecs/) and named by the node:
+
+```toml
+# config/codecs/dates.toml
+[codec.cii-date-102]
+for_type = "date"
+lexical  = "YYYYMMDD"
+wire     = { "@format" = "102" }
+
+# config/mappings/cii.toml
+[CrossIndustryInvoice.ExchangedDocument.IssueDateTime.DateTimeString]
+type = "date"
+canonical_key = "IssueDate"
+codec = "cii-date-102"
+```
+
+On read the lexical form is decoded into the canonical form (a value that does
+not match is a `CODEC_INVALID` error diagnostic; a wire attribute present with
+a different value is a `CODEC_WIRE_MISMATCH` warning). On write the canonical
+value is encoded and the `wire` attributes are emitted on the same element.
+Codecs are loaded before the mappings and shared by all of them.
+
+The pattern language is small and checked when the codec file loads:
+
+| `for_type` | `lexical` | Rules |
+|---|---|---|
+| `date` | tokens `YYYY` `MM` `DD`, separators `-` `.` `/` | each token exactly once, no time tokens |
+| `datetime` | tokens `YYYY` `MM` `DD` `hh` `mm` `ss`, separators `-` `.` `/` `:` `T` space | `ss` optional, the rest exactly once |
+| `boolean` | `yes\|no` | the two literals, distinct and non-empty |
+
+Codec ids are globally unique and stable (`[a-zA-Z0-9_-]+`): changing a codec's
+behaviour means adding a new id. Rules on the node: the codec must exist (E084)
+and its `for_type` must equal the node's `type` (E085); a codec's wire
+attribute must not collide with an attribute node declared on the same element
+(E087); `constant` and `codec` are mutually exclusive (E062). A codec with wire
+attributes turns its element into a valued container (text plus attributes)
+exactly as an attribute child would.
+
+---
+
+## Adapters (deprecated)
 
 `adapter` names a compiler-known value transformation implemented in the
-runtime crate. The set is closed; an unknown name is a build error (E050).
+runtime crate. The set is closed; an unknown name is a build error (E050), and
+**every use is a deprecation warning (W050)**: adapters are superseded by
+`normalize` for string operations and by [codecs](#codecs) for lexical forms,
+and will be removed.
 
 Currently known:
 
 | Adapter | Effect |
 |---------|--------|
 | `uppercase_currency` | Upper-cases a currency code |
-
-Prefer `normalize` for the generic string operations; adapters exist for
-transformations that need real logic.
 
 ---
 
@@ -675,11 +725,11 @@ exact same loader and compiler the build uses — what `check` accepts, the
 build accepts:
 
 ```bash
-# Compile every mapping and print all diagnostics
-cargo run -p einvoice-dsl -- check mappings
+# Compile every codec and mapping and print all diagnostics
+cargo run -p einvoice-dsl -- check config
 
 # Print a canonical coverage matrix and gap report
-cargo run -p einvoice-dsl -- report mappings
+cargo run -p einvoice-dsl -- report config
 ```
 
 Once it builds, the CLI offers two static authoring aids (no input document
@@ -718,15 +768,20 @@ Validation reports **every** problem in one run, never just the first error.
 | `E050` | Unknown adapter name |
 | `E060` | `constant` on a collection node |
 | `E061` | `constant` literal does not parse under the node's `type` |
-| `E062` | `constant` combined with `fallbacks`, `multiple`, `adapter`, or `normalize` |
+| `E062` | `constant` combined with `fallbacks`, `multiple`, `adapter`, `normalize`, or `codec` |
 | `E070` | `clone_of` on a collection, or combined with `canonical_key`, `constant`, `fallbacks`, `multiple`, or `adapter` |
 | `E071` | `clone_of` target key not declared by a primary node in the same scope |
 | `E072` | `clone_of` node's `type` differs from its target's |
 | `E080` | Namespace prefix used by `root_ns`, `ns_defaults`, or a node's `ns` but not declared in `[meta.namespaces]` |
 | `E081` | `ns` on an attribute or `$text` leaf (never prefixed) |
 | `E083` | Structural node that names no element (nothing beneath it) or names the root (use `root_ns`) |
+| `E084` | Unknown codec id |
+| `E085` | `codec` on a collection, or codec `for_type` differs from the node's `type` |
+| `E087` | Codec wire attribute collides with an attribute node on the same element |
+| `W050` | `adapter` is deprecated (warning): use `normalize` or a codec |
 
 Runtime (per-document) diagnostics — missing required values, type validation
-failures, taken fallbacks, `CLONE_MISMATCH` — are reported with severity and a
+failures, taken fallbacks, `CLONE_MISMATCH`, `CODEC_INVALID`,
+`CODEC_WIRE_MISMATCH` — are reported with severity and a
 source-node reference when a document is transformed; they never silently
 vanish.

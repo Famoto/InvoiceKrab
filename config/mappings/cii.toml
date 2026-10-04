@@ -25,8 +25,10 @@
 # trade party, the address precedes the communication and tax-registration leaves.
 #
 # CII conventions, shared with the UBL-syntax spokes (see crates/einvoice-dsl):
-#   * Dates live in a `DateTimeString` element; the sibling `format` attribute
-#     (102 / 616) is not modelled.
+#   * Dates live in a `DateTimeString` element written in UN/CEFACT format 102
+#     (`CCYYMMDD`) with a `format="102"` attribute: the shared `cii-date-102`
+#     codec (config/codecs/dates.toml) decodes them into the hub's ISO form and
+#     writes them back with the attribute.
 #   * Amounts map as scale-preserving decimals; their `@currencyID` attribute is
 #     modelled only for the shared `PayableAmount`/`TaxTotalAmount` currency keys.
 #   * Document- and line-level `SpecifiedTradeAllowanceCharge` are single
@@ -41,7 +43,7 @@
 [meta]
 doc_format = "cii-invoice"
 format_version = "16931"
-mapping_version = "1.2"
+mapping_version = "1.3"
 source_model = "cii-invoice:en16931"
 canonical_model = "canonical-invoice:1.0"
 root = "CrossIndustryInvoice"
@@ -103,6 +105,7 @@ canonical_key = "InvoiceTypeCode"
 [CrossIndustryInvoice.ExchangedDocument.IssueDateTime.DateTimeString]
 ns = "udt"
 type = "date"
+codec = "cii-date-102"
 canonical_key = "IssueDate"
 
 # BG-1 INVOICE NOTE — the subject-code prefix (BT-21) is carried alongside in
@@ -210,11 +213,13 @@ canonical_key = "LineVatRate"
 [CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.BillingSpecifiedPeriod.StartDateTime.DateTimeString]
 ns = "udt"
 type = "date"
+codec = "cii-date-102"
 canonical_key = "LinePeriodStart"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.BillingSpecifiedPeriod.EndDateTime.DateTimeString]
 ns = "udt"
 type = "date"
+codec = "cii-date-102"
 canonical_key = "LinePeriodEnd"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.SpecifiedTradeAllowanceCharge]
@@ -526,6 +531,7 @@ canonical_key = "DeliverToCountrySubdivision"
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.ActualDeliverySupplyChainEvent.OccurrenceDateTime.DateTimeString]
 ns = "udt"
 type = "date"
+codec = "cii-date-102"
 canonical_key = "ActualDeliveryDate"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.DespatchAdviceReferencedDocument.IssuerAssignedID]
@@ -634,11 +640,13 @@ canonical_key = "VatCategoryRate"
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.BillingSpecifiedPeriod.StartDateTime.DateTimeString]
 ns = "udt"
 type = "date"
+codec = "cii-date-102"
 canonical_key = "InvoicingPeriodStart"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.BillingSpecifiedPeriod.EndDateTime.DateTimeString]
 ns = "udt"
 type = "date"
+codec = "cii-date-102"
 canonical_key = "InvoicingPeriodEnd"
 
 # --- DOCUMENT LEVEL ALLOWANCES / CHARGES (BG-20 / BG-21) — one collection,
@@ -690,6 +698,7 @@ canonical_key = "PaymentTerms"
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradePaymentTerms.DueDateDateTime.DateTimeString]
 ns = "udt"
 type = "date"
+codec = "cii-date-102"
 canonical_key = "DueDate"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradePaymentTerms.DirectDebitMandateID]
@@ -753,6 +762,7 @@ canonical_key = "PrecedingInvoiceReference"
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.InvoiceReferencedDocument.FormattedIssueDateTime.DateTimeString]
 ns = "qdt"
 type = "date"
+codec = "cii-date-102"
 canonical_key = "PrecedingInvoiceIssueDate"
 
 # BT-19 buyer accounting reference.

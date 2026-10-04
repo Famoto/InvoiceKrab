@@ -1,7 +1,7 @@
 //! `einvoice-interfaces` — the public engine API (N–1–N transformation).
 //!
 //! Everything downstream of the spoke TOML is generated at build time: `build.rs`
-//! scans the workspace `mappings/` directory and runs the `einvoice-dsl` compiler
+//! loads the workspace `config/` directory (codecs, then mappings) and runs the `einvoice-dsl` compiler
 //! over every `*.toml` it finds — no spoke is named here in code. It emits the
 //! typed canonical hub (`MainKey`), one mapper module per spoke, and a generated
 //! registry (`spokes.rs`) holding the [`Spoke`] enum and the read/write dispatch.
@@ -52,7 +52,7 @@ mod generated {
     pub mod hub {
         include!(concat!(env!("OUT_DIR"), "/hub.rs"));
     }
-    /// The spoke registry: one `mod <slug>` per `mappings/*.toml`, the `Spoke`
+    /// The spoke registry: one `mod <slug>` per `config/mappings/*.toml`, the `Spoke`
     /// enum, and the `read`/`write` dispatch — all derived from the spokes'
     /// `[meta]` tables. Names nothing by hand.
     include!(concat!(env!("OUT_DIR"), "/spokes.rs"));

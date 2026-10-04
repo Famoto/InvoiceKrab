@@ -60,6 +60,12 @@ assigns the literal at the source path (at root unconditionally, inside a
 collection only on non-empty items), the hub value — if the node also has a
 `canonical_key` — is ignored on write, and the reader is unaffected.
 
+A node with a `codec` decodes the source text through the codec's pattern on
+read (`codec::decode_date(raw, "YYYYMMDD")`, `CODEC_INVALID` on mismatch,
+`CODEC_WIRE_MISMATCH` when the document's wire attribute disagrees) and
+encodes the canonical value on write, setting the codec's wire attributes
+(`format = "102"`) on the element next to it.
+
 A node with a `clone_of` mirrors an existing canonical key in its scope: the
 writer fans the key's hub value out to the clone's path too (the key then
 stays a borrow + clone instead of moving), and the reader — after every

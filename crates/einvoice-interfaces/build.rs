@@ -1,15 +1,16 @@
 //! Build-time codegen of the typed hub + native spoke mappers.
 //!
-//! Every `*.toml` in the workspace `mappings/` directory is a spoke. Nothing is
-//! hardcoded here: the directory is scanned, and each spoke's identity — its
+//! Every `*.toml` in the workspace `config/mappings/` directory is a spoke, and
+//! every `*.toml` in `config/codecs/` a set of shared lexical codecs. Nothing is
+//! hardcoded here: the directories are scanned, and each spoke's identity — its
 //! generated module name, its public `Spoke` enum variant, and its display name —
 //! is derived from the file's reserved `[meta]` table, specifically
 //! `meta.doc_format`. Adding a new format is therefore *only* a
-//! matter of dropping a new TOML into `mappings/`.
+//! matter of dropping a new TOML into `config/mappings/`.
 //!
 //! Every spoke is loaded and compiled through the *single* `einvoice-dsl`
-//! pipeline — `einvoice_dsl::load_dir` (scan, parse, `inherits` chains,
-//! disabled bases, slugs) then `einvoice_dsl::compile` — the same path
+//! pipeline — `einvoice_dsl::load_config` (codecs, then scan, parse, `inherits`
+//! chains, disabled bases, slugs) then `einvoice_dsl::compile` — the same path
 //! `cargo run -p einvoice-dsl -- check` uses. The build fails on any
 //! error-severity diagnostic from *any* stage, including `validate` (e.g.
 //! unknown adapters, bad source paths), so "fail at build time" is enforced by
@@ -38,7 +39,7 @@ use einvoice_dsl::compile::{CompileOutput, SpokeInput};
 use einvoice_dsl::ir::MappingIr;
 use einvoice_dsl::{
     Severity, SourceModelMeta, SpokeDedupPlan, SpokeModule, compile, covered_canonical_fields,
-    generate_hub, known_adapters, load_dir, plan_spoke_dedup, required_canonical_fields,
+    generate_hub, known_adapters, load_config, plan_spoke_dedup, required_canonical_fields,
 };
 
 /// One discovered spoke: its meta-derived names plus its compiled artifacts.
@@ -62,17 +63,21 @@ struct Spoke {
 }
 
 fn main() {
-    let mappings_dir = workspace_mappings_dir();
+    let config_dir = workspace_config_dir();
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
     println!("cargo:rerun-if-changed=build.rs");
-    // Re-run when spokes are added or removed, not only when one is edited.
-    println!("cargo:rerun-if-changed={}", mappings_dir.display());
+    // Re-run when codecs or spokes are added or removed, not only when one is
+    // edited.
+    for dir in ["mappings", "codecs"] {
+        println!("cargo:rerun-if-changed={}", config_dir.join(dir).display());
+    }
 
-    // Load + compile every spoke through the one shared DSL pipeline — the same
-    // `load_dir` + `compile` path `cargo run -p einvoice-dsl -- check` uses.
-    let loaded = load_dir(&mappings_dir)
-        .unwrap_or_else(|e| panic!("loading {}: {e}", mappings_dir.display()));
+    // Load + compile every codec and spoke through the one shared DSL pipeline
+    // — the same `load_config` + `compile` path `cargo run -p einvoice-dsl --
+    // check` uses.
+    let loaded = load_config(&config_dir)
+        .unwrap_or_else(|e| panic!("loading {}: {e}", config_dir.display()));
     for path in &loaded.files {
         println!("cargo:rerun-if-changed={}", path.display());
     }
@@ -84,7 +89,7 @@ fn main() {
             chain: &s.chain,
         })
         .collect();
-    let out = compile(&inputs, &known_adapters());
+    let out = compile(&inputs, &known_adapters(), &loaded.codecs);
     assert_clean(&out);
 
     let spokes = collect_spokes(&out);
@@ -99,7 +104,7 @@ fn main() {
         .iter()
         .map(|s| (s.slug.as_str(), &s.ir, &s.source))
         .collect();
-    let plan = plan_spoke_dedup(&triples, "super::hub");
+    let plan = plan_spoke_dedup(&triples, &loaded.codecs, "super::hub");
 
     for (name, text) in &plan.shared_modules {
         let file = format!("{name}.rs");
@@ -118,14 +123,14 @@ fn main() {
         .expect("write spokes.rs");
 }
 
-/// Locates the workspace `mappings/` directory (two levels up from the crate).
-fn workspace_mappings_dir() -> PathBuf {
+/// Locates the workspace `config/` directory (two levels up from the crate).
+fn workspace_config_dir() -> PathBuf {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     manifest
         .parent()
         .and_then(Path::parent)
         .expect("crate is two levels under the workspace root")
-        .join("mappings")
+        .join("config")
 }
 
 /// Builds the per-spoke codegen descriptors from a clean [`CompileOutput`]. Every
@@ -165,7 +170,9 @@ fn collect_spokes(out: &CompileOutput) -> Vec<Spoke> {
 fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
     let mut out = String::new();
     out.push_str("// Generated spoke registry + dispatch. Do not edit by hand.\n");
-    out.push_str("// One entry per `mappings/*.toml`; names derive from `[meta].doc_format`.\n\n");
+    out.push_str(
+        "// One entry per `config/mappings/*.toml`; names derive from `[meta].doc_format`.\n\n",
+    );
 
     out.push_str("use einvoice_transformator::result::MappingResult;\n");
     out.push_str("use hub::MainKey;\n\n");
@@ -202,7 +209,9 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
     // The public Spoke enum, with a variant per discovered spoke.
     out.push_str("/// A source/target format handled by a generated mapper.\n");
     out.push_str("///\n");
-    out.push_str("/// Variants are generated from each `mappings/*.toml`'s `[meta].doc_format`.\n");
+    out.push_str(
+        "/// Variants are generated from each `config/mappings/*.toml`'s `[meta].doc_format`.\n",
+    );
     out.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n");
     out.push_str("pub enum Spoke {\n");
     for spoke in spokes {

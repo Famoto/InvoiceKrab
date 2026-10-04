@@ -12,6 +12,10 @@
 //! path — how a format stores one canonical value in several places (currency
 //! attributes, duplicated VAT ids).
 //!
+//! A node with a `codec` renders the canonical value through the codec's
+//! encoder and sets the codec's wire attributes on the element next to it
+//! (`<DateTimeString format="102">20260718</DateTimeString>`).
+//!
 //! The writer **consumes** the hub: canonical fields written exactly once move
 //! their values into the target struct (`take`); a key written from more than
 //! one node (a primary plus its clones) stays a borrow + clone.
@@ -19,6 +23,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+use crate::codec::{Codec, Pattern};
 use crate::node::SourceNode;
 use crate::source_model::SourceModelMeta;
 use crate::types::MappingType;
@@ -94,7 +99,7 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
         out.push('\n');
         write_scalar_block(
             out,
-            ctx.source,
+            ctx,
             node,
             &ctx.source.root,
             "main",
@@ -219,7 +224,7 @@ fn write_collection_block(
     {
         write_scalar_block(
             out,
-            ctx.source,
+            ctx,
             child,
             &src_item_struct,
             &hub_item,
@@ -305,12 +310,13 @@ fn write_constant_block(
 }
 
 /// Emits the write of one canonical field back to its source path, rendering the
-/// typed value to the source `String` representation. When `take`, the hub value
-/// is moved out instead of cloned (the field is written exactly once).
+/// typed value to the source `String` representation (through the node's codec
+/// when it has one, plus the codec's wire attributes). When `take`, the hub
+/// value is moved out instead of cloned (the field is written exactly once).
 #[allow(clippy::too_many_arguments)]
 fn write_scalar_block(
     out: &mut String,
-    source: &SourceModelMeta,
+    ctx: &GenCtx,
     node: &SourceNode,
     start_struct: &str,
     hub_var: &str,
@@ -319,6 +325,8 @@ fn write_scalar_block(
     indent: usize,
     take: bool,
 ) {
+    let source = ctx.source;
+    let codec = ctx.codec_of(node);
     let key = hub_key(node);
     let path = &node.source_path;
     let field = snake_case(key);
@@ -350,7 +358,12 @@ fn write_scalar_block(
     } else {
         let _ = writeln!(out, "{pad}if let Some(value) = &{hub_var}.{field} {{");
     }
-    let _ = writeln!(out, "{pad}    let rendered = {rendered};");
+    match codec {
+        Some(codec) => write_encoded(out, node, codec, key, index_var, &format!("{pad}    ")),
+        None => {
+            let _ = writeln!(out, "{pad}    let rendered = {rendered};");
+        }
+    }
     let _ = writeln!(out, "{pad}    if !rendered.is_empty() {{");
     if repeated_leaf {
         let _ = writeln!(out, "{pad}        {target}.push(rendered);");
@@ -358,6 +371,22 @@ fn write_scalar_block(
         let _ = writeln!(out, "{pad}        {target} = Some(rendered);");
     } else {
         let _ = writeln!(out, "{pad}        {target} = rendered;");
+    }
+    // The codec's wire attributes sit on the element the value was just
+    // written into, so they are set inside the same non-empty guard.
+    if let (Some(codec), Some(element_path)) = (codec, path.strip_suffix(".value")) {
+        for (attr, value) in &codec.wire {
+            let attr_target = assign_target_expr(
+                source,
+                start_struct,
+                &format!("{element_path}.{}", snake_case(attr)),
+                src_var,
+            );
+            let _ = writeln!(
+                out,
+                "{pad}        {attr_target} = Some(CompactString::from({value:?}));"
+            );
+        }
     }
     if node.required {
         let _ = writeln!(out, "{pad}    }} else {{");
@@ -372,6 +401,61 @@ fn write_scalar_block(
         let _ = writeln!(out, "{pad}}}");
     } else {
         let _ = writeln!(out, "{pad}}}");
+    }
+}
+
+/// Emits `let rendered = …;` for a codec node: the canonical `value` encoded in
+/// the codec's lexical form. A canonical value the encoder cannot render (which
+/// the reader's own validation makes unreachable) is a `CODEC_INVALID`
+/// diagnostic and an empty rendering, which the non-empty guard then skips.
+fn write_encoded(
+    out: &mut String,
+    node: &SourceNode,
+    codec: &Codec,
+    key: &str,
+    index_var: Option<&str>,
+    pad: &str,
+) {
+    match (&codec.pattern, node.source_type) {
+        (Pattern::Boolean { yes, no }, MappingType::Boolean) => {
+            let _ = writeln!(
+                out,
+                "{pad}let rendered = codec::encode_bool(value.clone(), {yes:?}, {no:?});"
+            );
+        }
+        (Pattern::Temporal(_), MappingType::Date | MappingType::Datetime) => {
+            let func = if node.source_type == MappingType::Date {
+                "encode_date"
+            } else {
+                "encode_datetime"
+            };
+            let _ = writeln!(
+                out,
+                "{pad}let rendered = match codec::{func}(value.as_str(), {:?}) {{",
+                codec.lexical
+            );
+            let _ = writeln!(out, "{pad}    Some(s) => s,");
+            let _ = writeln!(out, "{pad}    None => {{");
+            let msg = format!(
+                "format!(\"`{{value}}` cannot be encoded with codec `{}` ({})\")",
+                codec.id, codec.lexical
+            );
+            DiagSpec::new("Severity::Error", "CODEC_INVALID", node.id.as_str(), &msg)
+                .key(key)
+                .path(&node.source_path)
+                .index(index_var)
+                .emit(out, &format!("{pad}        "));
+            let _ = writeln!(out, "{pad}        CompactString::new(\"\")");
+            let _ = writeln!(out, "{pad}    }}");
+            let _ = writeln!(out, "{pad}}};");
+        }
+        _ => {
+            let _ = writeln!(
+                out,
+                "{pad}let rendered = compile_error!(\"codec `{}` does not fit a `{}` node\");",
+                codec.id, node.source_type
+            );
+        }
     }
 }
 

@@ -170,6 +170,11 @@ pub struct RawNode {
     pub clone_of: Option<String>,
     /// Whether the node is removed from the effective mapping.
     pub disabled: Option<bool>,
+    /// Lexical codec id (from `config/codecs/`): decodes the source text into
+    /// the canonical form on read and encodes it back — emitting the codec's
+    /// wire attributes — on write. Only on `date`, `datetime` and `boolean`
+    /// nodes (E084 unknown id, E085 type mismatch, E087 wire collision).
+    pub codec: Option<String>,
     /// Namespace prefix of this node's own element (write side), overriding
     /// `[meta.ns_defaults]`. `""` means unprefixed. Must be declared in
     /// `[meta.namespaces]` (E080); not valid on an attribute leaf (E081). On a
@@ -213,6 +218,7 @@ impl RawNode {
             || self.adapter.is_some()
             || self.constant.is_some()
             || self.clone_of.is_some()
+            || self.codec.is_some()
     }
 
     /// Whether this is a structural node: no `type`, an `ns`, and nothing a
@@ -269,6 +275,8 @@ pub struct SourceNode {
     /// Declared namespace prefix of the node's own element, if any (validated
     /// against `[meta.namespaces]`, E080).
     pub ns: Option<String>,
+    /// Lexical codec id, if any (validated against the codec table, E084/E085).
+    pub codec: Option<String>,
 }
 
 impl SourceNode {
@@ -356,6 +364,15 @@ mod tests {
         let keyed: RawNode = toml::from_str("ns = \"ram\"\ncanonical_key = \"X\"").unwrap();
         assert!(!keyed.is_structural(), "mapping fields need a type (E002)");
         assert!(!RawNode::default().is_structural(), "no ns: not structural");
+    }
+
+    #[test]
+    fn test_raw_node_codec_is_a_mapping_field() {
+        let n: RawNode = toml::from_str(r#"codec = "cii-date-102""#).unwrap();
+        assert!(n.has_active_field());
+        assert!(n.has_mapping_field(), "a codec needs a typed node");
+        assert!(!n.is_structural());
+        assert_eq!(n.codec.as_deref(), Some("cii-date-102"));
     }
 
     #[test]
