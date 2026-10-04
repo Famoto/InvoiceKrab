@@ -10,13 +10,17 @@
 # summary/payment groups; this minimal spoke models the common single-invoice
 # shape and reads the first occurrence of each.
 #
+# Tables are declared in the FatturaPA 1.2.2 XSD *sequence* order (declaration
+# order is schema order, see mappings/README.md): `DatiGenerali`, then
+# `DatiBeniServizi` (lines before the VAT summary), then `DatiPagamento`.
+#
 # FatturaPA has no per-amount currency attribute (the currency is the
 # document-level `Divisa`), so this spoke does not carry the `*Currency` or
 # `BuyerReference` canonical keys the EN 16931 spokes add.
 [meta]
 doc_format = "fatturapa"
 format_version = "1.2.2"
-mapping_version = "1.0"
+mapping_version = "1.1"
 source_model = "fatturapa:1.2.2"
 canonical_model = "canonical-invoice:1.0"
 root = "FatturaElettronica"
@@ -25,41 +29,31 @@ root = "FatturaElettronica"
 detect = []
 
 # --- General document data (DatiGeneraliDocumento) -----------------------------
-[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Numero]
-type = "identifier"
-canonical_key = "InvoiceNumber"
-required = true
-normalize = ["trim", "empty_as_missing"]
-
-[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Data]
-type = "date"
-canonical_key = "IssueDate"
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.TipoDocumento]
+type = "string"
+canonical_key = "InvoiceTypeCode"
 
 [FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Divisa]
 type = "currency"
 canonical_key = "DocumentCurrency"
 normalize = ["trim", "uppercase"]
 
-[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.TipoDocumento]
-type = "string"
-canonical_key = "InvoiceTypeCode"
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Data]
+type = "date"
+canonical_key = "IssueDate"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Numero]
+type = "identifier"
+canonical_key = "InvoiceNumber"
+required = true
+normalize = ["trim", "empty_as_missing"]
 
 # BT-115 equivalent: the document grand total.
 [FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.ImportoTotaleDocumento]
 type = "decimal"
 canonical_key = "PayableAmount"
 
-# Payment due date (first DettaglioPagamento).
-[FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento.DataScadenzaPagamento]
-type = "date"
-canonical_key = "DueDate"
-
-# VAT summary tax amount (first DatiRiepilogo).
-[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DatiRiepilogo.Imposta]
-type = "decimal"
-canonical_key = "TaxTotalAmount"
-
-# --- Invoice lines (DettaglioLinee) --------------------------------------------
+# --- Goods and services (DatiBeniServizi): invoice lines, then the VAT summary ---
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee]
 type = "collection"
 canonical_key = "InvoiceLines"
@@ -77,3 +71,14 @@ canonical_key = "ItemName"
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.Quantita]
 type = "decimal"
 canonical_key = "Quantity"
+
+# VAT summary tax amount (first DatiRiepilogo).
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DatiRiepilogo.Imposta]
+type = "decimal"
+canonical_key = "TaxTotalAmount"
+
+# --- Payment data (DatiPagamento) ----------------------------------------------
+# Payment due date (first DettaglioPagamento).
+[FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento.DataScadenzaPagamento]
+type = "date"
+canonical_key = "DueDate"

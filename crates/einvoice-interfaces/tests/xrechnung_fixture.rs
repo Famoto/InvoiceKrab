@@ -6,6 +6,8 @@
 //! end-to-end behaviour against the checked-in fixture in `testfiles/`.
 
 use einvoice_interfaces::{Engine, Spoke};
+use quick_xml::Reader;
+use quick_xml::events::Event;
 use rust_decimal::Decimal;
 use std::str::FromStr as _;
 
@@ -72,4 +74,94 @@ fn test_transform_xrechnung_to_ubl_preserves_canonical_values() {
         Some(Decimal::from_str("1190.00").unwrap())
     );
     assert_eq!(again.invoice_lines.len(), 2);
+}
+
+/// Every start tag's *local* name, in document order.
+fn start_tags(xml: &[u8]) -> Vec<String> {
+    let mut reader = Reader::from_reader(xml);
+    let mut buf = Vec::new();
+    let mut tags = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf).expect("well-formed") {
+            Event::Start(e) | Event::Empty(e) => {
+                tags.push(String::from_utf8_lossy(e.local_name().as_ref()).into_owned());
+            }
+            Event::Eof => return tags,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+/// Whether `needle` occurs in `hay` as a (not necessarily contiguous) subsequence.
+fn is_subsequence(needle: &[String], hay: &[String]) -> bool {
+    let mut it = hay.iter();
+    needle.iter().all(|n| it.any(|h| h == n))
+}
+
+#[test]
+fn test_transform_emits_elements_in_the_fixtures_schema_order() {
+    // The fixture is a real, schema-valid XRechnung, so its element sequence
+    // *is* the UBL sequence order. The writer emits a subset of those elements
+    // (the mapped ones), nested the same way, so the emitted start tags must
+    // read as a subsequence of the fixture's — anything alphabetical
+    // (`AccountingCustomerParty` before `CustomizationID`, `TaxTotal` after
+    // `LegalMonetaryTotal`) breaks this.
+    let input = xrechnung();
+    let engine = Engine::new();
+    let out = engine
+        .transform(Spoke::UblInvoice, Spoke::UblInvoice, &input)
+        .expect("fixture is well-formed XML");
+    assert!(!out.has_errors(), "{:?}", out.diagnostics);
+    let xml = out.value.expect("writer yields a document");
+
+    let emitted = start_tags(xml.as_bytes());
+    let fixture = start_tags(&input);
+    assert!(
+        is_subsequence(&emitted, &fixture),
+        "emitted element order diverges from the schema order:\n{emitted:?}\nvs fixture\n{fixture:?}"
+    );
+
+    // And the top level, spelled out.
+    let mut depth = 0usize;
+    let mut top_level = Vec::new();
+    let mut reader = Reader::from_str(&xml);
+    loop {
+        match reader.read_event().expect("well-formed") {
+            Event::Start(e) => {
+                if depth == 1 {
+                    top_level.push(String::from_utf8_lossy(e.local_name().as_ref()).into_owned());
+                }
+                depth += 1;
+            }
+            Event::Empty(e) => {
+                if depth == 1 {
+                    top_level.push(String::from_utf8_lossy(e.local_name().as_ref()).into_owned());
+                }
+            }
+            Event::End(_) => depth -= 1,
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    assert_eq!(
+        top_level,
+        [
+            "CustomizationID",
+            "ProfileID",
+            "ID",
+            "IssueDate",
+            "DueDate",
+            "InvoiceTypeCode",
+            "DocumentCurrencyCode",
+            "BuyerReference",
+            "AccountingSupplierParty",
+            "AccountingCustomerParty",
+            "PaymentMeans",
+            "TaxTotal",
+            "LegalMonetaryTotal",
+            "InvoiceLine",
+            "InvoiceLine",
+        ]
+    );
 }

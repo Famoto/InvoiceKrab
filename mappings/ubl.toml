@@ -25,6 +25,11 @@
 # item attributes (BG-32) are modelled as collections inside the invoice-line
 # collection.
 #
+# Tables are declared in the UBL 2.1 XSD *sequence* order, group by group:
+# declaration order is schema order (see mappings/README.md), so the writer emits
+# every element exactly where the schema expects it. Keep it that way when adding
+# nodes.
+#
 # Remaining notes (DSL conventions, see crates/einvoice-dsl), shared with the
 # other UBL-syntax spokes:
 #   * Sibling elements distinguished only by an attribute/child value are not
@@ -40,7 +45,7 @@
 [meta]
 doc_format = "ubl-invoice"
 format_version = "2.1"
-mapping_version = "2.0"
+mapping_version = "2.1"
 source_model = "ubl-invoice:2.1"
 canonical_model = "canonical-invoice:1.0"
 root = "Invoice"
@@ -156,14 +161,33 @@ canonical_key = "TenderOrLotReference"
 type = "identifier"
 canonical_key = "ContractReference"
 
+# ===========================================================================
+# ADDITIONAL SUPPORTING DOCUMENTS (BG-24) — collection
+# ===========================================================================
+[Invoice.AdditionalDocumentReference]
+type = "collection"
+canonical_key = "SupportingDocuments"
+
+[Invoice.AdditionalDocumentReference.ID]
+type = "identifier"
+canonical_key = "SupportingDocumentReference"
+
+[Invoice.AdditionalDocumentReference.DocumentDescription]
+type = "string"
+canonical_key = "SupportingDocumentDescription"
+
+[Invoice.AdditionalDocumentReference.Attachment.EmbeddedDocumentBinaryObject]
+type = "string"
+canonical_key = "AttachedDocument"
+
+[Invoice.AdditionalDocumentReference.Attachment.ExternalReference.URI]
+type = "string"
+canonical_key = "ExternalDocumentLocation"
+
+# BT-11 project reference — follows the supporting documents in the UBL sequence.
 [Invoice.ProjectReference.ID]
 type = "identifier"
 canonical_key = "ProjectReference"
-
-# BT-20 payment terms (free text; the structured SKONTO grammar is not parsed)
-[Invoice.PaymentTerms.Note]
-type = "string"
-canonical_key = "PaymentTerms"
 
 # ===========================================================================
 # SELLER (BG-4) + SELLER POSTAL ADDRESS (BG-5) + SELLER CONTACT (BG-6)
@@ -180,23 +204,6 @@ canonical_key = "SellerIdentifier"
 type = "string"
 canonical_key = "SellerTradingName"
 
-[Invoice.AccountingSupplierParty.Party.PartyLegalEntity.RegistrationName]
-type = "string"
-canonical_key = "SellerName"
-
-[Invoice.AccountingSupplierParty.Party.PartyLegalEntity.CompanyID]
-type = "identifier"
-canonical_key = "SellerLegalRegistrationIdentifier"
-
-[Invoice.AccountingSupplierParty.Party.PartyLegalEntity.CompanyLegalForm]
-type = "string"
-canonical_key = "SellerAdditionalLegalInformation"
-
-[Invoice.AccountingSupplierParty.Party.PartyTaxScheme.CompanyID]
-type = "identifier"
-canonical_key = "SellerVatIdentifier"
-normalize = ["trim"]
-
 [Invoice.AccountingSupplierParty.Party.PostalAddress.StreetName]
 type = "string"
 canonical_key = "SellerAddressLine1"
@@ -204,10 +211,6 @@ canonical_key = "SellerAddressLine1"
 [Invoice.AccountingSupplierParty.Party.PostalAddress.AdditionalStreetName]
 type = "string"
 canonical_key = "SellerAddressLine2"
-
-[Invoice.AccountingSupplierParty.Party.PostalAddress.AddressLine.Line]
-type = "string"
-canonical_key = "SellerAddressLine3"
 
 [Invoice.AccountingSupplierParty.Party.PostalAddress.CityName]
 type = "string"
@@ -221,10 +224,31 @@ canonical_key = "SellerPostCode"
 type = "string"
 canonical_key = "SellerCountrySubdivision"
 
+[Invoice.AccountingSupplierParty.Party.PostalAddress.AddressLine.Line]
+type = "string"
+canonical_key = "SellerAddressLine3"
+
 [Invoice.AccountingSupplierParty.Party.PostalAddress.Country.IdentificationCode]
 type = "string"
 canonical_key = "SellerCountryCode"
 normalize = ["trim", "uppercase"]
+
+[Invoice.AccountingSupplierParty.Party.PartyTaxScheme.CompanyID]
+type = "identifier"
+canonical_key = "SellerVatIdentifier"
+normalize = ["trim"]
+
+[Invoice.AccountingSupplierParty.Party.PartyLegalEntity.RegistrationName]
+type = "string"
+canonical_key = "SellerName"
+
+[Invoice.AccountingSupplierParty.Party.PartyLegalEntity.CompanyID]
+type = "identifier"
+canonical_key = "SellerLegalRegistrationIdentifier"
+
+[Invoice.AccountingSupplierParty.Party.PartyLegalEntity.CompanyLegalForm]
+type = "string"
+canonical_key = "SellerAdditionalLegalInformation"
 
 [Invoice.AccountingSupplierParty.Party.Contact.Name]
 type = "string"
@@ -253,19 +277,6 @@ canonical_key = "BuyerIdentifier"
 type = "string"
 canonical_key = "BuyerTradingName"
 
-[Invoice.AccountingCustomerParty.Party.PartyLegalEntity.RegistrationName]
-type = "string"
-canonical_key = "BuyerName"
-
-[Invoice.AccountingCustomerParty.Party.PartyLegalEntity.CompanyID]
-type = "identifier"
-canonical_key = "BuyerLegalRegistrationIdentifier"
-
-[Invoice.AccountingCustomerParty.Party.PartyTaxScheme.CompanyID]
-type = "identifier"
-canonical_key = "BuyerVatIdentifier"
-normalize = ["trim"]
-
 [Invoice.AccountingCustomerParty.Party.PostalAddress.StreetName]
 type = "string"
 canonical_key = "BuyerAddressLine1"
@@ -273,10 +284,6 @@ canonical_key = "BuyerAddressLine1"
 [Invoice.AccountingCustomerParty.Party.PostalAddress.AdditionalStreetName]
 type = "string"
 canonical_key = "BuyerAddressLine2"
-
-[Invoice.AccountingCustomerParty.Party.PostalAddress.AddressLine.Line]
-type = "string"
-canonical_key = "BuyerAddressLine3"
 
 [Invoice.AccountingCustomerParty.Party.PostalAddress.CityName]
 type = "string"
@@ -290,10 +297,27 @@ canonical_key = "BuyerPostCode"
 type = "string"
 canonical_key = "BuyerCountrySubdivision"
 
+[Invoice.AccountingCustomerParty.Party.PostalAddress.AddressLine.Line]
+type = "string"
+canonical_key = "BuyerAddressLine3"
+
 [Invoice.AccountingCustomerParty.Party.PostalAddress.Country.IdentificationCode]
 type = "string"
 canonical_key = "BuyerCountryCode"
 normalize = ["trim", "uppercase"]
+
+[Invoice.AccountingCustomerParty.Party.PartyTaxScheme.CompanyID]
+type = "identifier"
+canonical_key = "BuyerVatIdentifier"
+normalize = ["trim"]
+
+[Invoice.AccountingCustomerParty.Party.PartyLegalEntity.RegistrationName]
+type = "string"
+canonical_key = "BuyerName"
+
+[Invoice.AccountingCustomerParty.Party.PartyLegalEntity.CompanyID]
+type = "identifier"
+canonical_key = "BuyerLegalRegistrationIdentifier"
 
 [Invoice.AccountingCustomerParty.Party.Contact.Name]
 type = "string"
@@ -310,13 +334,13 @@ canonical_key = "BuyerContactEmail"
 # ===========================================================================
 # PAYEE (BG-10)
 # ===========================================================================
-[Invoice.PayeeParty.PartyName.Name]
-type = "string"
-canonical_key = "PayeeName"
-
 [Invoice.PayeeParty.PartyIdentification.ID]
 type = "identifier"
 canonical_key = "PayeeIdentifier"
+
+[Invoice.PayeeParty.PartyName.Name]
+type = "string"
+canonical_key = "PayeeName"
 
 [Invoice.PayeeParty.PartyLegalEntity.CompanyID]
 type = "identifier"
@@ -328,10 +352,6 @@ canonical_key = "PayeeLegalRegistrationIdentifier"
 [Invoice.TaxRepresentativeParty.PartyName.Name]
 type = "string"
 canonical_key = "SellerTaxRepresentativeName"
-
-[Invoice.TaxRepresentativeParty.PartyTaxScheme.CompanyID]
-type = "identifier"
-canonical_key = "SellerTaxRepresentativeVatIdentifier"
 
 [Invoice.TaxRepresentativeParty.PostalAddress.StreetName]
 type = "string"
@@ -358,16 +378,16 @@ type = "string"
 canonical_key = "TaxRepresentativeCountryCode"
 normalize = ["trim", "uppercase"]
 
+[Invoice.TaxRepresentativeParty.PartyTaxScheme.CompanyID]
+type = "identifier"
+canonical_key = "SellerTaxRepresentativeVatIdentifier"
+
 # ===========================================================================
 # DELIVERY INFORMATION (BG-13) + DELIVER TO ADDRESS (BG-15)
 # ===========================================================================
 [Invoice.Delivery.ActualDeliveryDate]
 type = "date"
 canonical_key = "ActualDeliveryDate"
-
-[Invoice.Delivery.DeliveryParty.PartyName.Name]
-type = "string"
-canonical_key = "DeliverToPartyName"
 
 [Invoice.Delivery.DeliveryLocation.ID]
 type = "identifier"
@@ -381,10 +401,6 @@ canonical_key = "DeliverToAddressLine1"
 type = "string"
 canonical_key = "DeliverToAddressLine2"
 
-[Invoice.Delivery.DeliveryLocation.Address.AddressLine.Line]
-type = "string"
-canonical_key = "DeliverToAddressLine3"
-
 [Invoice.Delivery.DeliveryLocation.Address.CityName]
 type = "string"
 canonical_key = "DeliverToCity"
@@ -397,10 +413,18 @@ canonical_key = "DeliverToPostCode"
 type = "string"
 canonical_key = "DeliverToCountrySubdivision"
 
+[Invoice.Delivery.DeliveryLocation.Address.AddressLine.Line]
+type = "string"
+canonical_key = "DeliverToAddressLine3"
+
 [Invoice.Delivery.DeliveryLocation.Address.Country.IdentificationCode]
 type = "string"
 canonical_key = "DeliverToCountryCode"
 normalize = ["trim", "uppercase"]
+
+[Invoice.Delivery.DeliveryParty.PartyName.Name]
+type = "string"
+canonical_key = "DeliverToPartyName"
 
 # ===========================================================================
 # PAYMENT INSTRUCTIONS (BG-16) + CREDIT TRANSFER (BG-17)
@@ -414,6 +438,14 @@ canonical_key = "PaymentMeansTypeCode"
 type = "string"
 canonical_key = "RemittanceInformation"
 
+[Invoice.PaymentMeans.CardAccount.PrimaryAccountNumberID]
+type = "string"
+canonical_key = "PaymentCardPrimaryAccountNumber"
+
+[Invoice.PaymentMeans.CardAccount.HolderName]
+type = "string"
+canonical_key = "PaymentCardHolderName"
+
 [Invoice.PaymentMeans.PayeeFinancialAccount.ID]
 type = "identifier"
 canonical_key = "PaymentAccountIdentifier"
@@ -426,14 +458,6 @@ canonical_key = "PaymentAccountName"
 type = "identifier"
 canonical_key = "PaymentServiceProviderIdentifier"
 
-[Invoice.PaymentMeans.CardAccount.PrimaryAccountNumberID]
-type = "string"
-canonical_key = "PaymentCardPrimaryAccountNumber"
-
-[Invoice.PaymentMeans.CardAccount.HolderName]
-type = "string"
-canonical_key = "PaymentCardHolderName"
-
 [Invoice.PaymentMeans.PaymentMandate.ID]
 type = "identifier"
 canonical_key = "MandateReferenceIdentifier"
@@ -443,7 +467,97 @@ type = "identifier"
 canonical_key = "DebitedAccountIdentifier"
 
 # ===========================================================================
-# DOCUMENT TOTALS (BG-22) — LegalMonetaryTotal + TaxTotal
+# PAYMENT TERMS (BT-20)
+# ===========================================================================
+# BT-20 payment terms (free text; the structured SKONTO grammar is not parsed)
+[Invoice.PaymentTerms.Note]
+type = "string"
+canonical_key = "PaymentTerms"
+
+# ===========================================================================
+# DOCUMENT LEVEL ALLOWANCES / CHARGES (BG-20 / BG-21) — one collection,
+# discriminated by ChargeIndicator (true = charge, false = allowance).
+# ===========================================================================
+[Invoice.AllowanceCharge]
+type = "collection"
+canonical_key = "DocumentAllowanceCharges"
+
+[Invoice.AllowanceCharge.ChargeIndicator]
+type = "boolean"
+canonical_key = "ChargeIndicator"
+
+[Invoice.AllowanceCharge.AllowanceChargeReasonCode]
+type = "string"
+canonical_key = "AllowanceChargeReasonCode"
+
+[Invoice.AllowanceCharge.AllowanceChargeReason]
+type = "string"
+canonical_key = "AllowanceChargeReason"
+
+[Invoice.AllowanceCharge.MultiplierFactorNumeric]
+type = "decimal"
+canonical_key = "AllowanceChargePercentage"
+
+[Invoice.AllowanceCharge.Amount]
+type = "decimal"
+canonical_key = "AllowanceChargeAmount"
+
+[Invoice.AllowanceCharge.BaseAmount]
+type = "decimal"
+canonical_key = "AllowanceChargeBaseAmount"
+
+[Invoice.AllowanceCharge.TaxCategory.ID]
+type = "string"
+canonical_key = "AllowanceChargeVatCategoryCode"
+normalize = ["trim", "uppercase"]
+
+[Invoice.AllowanceCharge.TaxCategory.Percent]
+type = "decimal"
+canonical_key = "AllowanceChargeVatRate"
+
+# ===========================================================================
+# TAX TOTAL (BT-110/111) + VAT BREAKDOWN (BG-23) — TaxTotal/TaxSubtotal (collection)
+# ===========================================================================
+[Invoice.TaxTotal.TaxAmount]
+type = "decimal"
+canonical_key = "TaxTotalAmount"
+
+[Invoice.TaxTotal.TaxAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+canonical_key = "TaxTotalAmountCurrency"
+
+[Invoice.TaxTotal.TaxSubtotal]
+type = "collection"
+canonical_key = "VatBreakdown"
+
+[Invoice.TaxTotal.TaxSubtotal.TaxableAmount]
+type = "decimal"
+canonical_key = "VatCategoryTaxableAmount"
+
+[Invoice.TaxTotal.TaxSubtotal.TaxAmount]
+type = "decimal"
+canonical_key = "VatCategoryTaxAmount"
+
+[Invoice.TaxTotal.TaxSubtotal.TaxCategory.ID]
+type = "string"
+canonical_key = "VatCategoryCode"
+normalize = ["trim", "uppercase"]
+
+[Invoice.TaxTotal.TaxSubtotal.TaxCategory.Percent]
+type = "decimal"
+canonical_key = "VatCategoryRate"
+
+[Invoice.TaxTotal.TaxSubtotal.TaxCategory.TaxExemptionReasonCode]
+type = "string"
+canonical_key = "VatExemptionReasonCode"
+
+[Invoice.TaxTotal.TaxSubtotal.TaxCategory.TaxExemptionReason]
+type = "string"
+canonical_key = "VatExemptionReasonText"
+
+# ===========================================================================
+# DOCUMENT TOTALS (BG-22) — LegalMonetaryTotal
 # ===========================================================================
 [Invoice.LegalMonetaryTotal.LineExtensionAmount]
 type = "decimal"
@@ -484,112 +598,6 @@ canonical_key = "PayableAmount"
 xml = "@currencyID"
 type = "currency"
 canonical_key = "PayableAmountCurrency"
-
-# Document-level tax total (BT-110).
-[Invoice.TaxTotal.TaxAmount]
-type = "decimal"
-canonical_key = "TaxTotalAmount"
-
-[Invoice.TaxTotal.TaxAmount.currencyID]
-xml = "@currencyID"
-type = "currency"
-canonical_key = "TaxTotalAmountCurrency"
-
-# ===========================================================================
-# VAT BREAKDOWN (BG-23) — TaxTotal/TaxSubtotal (collection)
-# ===========================================================================
-[Invoice.TaxTotal.TaxSubtotal]
-type = "collection"
-canonical_key = "VatBreakdown"
-
-[Invoice.TaxTotal.TaxSubtotal.TaxableAmount]
-type = "decimal"
-canonical_key = "VatCategoryTaxableAmount"
-
-[Invoice.TaxTotal.TaxSubtotal.TaxAmount]
-type = "decimal"
-canonical_key = "VatCategoryTaxAmount"
-
-[Invoice.TaxTotal.TaxSubtotal.TaxCategory.ID]
-type = "string"
-canonical_key = "VatCategoryCode"
-normalize = ["trim", "uppercase"]
-
-[Invoice.TaxTotal.TaxSubtotal.TaxCategory.Percent]
-type = "decimal"
-canonical_key = "VatCategoryRate"
-
-[Invoice.TaxTotal.TaxSubtotal.TaxCategory.TaxExemptionReason]
-type = "string"
-canonical_key = "VatExemptionReasonText"
-
-[Invoice.TaxTotal.TaxSubtotal.TaxCategory.TaxExemptionReasonCode]
-type = "string"
-canonical_key = "VatExemptionReasonCode"
-
-# ===========================================================================
-# DOCUMENT LEVEL ALLOWANCES / CHARGES (BG-20 / BG-21) — one collection,
-# discriminated by ChargeIndicator (true = charge, false = allowance).
-# ===========================================================================
-[Invoice.AllowanceCharge]
-type = "collection"
-canonical_key = "DocumentAllowanceCharges"
-
-[Invoice.AllowanceCharge.ChargeIndicator]
-type = "boolean"
-canonical_key = "ChargeIndicator"
-
-[Invoice.AllowanceCharge.Amount]
-type = "decimal"
-canonical_key = "AllowanceChargeAmount"
-
-[Invoice.AllowanceCharge.BaseAmount]
-type = "decimal"
-canonical_key = "AllowanceChargeBaseAmount"
-
-[Invoice.AllowanceCharge.MultiplierFactorNumeric]
-type = "decimal"
-canonical_key = "AllowanceChargePercentage"
-
-[Invoice.AllowanceCharge.AllowanceChargeReason]
-type = "string"
-canonical_key = "AllowanceChargeReason"
-
-[Invoice.AllowanceCharge.AllowanceChargeReasonCode]
-type = "string"
-canonical_key = "AllowanceChargeReasonCode"
-
-[Invoice.AllowanceCharge.TaxCategory.ID]
-type = "string"
-canonical_key = "AllowanceChargeVatCategoryCode"
-normalize = ["trim", "uppercase"]
-
-[Invoice.AllowanceCharge.TaxCategory.Percent]
-type = "decimal"
-canonical_key = "AllowanceChargeVatRate"
-
-# ===========================================================================
-# ADDITIONAL SUPPORTING DOCUMENTS (BG-24) — collection
-# ===========================================================================
-[Invoice.AdditionalDocumentReference]
-type = "collection"
-canonical_key = "SupportingDocuments"
-
-[Invoice.AdditionalDocumentReference.ID]
-type = "identifier"
-canonical_key = "SupportingDocumentReference"
-
-[Invoice.AdditionalDocumentReference.DocumentDescription]
-type = "string"
-canonical_key = "SupportingDocumentDescription"
-
-[Invoice.AdditionalDocumentReference.Attachment.ExternalReference.URI]
-type = "string"
-canonical_key = "ExternalDocumentLocation"
-
-[Invoice.AdditionalDocumentReference.Attachment.EmbeddedDocumentBinaryObject]
-type = "string"
-canonical_key = "AttachedDocument"
 
 # ===========================================================================
 # INVOICE LINE (BG-25) — collection — with ITEM (BG-31), PRICE (BG-29),
@@ -638,55 +646,6 @@ canonical_key = "LineOrderReference"
 type = "identifier"
 canonical_key = "LineObjectIdentifier"
 
-# ITEM INFORMATION (BG-31)
-[InvoiceLine.Item.Name]
-type = "string"
-canonical_key = "ItemName"
-
-[InvoiceLine.Item.Description]
-type = "string"
-canonical_key = "ItemDescription"
-
-[InvoiceLine.Item.SellersItemIdentification.ID]
-type = "identifier"
-canonical_key = "ItemSellerIdentifier"
-
-[InvoiceLine.Item.BuyersItemIdentification.ID]
-type = "identifier"
-canonical_key = "ItemBuyerIdentifier"
-
-[InvoiceLine.Item.StandardItemIdentification.ID]
-type = "identifier"
-canonical_key = "ItemStandardIdentifier"
-
-[InvoiceLine.Item.CommodityClassification.ItemClassificationCode]
-type = "string"
-canonical_key = "ItemClassificationIdentifier"
-
-[InvoiceLine.Item.OriginCountry.IdentificationCode]
-type = "string"
-canonical_key = "ItemCountryOfOrigin"
-normalize = ["trim", "uppercase"]
-
-# LINE VAT INFORMATION (BG-30)
-[InvoiceLine.Item.ClassifiedTaxCategory.ID]
-type = "string"
-canonical_key = "LineVatCategoryCode"
-normalize = ["trim", "uppercase"]
-
-[InvoiceLine.Item.ClassifiedTaxCategory.Percent]
-type = "decimal"
-canonical_key = "LineVatRate"
-
-# PRICE DETAILS (BG-29)
-[InvoiceLine.Price.PriceAmount]
-type = "decimal"
-canonical_key = "ItemNetPrice"
-
-[InvoiceLine.Price.BaseQuantity]
-type = "decimal"
-canonical_key = "ItemPriceBaseQuantity"
-
 # INVOICE LINE ALLOWANCES / CHARGES (BG-27 / BG-28) — collection nested inside
 # the invoice line, discriminated by ChargeIndicator (true = charge BG-28,
 # false = allowance BG-27).
@@ -698,6 +657,18 @@ canonical_key = "LineAllowanceCharges"
 type = "boolean"
 canonical_key = "LineChargeIndicator"
 
+[InvoiceLine.AllowanceCharge.AllowanceChargeReasonCode]
+type = "string"
+canonical_key = "LineAllowanceChargeReasonCode"
+
+[InvoiceLine.AllowanceCharge.AllowanceChargeReason]
+type = "string"
+canonical_key = "LineAllowanceChargeReason"
+
+[InvoiceLine.AllowanceCharge.MultiplierFactorNumeric]
+type = "decimal"
+canonical_key = "LineAllowanceChargePercentage"
+
 [InvoiceLine.AllowanceCharge.Amount]
 type = "decimal"
 canonical_key = "LineAllowanceChargeAmount"
@@ -706,17 +677,45 @@ canonical_key = "LineAllowanceChargeAmount"
 type = "decimal"
 canonical_key = "LineAllowanceChargeBaseAmount"
 
-[InvoiceLine.AllowanceCharge.MultiplierFactorNumeric]
+# ITEM INFORMATION (BG-31)
+[InvoiceLine.Item.Description]
+type = "string"
+canonical_key = "ItemDescription"
+
+[InvoiceLine.Item.Name]
+type = "string"
+canonical_key = "ItemName"
+
+[InvoiceLine.Item.BuyersItemIdentification.ID]
+type = "identifier"
+canonical_key = "ItemBuyerIdentifier"
+
+[InvoiceLine.Item.SellersItemIdentification.ID]
+type = "identifier"
+canonical_key = "ItemSellerIdentifier"
+
+[InvoiceLine.Item.StandardItemIdentification.ID]
+type = "identifier"
+canonical_key = "ItemStandardIdentifier"
+
+[InvoiceLine.Item.OriginCountry.IdentificationCode]
+type = "string"
+canonical_key = "ItemCountryOfOrigin"
+normalize = ["trim", "uppercase"]
+
+[InvoiceLine.Item.CommodityClassification.ItemClassificationCode]
+type = "string"
+canonical_key = "ItemClassificationIdentifier"
+
+# LINE VAT INFORMATION (BG-30)
+[InvoiceLine.Item.ClassifiedTaxCategory.ID]
+type = "string"
+canonical_key = "LineVatCategoryCode"
+normalize = ["trim", "uppercase"]
+
+[InvoiceLine.Item.ClassifiedTaxCategory.Percent]
 type = "decimal"
-canonical_key = "LineAllowanceChargePercentage"
-
-[InvoiceLine.AllowanceCharge.AllowanceChargeReason]
-type = "string"
-canonical_key = "LineAllowanceChargeReason"
-
-[InvoiceLine.AllowanceCharge.AllowanceChargeReasonCode]
-type = "string"
-canonical_key = "LineAllowanceChargeReasonCode"
+canonical_key = "LineVatRate"
 
 # ITEM ATTRIBUTES (BG-32) — collection nested inside the invoice line's item.
 [InvoiceLine.Item.AdditionalItemProperty]
@@ -730,3 +729,12 @@ canonical_key = "ItemAttributeName"
 [InvoiceLine.Item.AdditionalItemProperty.Value]
 type = "string"
 canonical_key = "ItemAttributeValue"
+
+# PRICE DETAILS (BG-29)
+[InvoiceLine.Price.PriceAmount]
+type = "decimal"
+canonical_key = "ItemNetPrice"
+
+[InvoiceLine.Price.BaseQuantity]
+type = "decimal"
+canonical_key = "ItemPriceBaseQuantity"

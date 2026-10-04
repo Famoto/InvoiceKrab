@@ -4,7 +4,10 @@
 //!
 //! 1. [`merge_inheritance`] — fold an inheritance chain (ancestor → … → leaf).
 //!    Overrides are *full-node replacements*: a later node wholly replaces an
-//!    earlier node of the same id.
+//!    earlier node of the same id. Declaration positions are merged too: an
+//!    override keeps the base node's position (it stays where the base put the
+//!    element), and nodes new to a later mapping are appended after everything
+//!    already merged, in their own declaration order.
 //! 2. [`remove_disabled`] — drop disabled nodes and the descendants of any
 //!    disabled collection, whose scope no longer exists. Runs *before* defaults.
 //! 3. [`apply_defaults`] — materialize defaults onto each surviving active node
@@ -25,12 +28,30 @@ use crate::types::MappingType;
 ///
 /// `chain` is ordered ancestor-first, leaf-last. A node id present in a later
 /// mapping fully replaces the earlier one; new ids are added.
+///
+/// Positions: an override takes over the replaced node's position, so a CIUS
+/// that restates a node does not move the element. Ids new to a later mapping
+/// are offset past every position merged so far, so they follow the base's
+/// nodes in the later mapping's own declaration order.
 pub fn merge_inheritance(chain: &[ParsedMapping]) -> BTreeMap<NodeId, RawNode> {
-    let mut merged = BTreeMap::new();
+    let mut merged: BTreeMap<NodeId, RawNode> = BTreeMap::new();
+    let mut offset = 0usize;
     for mapping in chain {
+        let span = mapping
+            .nodes
+            .values()
+            .map(|n| n.position + 1)
+            .max()
+            .unwrap_or(0);
         for (id, node) in &mapping.nodes {
-            merged.insert(id.clone(), node.clone());
+            let mut node = node.clone();
+            node.position = match merged.get(id) {
+                Some(existing) => existing.position,
+                None => offset + node.position,
+            };
+            merged.insert(id.clone(), node);
         }
+        offset += span;
     }
     merged
 }
@@ -296,6 +317,64 @@ mod tests {
         assert_eq!(n.source_path, "id");
         assert!(!n.required, "omitted field reverts to default, not parent");
         assert!(n.fallbacks.is_empty());
+    }
+
+    #[test]
+    fn test_inheritance_override_keeps_base_position_and_appends_new_nodes() {
+        // Base declares B then A. The child restates A (an override) and adds
+        // C. A keeps its base position — the element does not move because a
+        // CIUS re-declared it — and C lands after every base node.
+        let parent = parsed(
+            r#"[Invoice.B]
+            type = "string"
+
+            [Invoice.A]
+            type = "string""#,
+        );
+        let child = parsed(
+            r#"[Invoice.C]
+            type = "string"
+
+            [Invoice.A]
+            type = "string"
+            required = true"#,
+        );
+        let merged = merge_inheritance(&[parent, child]);
+        assert_eq!(merged[&NodeId::new("Invoice.B")].position, 0);
+        assert_eq!(merged[&NodeId::new("Invoice.A")].position, 1);
+        assert_eq!(merged[&NodeId::new("Invoice.A")].required, Some(true));
+        assert_eq!(
+            merged[&NodeId::new("Invoice.C")].position,
+            2,
+            "new child nodes are appended after the base's"
+        );
+    }
+
+    #[test]
+    fn test_inheritance_appends_new_nodes_in_child_order_across_three_levels() {
+        let base = parsed(
+            r#"[Invoice.A]
+            type = "string""#,
+        );
+        let mid = parsed(
+            r#"[Invoice.Z]
+            type = "string"
+
+            [Invoice.Y]
+            type = "string""#,
+        );
+        let leaf = parsed(
+            r#"[Invoice.M]
+            type = "string""#,
+        );
+        let merged = merge_inheritance(&[base, mid, leaf]);
+        let mut by_position: Vec<(usize, &str)> = merged
+            .iter()
+            .map(|(id, n)| (n.position, id.as_str()))
+            .collect();
+        by_position.sort_unstable();
+        let order: Vec<&str> = by_position.into_iter().map(|(_, id)| id).collect();
+        assert_eq!(order, ["Invoice.A", "Invoice.Z", "Invoice.Y", "Invoice.M"]);
     }
 
     #[test]

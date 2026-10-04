@@ -34,6 +34,12 @@
 //! path too (a format storing one value in several places); the reader never
 //! fills the hub from it, only checks the copy against the canonical value and
 //! warns (`CLONE_MISMATCH`) when a document's copies disagree.
+//!
+//! Every raw node also carries its declaration [`RawNode::position`]: a
+//! mapping's **declaration order is its schema order**. The parser records
+//! where each table appears, synthesis orders the source-struct fields by it,
+//! and the writer therefore emits sibling XML elements in the order the mapping
+//! declares them — which the author keeps aligned with the XSD sequence.
 
 use serde::Deserialize;
 
@@ -158,6 +164,14 @@ pub struct RawNode {
     pub clone_of: Option<String>,
     /// Whether the node is removed from the effective mapping.
     pub disabled: Option<bool>,
+    /// Declaration position within the mapping document (0-based, document
+    /// order). Assigned by the parser, never authored — a `position` key in the
+    /// TOML is rejected like any unknown field. It drives the order of sibling
+    /// fields in the synthesized source structs and therefore the order of
+    /// sibling elements in emitted XML. Inheritance keeps an overridden node
+    /// at its base position and appends a child's new nodes after the base's.
+    #[serde(skip)]
+    pub position: usize,
 }
 
 impl RawNode {
@@ -302,6 +316,14 @@ mod tests {
         let n: RawNode = toml::from_str(r#"xml = "@currencyID""#).unwrap();
         assert!(n.has_active_field());
         assert_eq!(n.xml.as_deref(), Some("@currencyID"));
+    }
+
+    #[test]
+    fn test_raw_node_position_is_not_an_authoring_field() {
+        // `position` is parser-assigned: authoring it is an unknown field.
+        assert!(toml::from_str::<RawNode>("position = 3").is_err());
+        let n: RawNode = toml::from_str(r#"type = "string""#).unwrap();
+        assert_eq!(n.position, 0, "parser-assigned, defaults to 0");
     }
 
     #[test]

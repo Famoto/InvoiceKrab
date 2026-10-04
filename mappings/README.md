@@ -14,6 +14,7 @@ pointing at the offending node.
 
 - [How a mapping becomes code](#how-a-mapping-becomes-code)
 - [The big idea: ids mirror the XML tree](#the-big-idea-ids-mirror-the-xml-tree)
+- [Declaration order is schema order](#declaration-order-is-schema-order)
 - [The `[meta]` table](#the-meta-table)
 - [Source nodes](#source-nodes)
   - [Node fields reference](#node-fields-reference)
@@ -76,6 +77,38 @@ side, missing interior elements simply mean the leaves under them are missing.
 XML matching is **namespace-agnostic**: mappings bind XML *local* names, so the
 same mapping reads real namespaced UBL (`cbc:ID`, `cac:LegalMonetaryTotal`) and
 bare-name test fixtures alike.
+
+---
+
+## Declaration order is schema order
+
+XML schemas define their children as *sequences*, so a valid document must emit
+sibling elements in the schema's order. The DSL has no separate ordering
+syntax: **the order in which you declare the tables is the order the writer
+emits the elements.** Keep each group of siblings in XSD sequence order and the
+output validates.
+
+The rules, all applied by the compiler:
+
+- Siblings are emitted in the order of their declaring tables. The map of nodes
+  is sorted by id internally, but every node remembers its declaration
+  position, and the generated source structs (hence serde, hence the XML)
+  follow that position.
+- An inferred interior element (`LegalMonetaryTotal`, `Party`, …) sits where its
+  **first** declared descendant is. Later leaves under it do not move it, so a
+  parent's children stay contiguous wherever they are declared.
+- Attributes are emitted before child elements; an element's own text
+  (`$text`) comes before its children. Neither has a schema order.
+- Reading is order-independent: a source document may list elements in any
+  order and still deserializes.
+- Under [inheritance](#inheritance), an override keeps the base node's position
+  (restating a node never moves the element). Nodes new to the child are
+  appended after all of the base's nodes, in the child's declaration order.
+
+Because CII puts `IncludedSupplyChainTradeLineItem` *before* the header trade
+groups inside `SupplyChainTradeTransaction`, [cii.toml](cii.toml) declares the
+invoice-line section before the header sections — the file order follows the
+schema, not the reading order a human might prefer.
 
 ---
 
@@ -450,7 +483,10 @@ ancestor-first, so the child starts from the parent's full node set and only
 declares its deltas:
 
 - Re-declaring a node id **replaces the whole base node** — no field merge.
-  Restate every field you want to keep.
+  Restate every field you want to keep. The node keeps the base's declaration
+  position, so the element stays where the base emits it.
+- Nodes the child adds are emitted after every base node, in the child's own
+  declaration order (see [Declaration order is schema order](#declaration-order-is-schema-order)).
 - `disabled = true` on a node removes it from the effective mapping.
 - `disabled = true` in `[meta]` makes the mapping itself **inherit-only**: it
   can be inherited from but emits no spoke (see [cii.toml](cii.toml), which

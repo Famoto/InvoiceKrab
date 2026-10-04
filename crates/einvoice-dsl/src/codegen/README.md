@@ -38,6 +38,12 @@ The generators are **pure and deterministic**: identical inputs yield
 byte-identical output (all `BTreeMap`s are iterated in sorted order). Invariant:
 refactors must not change generated text.
 
+The fields *inside* a generated source struct are the one place sorted order is
+not used: they follow `StructMeta::ordered_fields` — attributes, then `$text`,
+then child elements by declaration position. serde serializes struct fields in
+declaration order, so this is what makes the emitted XML follow the mapping's
+(and the XSD's) element sequence.
+
 A source path that fails to resolve (which validation E021/E023 should have
 rejected) emits a `compile_error!` at the access site rather than plausible but
 wrong code, so a validation/codegen gap fails loudly with a clear message.

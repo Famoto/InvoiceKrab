@@ -213,6 +213,32 @@ mod tests {
     }
 
     #[test]
+    fn test_writer_emits_children_in_mapping_declaration_order() {
+        // The UBL mapping declares ID, IssueDate, DocumentCurrencyCode,
+        // LegalMonetaryTotal, InvoiceLine in schema order; the emitted document
+        // must follow it, not the alphabetical order of the generated fields.
+        let engine = Engine::new();
+        let out = engine
+            .transform(Spoke::UblInvoice, Spoke::UblInvoice, UBL)
+            .expect("well-formed");
+        assert!(!out.has_errors(), "{:?}", out.diagnostics);
+        let xml = out.value.expect("writer yields a document");
+        let at = |needle: &str| {
+            xml.find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {xml}"))
+        };
+        let id = at("<ID>INV-42</ID>");
+        let issue = at("<IssueDate>");
+        let currency = at("<DocumentCurrencyCode>");
+        let totals = at("<LegalMonetaryTotal>");
+        let line = at("<InvoiceLine>");
+        assert!(
+            id < issue && issue < currency && currency < totals && totals < line,
+            "{xml}"
+        );
+    }
+
+    #[test]
     fn test_writer_reports_missing_target_required_field() {
         let engine = Engine::new();
         let result = engine

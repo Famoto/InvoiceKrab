@@ -17,7 +17,11 @@ a leaf as an attribute (`@currencyID`) or element text, or renames an element.
 
 The guiding principle is **fail at build time, not at runtime**: unknown TOML
 keys, fallback cycles, and cross-spoke type conflicts are all compile-time
-errors. The runtime executes only generated Rust, never interpreted TOML. This
+errors. A second contract is **declaration order is schema order**: the parser
+records every node's position in its document, inheritance and synthesis carry
+it through, and codegen declares each source struct's fields in that order, so
+the writer emits sibling elements in the sequence the mapping (and so the XSD)
+declares them. The runtime executes only generated Rust, never interpreted TOML. This
 crate has **no dependency on the runtime crate** (`einvoice-transformator`);
 codegen emits text that *targets* the runtime's API by name.
 
@@ -53,9 +57,11 @@ TOML mappings ─► parse ─► resolve(inherit, disabled)
 ```
 
 1. `parse_mapping` turns one TOML document into a `ParsedMapping`, rejecting
-   unknown keys (E001).
-2. `build_ir` resolves the inheritance chain, drops disabled nodes, **synthesizes
-   the `SourceModelMeta` and each node's `source_path` from the node ids**, and
+   unknown keys (E001) and stamping each node's declaration `position`.
+2. `build_ir` resolves the inheritance chain (an override keeps the base
+   position; new nodes append), drops disabled nodes, **synthesizes the
+   `SourceModelMeta` and each node's `source_path` from the node ids** (each
+   field carrying the emission `order` of its first contributing node), and
    materializes defaults into a deterministic `MappingIr`.
 3. `derive_hub` folds every spoke's `canonical_key`s into a `CanonicalModel`,
    enforcing cross-spoke type/scope consistency.

@@ -32,7 +32,10 @@
 //!
 //! The generators are **pure and deterministic**: text in, text out, with all
 //! `BTreeMap`s iterated in sorted order so identical inputs yield byte-identical
-//! output. The emitted reader, per node: reads the source field, applies
+//! output. The one deliberate exception is the field order *inside* a generated
+//! source struct: fields follow the mapping's declaration order (attributes
+//! first), because serde serializes in declaration order and the emitted XML
+//! must follow the schema's sequence. The emitted reader, per node: reads the source field, applies
 //! `normalize` ops, falls back through `fallbacks`, decodes/validates by `type`,
 //! applies an optional `adapter`, enforces `required`/`min_items`, and assigns
 //! into the typed `MainKey`. Helper nodes (no `canonical_key`) are read only as
@@ -525,6 +528,7 @@ mod tests {
             repeated: false,
             ty: FieldType::Struct("Party".into()),
             xml: Some("Party".into()),
+            order: 0,
         };
         let attr = serde_attr(&field).expect("interior struct needs a serde attr");
         assert!(attr.contains("default"), "{attr}");
@@ -1053,6 +1057,46 @@ mod tests {
         );
         // Reader: per-item mismatch check.
         assert!(out.contains("CLONE_MISMATCH"), "{out}");
+    }
+
+    /// Byte offset of `needle` inside the generated `pub struct {name} {` block.
+    fn offset_in_struct(out: &str, name: &str, needle: &str) -> usize {
+        let header = format!("pub struct {name} {{");
+        let start = out
+            .find(&header)
+            .unwrap_or_else(|| panic!("{header} in:\n{out}"));
+        let body = &out[start..];
+        let end = body.find("\n}\n").expect("struct closes");
+        body[..end]
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} inside {name}:\n{}", &body[..end]))
+    }
+
+    #[test]
+    fn test_source_struct_fields_follow_declaration_order() {
+        // UBL declares ID, DocumentCurrencyCode, LegalMonetaryTotal, InvoiceLine
+        // in that order; the struct (and so the emitted XML) must too, not
+        // alphabetically (`document_currency_code` < `id` < `invoice_line` <
+        // `legal_monetary_total`).
+        let (ir, _, source) = compiled();
+        let out = generate_spoke(&ir, &source, "super::hub");
+        let id = offset_in_struct(&out, "Invoice", "pub id:");
+        let currency = offset_in_struct(&out, "Invoice", "pub document_currency_code:");
+        let totals = offset_in_struct(&out, "Invoice", "pub legal_monetary_total:");
+        let lines = offset_in_struct(&out, "Invoice", "pub invoice_line:");
+        assert!(
+            id < currency && currency < totals && totals < lines,
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn test_source_struct_emits_attributes_before_element_text() {
+        let (ir, _, source) = compiled();
+        let out = generate_spoke(&ir, &source, "super::hub");
+        let attr = offset_in_struct(&out, "PayableAmount", "pub currency_id:");
+        let text = offset_in_struct(&out, "PayableAmount", "pub value:");
+        assert!(attr < text, "{out}");
     }
 
     #[test]

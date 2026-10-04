@@ -2,13 +2,20 @@
 //!
 //! Emits one `#[derive(...)]` struct per struct in the source model (with
 //! serde/XML binding) and the `from_xml` / `to_xml` functions for the root.
+//!
+//! Struct fields are declared in the model's **emission order**
+//! ([`StructMeta::ordered_fields`]: attributes, then element text, then child
+//! elements by declaration position). serde serializes struct fields in
+//! declaration order, so this is what makes the writer emit sibling elements in
+//! the order the mapping declares them — the schema's sequence order.
 
 use std::fmt::Write as _;
 
 use crate::source_model::{FieldMeta, FieldType, SourceModelMeta, StructMeta};
 
 /// Emits the typed source structs (with serde/XML binding) for every struct in
-/// the source model, in deterministic name order.
+/// the source model, in deterministic name order; each struct's fields follow
+/// the model's emission order.
 pub(super) fn generate_source_structs(out: &mut String, source: &SourceModelMeta) {
     out.push_str("// --- typed source structs ---\n");
     for (name, meta) in &source.structs {
@@ -17,11 +24,11 @@ pub(super) fn generate_source_structs(out: &mut String, source: &SourceModelMeta
     }
 }
 
-/// Emits one `#[derive(...)]` source struct.
+/// Emits one `#[derive(...)]` source struct, fields in emission order.
 fn generate_one_struct(out: &mut String, name: &str, meta: &StructMeta) {
     out.push_str("#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]\n");
     let _ = writeln!(out, "pub struct {name} {{");
-    for (fname, field) in &meta.fields {
+    for (fname, field) in meta.ordered_fields() {
         if let Some(attr) = serde_attr(field) {
             let _ = writeln!(out, "    {attr}");
         }
@@ -37,7 +44,7 @@ fn generate_is_empty_impl(out: &mut String, name: &str, meta: &StructMeta) {
     let _ = writeln!(out, "impl {name} {{");
     out.push_str("    pub fn is_empty(&self) -> bool {\n");
 
-    let mut exprs = meta.fields.iter().map(|(fname, field)| {
+    let mut exprs = meta.ordered_fields().into_iter().map(|(fname, field)| {
         if field.repeated {
             format!("self.{fname}.is_empty()")
         } else if field.optional || matches!(field.ty, FieldType::Struct(_)) {

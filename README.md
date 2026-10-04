@@ -306,6 +306,9 @@ an `EngineError` only means the XML could not be parsed or rendered at all.
   format, which existing keys are still unmapped.
 - **Namespace-agnostic XML.** Mappings bind XML *local* names, so the same
   mapping reads real namespaced (`cbc:`/`cac:`) UBL and bare-name fixtures.
+- **Schema-ordered output.** A mapping's declaration order is its schema order:
+  the writer emits sibling elements in the sequence the mapping declares them,
+  so the bundled mappings follow their XSDs and the output validates in order.
 - **Library API.** `einvoice-interfaces::Engine` exposes `to_hub`, `from_hub`,
   and `transform` for callers that want the generated mappers without the CLI.
 

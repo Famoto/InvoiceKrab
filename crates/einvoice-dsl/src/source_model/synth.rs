@@ -34,6 +34,11 @@ use super::meta::{FieldMeta, FieldType, SourceModelMeta, StructMeta};
 /// - Every scalar leaf is `Option<String>` (or `Vec<String>` with `multiple`);
 ///   `required` is enforced by the generated reader/writer as a
 ///   `REQUIRED_MISSING` diagnostic, never by failing deserialization.
+/// - Every field carries an emission `order`: the declaration position of the
+///   first node that contributes to it, so an inferred interior element sits
+///   where its first descendant was declared. Codegen emits fields in that
+///   order (attributes first), which is how the mapping's declaration order
+///   becomes the emitted XML's element order.
 pub fn synthesize_source_model(
     active: &BTreeMap<NodeId, RawNode>,
     root: &str,
@@ -154,6 +159,7 @@ fn insert_node(
                 repeated: false,
                 ty: FieldType::Struct(struct_name.clone()),
                 xml: Some(seg.clone()),
+                order: node.position,
             },
         )?;
         structs.entry(struct_name.clone()).or_default();
@@ -193,6 +199,7 @@ fn insert_node(
                 repeated: true,
                 ty: FieldType::Struct(item.clone()),
                 xml: Some(rename),
+                order: node.position,
             },
         )?;
         structs.entry(item).or_default();
@@ -220,6 +227,7 @@ fn insert_node(
                 repeated: false,
                 ty: FieldType::Scalar,
                 xml: Some(xml.to_string()),
+                order: node.position,
             },
         )?;
         path_parts.push(field);
@@ -243,6 +251,7 @@ fn insert_node(
                 repeated: false,
                 ty: FieldType::Scalar,
                 xml: Some("$text".to_string()),
+                order: node.position,
             },
         )?;
         path_parts.push("value".to_string());
@@ -271,6 +280,7 @@ fn insert_node(
                 repeated: false,
                 ty: FieldType::Struct(struct_name.clone()),
                 xml: Some(rename),
+                order: node.position,
             },
         )?;
         structs.entry(struct_name.clone()).or_default();
@@ -283,6 +293,7 @@ fn insert_node(
                 repeated: false,
                 ty: FieldType::Scalar,
                 xml: Some("$text".to_string()),
+                order: node.position,
             },
         )?;
         path_parts.push(field);
@@ -304,6 +315,7 @@ fn insert_node(
             repeated: multi,
             ty: FieldType::Scalar,
             xml: Some(rename),
+            order: node.position,
         },
     )?;
     path_parts.push(field);
@@ -326,8 +338,9 @@ fn has_descendant(active: &BTreeMap<NodeId, RawNode>, id: &NodeId) -> bool {
 }
 
 /// Inserts `field` into struct `struct_name`, creating the struct if absent.
-/// Re-inserting an identical field is fine (two nodes contributing to the same
-/// struct); a conflicting redefinition is an error (E024).
+/// Re-inserting an identically bound field is fine (two nodes contributing to
+/// the same struct) and keeps the earliest emission `order`; a conflicting
+/// redefinition is an error (E024).
 fn upsert_field(
     structs: &mut BTreeMap<String, StructMeta>,
     struct_name: &str,
@@ -335,11 +348,15 @@ fn upsert_field(
     meta: FieldMeta,
 ) -> Result<(), String> {
     let entry = structs.entry(struct_name.to_string()).or_default();
-    match entry.fields.get(field) {
-        Some(existing) if *existing != meta => Err(format!(
+    match entry.fields.get_mut(field) {
+        Some(existing) if !existing.same_binding(&meta) => Err(format!(
             "synthesized field `{struct_name}.{field}` is defined two incompatible ways"
         )),
-        _ => {
+        Some(existing) => {
+            existing.order = existing.order.min(meta.order);
+            Ok(())
+        }
+        None => {
             entry.fields.insert(field.to_string(), meta);
             Ok(())
         }
@@ -412,10 +429,26 @@ mod tests {
         toml::from_str(toml_src).expect("raw node parses")
     }
 
+    /// Builds raw nodes from `(id, body)` pairs, numbering them in slice order
+    /// exactly as the parser numbers tables in document order.
     fn nodes(pairs: &[(&str, &str)]) -> BTreeMap<NodeId, RawNode> {
         pairs
             .iter()
-            .map(|(id, body)| (NodeId::new(*id), raw(body)))
+            .enumerate()
+            .map(|(position, (id, body))| {
+                let mut node = raw(body);
+                node.position = position;
+                (NodeId::new(*id), node)
+            })
+            .collect()
+    }
+
+    /// The emission-ordered field names of `structs[name]`.
+    fn ordered(model: &SourceModelMeta, name: &str) -> Vec<String> {
+        model.structs[name]
+            .ordered_fields()
+            .into_iter()
+            .map(|(field, _)| field.clone())
             .collect()
     }
 
@@ -625,6 +658,73 @@ mod tests {
                 .any(|d| d.code == "E024" && d.message.contains("valued container")),
             "{diags:?}"
         );
+    }
+
+    #[test]
+    fn test_synth_field_order_follows_declaration_not_name() {
+        // Declared Zeta, Alpha: the struct emits them in that order even though
+        // the field map (and the id map) sort Alpha first.
+        let (model, _) = synth(&[
+            ("Invoice.Zeta", r#"type = "string""#),
+            ("Invoice.Alpha", r#"type = "string""#),
+        ]);
+        assert_eq!(ordered(&model, "Invoice"), ["zeta", "alpha"]);
+        assert_eq!(model.structs["Invoice"].fields["zeta"].order, 0);
+        assert_eq!(model.structs["Invoice"].fields["alpha"].order, 1);
+    }
+
+    #[test]
+    fn test_synth_interior_takes_first_descendants_position() {
+        // `Totals` is never declared itself; it sits where its first declared
+        // leaf (`Totals.Net`, position 0) is — before `A` (1) — and a later leaf
+        // under it (`Totals.Gross`, 2) does not move it.
+        let (model, _) = synth(&[
+            ("Invoice.Totals.Net", r#"type = "decimal""#),
+            ("Invoice.A", r#"type = "string""#),
+            ("Invoice.Totals.Gross", r#"type = "decimal""#),
+        ]);
+        assert_eq!(ordered(&model, "Invoice"), ["totals", "a"]);
+        assert_eq!(model.structs["Invoice"].fields["totals"].order, 0);
+        assert_eq!(ordered(&model, "Totals"), ["net", "gross"]);
+    }
+
+    #[test]
+    fn test_synth_collection_and_scalars_interleave_by_declaration() {
+        let (model, _) = synth(&[
+            ("Invoice.ID", r#"type = "identifier""#),
+            (
+                "Invoice.AllowanceCharge",
+                r#"type = "collection"
+                canonical_key = "Charges""#,
+            ),
+            ("Invoice.AllowanceCharge.Amount", r#"type = "decimal""#),
+            ("Invoice.TaxTotal.TaxAmount", r#"type = "decimal""#),
+            (
+                "InvoiceLine",
+                r#"type = "collection"
+                canonical_key = "Lines""#,
+            ),
+            ("InvoiceLine.ID", r#"type = "identifier""#),
+        ]);
+        assert_eq!(
+            ordered(&model, "Invoice"),
+            ["id", "allowance_charge", "tax_total", "invoice_line"]
+        );
+    }
+
+    #[test]
+    fn test_synth_valued_container_emits_attribute_before_text() {
+        // The attribute is declared after the element text, but attributes
+        // always come first in emission order.
+        let (model, _) = synth(&[
+            ("Invoice.Amount", r#"type = "decimal""#),
+            (
+                "Invoice.Amount.currencyID",
+                r#"xml = "@currencyID"
+                type = "currency""#,
+            ),
+        ]);
+        assert_eq!(ordered(&model, "Amount"), ["currency_id", "value"]);
     }
 
     #[test]
