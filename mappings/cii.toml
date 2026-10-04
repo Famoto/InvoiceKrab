@@ -14,6 +14,9 @@
 # written as tables. XML local names (no `ram:`/`rsm:`/`udt:` prefix) match
 # quick-xml's namespace-local serde layer, so the same mapping reads real
 # namespaced CII (and Factur-X/ZUGFeRD) documents and bare-name fixtures alike.
+# On write, the root and its three children are `rsm:`, everything beneath is
+# `ram:` (`[meta.ns_defaults]`), and the `udt:`/`qdt:` data-type leaves
+# (`DateTimeString`, `Indicator`) declare their prefix with `ns` themselves.
 #
 # Tables are declared in the CII D16B XSD *sequence* order: declaration order is
 # schema order (see mappings/README.md). That is why the invoice-line section
@@ -38,7 +41,7 @@
 [meta]
 doc_format = "cii-invoice"
 format_version = "16931"
-mapping_version = "1.1"
+mapping_version = "1.2"
 source_model = "cii-invoice:en16931"
 canonical_model = "canonical-invoice:1.0"
 root = "CrossIndustryInvoice"
@@ -47,6 +50,28 @@ disabled = true
 # CII is the base cross-industry syntax (Factur-X/ZUGFeRD are its CIUS profiles);
 # it declares no discriminator and acts as the fallback for the CII tree.
 detect = []
+root_ns = "rsm"
+
+[meta.namespaces]
+rsm = "urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100"
+ram = "urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100"
+udt = "urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100"
+qdt = "urn:un:unece:uncefact:data:standard:QualifiedDataType:100"
+
+[meta.ns_defaults]
+leaf = "ram"
+aggregate = "ram"
+
+# Structural nodes: the root's three children are `rsm:` like the root itself,
+# not `ram:` like everything beneath them.
+[CrossIndustryInvoice.ExchangedDocumentContext]
+ns = "rsm"
+
+[CrossIndustryInvoice.ExchangedDocument]
+ns = "rsm"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction]
+ns = "rsm"
 
 # ===========================================================================
 # PROCESS CONTROL (BG-2) — ExchangedDocumentContext
@@ -76,6 +101,7 @@ canonical_key = "InvoiceTypeCode"
 
 # BT-2 issue date: the text of `IssueDateTime/DateTimeString` (format 102).
 [CrossIndustryInvoice.ExchangedDocument.IssueDateTime.DateTimeString]
+ns = "udt"
 type = "date"
 canonical_key = "IssueDate"
 
@@ -182,10 +208,12 @@ type = "decimal"
 canonical_key = "LineVatRate"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.BillingSpecifiedPeriod.StartDateTime.DateTimeString]
+ns = "udt"
 type = "date"
 canonical_key = "LinePeriodStart"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.BillingSpecifiedPeriod.EndDateTime.DateTimeString]
+ns = "udt"
 type = "date"
 canonical_key = "LinePeriodEnd"
 
@@ -194,6 +222,7 @@ type = "collection"
 canonical_key = "LineAllowanceCharges"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeSettlement.SpecifiedTradeAllowanceCharge.ChargeIndicator.Indicator]
+ns = "udt"
 type = "boolean"
 canonical_key = "LineChargeIndicator"
 
@@ -495,6 +524,7 @@ type = "string"
 canonical_key = "DeliverToCountrySubdivision"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeDelivery.ActualDeliverySupplyChainEvent.OccurrenceDateTime.DateTimeString]
+ns = "udt"
 type = "date"
 canonical_key = "ActualDeliveryDate"
 
@@ -602,10 +632,12 @@ canonical_key = "VatCategoryRate"
 
 # --- BILLING PERIOD (BG-14) ---
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.BillingSpecifiedPeriod.StartDateTime.DateTimeString]
+ns = "udt"
 type = "date"
 canonical_key = "InvoicingPeriodStart"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.BillingSpecifiedPeriod.EndDateTime.DateTimeString]
+ns = "udt"
 type = "date"
 canonical_key = "InvoicingPeriodEnd"
 
@@ -616,6 +648,7 @@ type = "collection"
 canonical_key = "DocumentAllowanceCharges"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeAllowanceCharge.ChargeIndicator.Indicator]
+ns = "udt"
 type = "boolean"
 canonical_key = "ChargeIndicator"
 
@@ -655,6 +688,7 @@ canonical_key = "PaymentTerms"
 
 # BT-9 due date.
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradePaymentTerms.DueDateDateTime.DateTimeString]
+ns = "udt"
 type = "date"
 canonical_key = "DueDate"
 
@@ -717,6 +751,7 @@ type = "identifier"
 canonical_key = "PrecedingInvoiceReference"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.InvoiceReferencedDocument.FormattedIssueDateTime.DateTimeString]
+ns = "qdt"
 type = "date"
 canonical_key = "PrecedingInvoiceIssueDate"
 

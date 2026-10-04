@@ -416,7 +416,7 @@ mod tests {
             "explicit Content-Length must match the body (the timeout \
              wrapper hides the size hint, so hyper cannot derive it)"
         );
-        assert!(body.contains("<ID>INV-42</ID>"));
+        assert!(body.contains("<cbc:ID>INV-42</cbc:ID>"), "{body}");
     }
 
     #[tokio::test]

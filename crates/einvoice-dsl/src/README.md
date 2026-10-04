@@ -32,13 +32,13 @@ codegen emits text that *targets* the runtime's API by name.
 | `types.rs` | `MappingType` — the closed set of source-node value types. |
 | `normalize.rs` | `NormalizeOp` — declared string transforms. |
 | `multiple.rs` | `MultiplePolicy` — repeated-scalar handling. |
-| `meta.rs` | `MappingMeta` — the `[meta]` table (identity, `root`, `inherits`, `detect`, inherit-only `disabled`). |
+| `meta.rs` | `MappingMeta` — the `[meta]` table (identity, `root`, `inherits`, `detect`, inherit-only `disabled`, the inherited namespace entries `root_ns` / `namespaces` / `ns_defaults`). |
 | `node.rs` | `NodeId` / `Scope` / `RawNode` (as-declared) / `SourceNode` (effective). |
 | `error.rs` | `ConfigError`, `Diagnostic`, `Severity`. |
 | `parse.rs` | TOML → `ParsedMapping` (dotted-table flattening). |
 | `resolve.rs` | inheritance merge → disabled removal → default materialization. |
 | `ir.rs` | `MappingIr` + `build_ir` (the normalized mapping + synthesized source model). |
-| `source_model/` | `SourceModelMeta` (metadata types), path resolution (`resolve_path`), and `synthesize_source_model` (struct tree + source paths from the nodes) — split into `meta.rs` / `resolve.rs` / `synth.rs`. |
+| `source_model/` | `SourceModelMeta` (metadata types, including each field's write prefix and the root's `NamespaceMeta`), path resolution (`resolve_path`), and `synthesize_source_model` (struct tree + source paths + prefixes from the nodes; E080/E081/E083 namespace diagnostics) — split into `meta.rs` / `resolve.rs` / `synth.rs`. |
 | `hub.rs` | `derive_hub` — the canonical model as the union of spoke `canonical_key`s. |
 | `validate.rs` | the compile-time validation pipeline (E020–E072). |
 | `compile.rs` | `compile` — runs the whole multi-spoke pipeline and aggregates diagnostics. |
@@ -59,9 +59,11 @@ TOML mappings ─► parse ─► resolve(inherit, disabled)
 1. `parse_mapping` turns one TOML document into a `ParsedMapping`, rejecting
    unknown keys (E001) and stamping each node's declaration `position`.
 2. `build_ir` resolves the inheritance chain (an override keeps the base
-   position; new nodes append), drops disabled nodes, **synthesizes the
-   `SourceModelMeta` and each node's `source_path` from the node ids** (each
-   field carrying the emission `order` of its first contributing node), and
+   position; new nodes append; omitted namespace meta is filled from the
+   ancestors), drops disabled nodes, **synthesizes the `SourceModelMeta` and
+   each node's `source_path` from the node ids** (each field carrying the
+   emission `order` of its first contributing node and the namespace prefix it
+   is written with; structural `ns`-only nodes are consumed here), and
    materializes defaults into a deterministic `MappingIr`.
 3. `derive_hub` folds every spoke's `canonical_key`s into a `CanonicalModel`,
    enforcing cross-spoke type/scope consistency.

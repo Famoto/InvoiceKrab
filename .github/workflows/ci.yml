@@ -38,5 +38,8 @@ jobs:
       - name: Lint workspace
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      - name: Install xmllint (XSD validation of emitted documents)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libxml2-utils
+
       - name: Test workspace
         run: cargo test --workspace --locked

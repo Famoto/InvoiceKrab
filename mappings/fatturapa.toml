@@ -20,13 +20,25 @@
 [meta]
 doc_format = "fatturapa"
 format_version = "1.2.2"
-mapping_version = "1.1"
+mapping_version = "1.2"
 source_model = "fatturapa:1.2.2"
 canonical_model = "canonical-invoice:1.0"
 root = "FatturaElettronica"
 # FatturaPA carries no EN 16931 CustomizationID; its distinct root element is what
 # distinguishes it, so it declares no CustomizationID-based marker.
 detect = []
+# The root is `p:FatturaElettronica`; every element beneath it is unqualified
+# (the schema's `elementFormDefault="unqualified"`), so no `ns_defaults`.
+root_ns = "p"
+
+[meta.namespaces]
+p = "http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2"
+
+# The schema-version attribute every FatturaPA document carries on its root.
+[FatturaElettronica.versione]
+xml = "@versione"
+type = "string"
+constant = "FPR12"
 
 # --- General document data (DatiGeneraliDocumento) -----------------------------
 [FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.TipoDocumento]

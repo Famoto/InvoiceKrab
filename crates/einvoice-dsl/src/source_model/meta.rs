@@ -17,10 +17,41 @@ pub struct SourceModelMeta {
     /// Model id (e.g. `ubl-invoice:2.1`), from `[meta].source_model` or derived
     /// from `doc_format`/`format_version`.
     pub model_id: String,
-    /// Name of the root struct in [`Self::structs`].
+    /// Name of the root struct in [`Self::structs`] — the root element's
+    /// *local* name (the prefix lives in [`Self::namespaces`]).
     pub root: String,
     /// All named structs reachable from the root.
     pub structs: BTreeMap<String, StructMeta>,
+    /// The namespaces the written document declares and the root's prefix.
+    pub namespaces: NamespaceMeta,
+}
+
+/// The namespace declarations of a source model: what the root element emits
+/// as `xmlns` attributes and which prefix the root itself carries. Element
+/// prefixes live on each [`FieldMeta::prefix`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NamespaceMeta {
+    /// Prefix of the root element (`""` = unprefixed).
+    pub root_prefix: String,
+    /// Declared namespaces, prefix → URI; `""` is the default namespace.
+    pub declared: BTreeMap<String, String>,
+}
+
+impl NamespaceMeta {
+    /// The root element's qualified name as written (`rsm:CrossIndustryInvoice`,
+    /// or the bare local name when the root is unprefixed).
+    pub fn qualified_root(&self, root: &str) -> String {
+        qualify(&self.root_prefix, root)
+    }
+}
+
+/// `prefix:local`, or `local` when `prefix` is empty.
+pub fn qualify(prefix: &str, local: &str) -> String {
+    if prefix.is_empty() {
+        local.to_string()
+    } else {
+        format!("{prefix}:{local}")
+    }
 }
 
 /// A named struct's fields.
@@ -69,10 +100,14 @@ pub struct FieldMeta {
     pub repeated: bool,
     /// What the field holds.
     pub ty: FieldType,
-    /// The XML element/attribute name this field binds to (e.g. `ID`,
+    /// The XML element/attribute *local* name this field binds to (e.g. `ID`,
     /// `@currencyID`, `$text`). Drives the serde rename on the generated source
     /// struct; `None` means use the field name verbatim.
     pub xml: Option<String>,
+    /// Namespace prefix the element is *written* with (`""` = unprefixed).
+    /// Reading ignores prefixes, so this only shapes the serialize-side rename.
+    /// Always empty for attributes and `$text`.
+    pub prefix: String,
     /// Emission order among the struct's fields: the declaration position of
     /// the first mapping node that contributes to this field. An inferred
     /// interior element inherits the position of its first declared
@@ -91,6 +126,18 @@ impl FieldMeta {
             && self.repeated == other.repeated
             && self.ty == other.ty
             && self.xml == other.xml
+            && self.prefix == other.prefix
+    }
+
+    /// The name serde *writes* for this field: the prefixed element name, or
+    /// the attribute / `$text` binding unchanged.
+    pub fn serialized_name(&self) -> Option<String> {
+        let xml = self.xml.as_deref()?;
+        if self.is_attribute() || self.is_text() {
+            Some(xml.to_string())
+        } else {
+            Some(qualify(&self.prefix, xml))
+        }
     }
 
     /// Whether this field binds an XML attribute (`@name`).
@@ -190,6 +237,7 @@ impl SourceModelBuilder {
                     repeated: *repeated,
                     ty: ty.clone(),
                     xml: None,
+                    prefix: String::new(),
                     order,
                 },
             );
@@ -204,6 +252,7 @@ impl SourceModelBuilder {
             model_id: self.model_id,
             root: self.root,
             structs: self.structs,
+            namespaces: NamespaceMeta::default(),
         }
     }
 }
@@ -261,8 +310,48 @@ mod tests {
             repeated: false,
             ty: FieldType::Scalar,
             xml: Some(xml.to_string()),
+            prefix: String::new(),
             order,
         }
+    }
+
+    #[test]
+    fn test_serialized_name_qualifies_elements_only() {
+        let mut element = field("ID", 0);
+        element.prefix = "cbc".into();
+        assert_eq!(element.serialized_name().as_deref(), Some("cbc:ID"));
+        let plain = field("ID", 0);
+        assert_eq!(plain.serialized_name().as_deref(), Some("ID"));
+        let mut attr = field("@currencyID", 0);
+        attr.prefix = "cbc".into();
+        assert_eq!(attr.serialized_name().as_deref(), Some("@currencyID"));
+        let mut text = field("$text", 0);
+        text.prefix = "cbc".into();
+        assert_eq!(text.serialized_name().as_deref(), Some("$text"));
+    }
+
+    #[test]
+    fn test_same_binding_distinguishes_prefix() {
+        let a = field("ID", 0);
+        let mut b = field("ID", 0);
+        b.prefix = "cbc".into();
+        assert!(!a.same_binding(&b));
+    }
+
+    #[test]
+    fn test_qualified_root() {
+        let ns = NamespaceMeta {
+            root_prefix: "rsm".into(),
+            declared: BTreeMap::new(),
+        };
+        assert_eq!(
+            ns.qualified_root("CrossIndustryInvoice"),
+            "rsm:CrossIndustryInvoice"
+        );
+        assert_eq!(
+            NamespaceMeta::default().qualified_root("Invoice"),
+            "Invoice"
+        );
     }
 
     #[test]

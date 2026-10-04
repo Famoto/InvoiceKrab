@@ -171,7 +171,11 @@ mod tests {
     fn test_handle_valid_transform_returns_200_xml() {
         let reply = handle("to=ubl-invoice&from=ubl-invoice", UBL.to_vec());
         assert_eq!(reply.status, 200, "{}", reply.body);
-        assert!(reply.body.contains("<ID>INV-42</ID>"), "{}", reply.body);
+        assert!(
+            reply.body.contains("<cbc:ID>INV-42</cbc:ID>"),
+            "{}",
+            reply.body
+        );
         assert!(reply.warnings.is_empty(), "{}", reply.warnings);
     }
 
@@ -179,7 +183,11 @@ mod tests {
     fn test_handle_detects_source_when_from_absent() {
         let reply = handle("to=ubl-invoice", UBL.to_vec());
         assert_eq!(reply.status, 200, "{}", reply.body);
-        assert!(reply.body.contains("<ID>INV-42</ID>"), "{}", reply.body);
+        assert!(
+            reply.body.contains("<cbc:ID>INV-42</cbc:ID>"),
+            "{}",
+            reply.body
+        );
     }
 
     #[test]

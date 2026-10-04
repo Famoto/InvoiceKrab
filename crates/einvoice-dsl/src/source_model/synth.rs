@@ -12,7 +12,32 @@ use crate::error::{Diagnostic, Severity};
 use crate::node::{NodeId, RawNode, Scope};
 use crate::types::MappingType;
 
-use super::meta::{FieldMeta, FieldType, SourceModelMeta, StructMeta};
+use super::meta::{FieldMeta, FieldType, NamespaceMeta, SourceModelMeta, StructMeta};
+
+/// The namespace configuration synthesis works from: the effective `[meta]`
+/// entries `root_ns`, `[meta.ns_defaults]` and `[meta.namespaces]` (after
+/// inheritance). The default — everything unprefixed, nothing declared — is
+/// what a mapping without namespace meta gets.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NamespaceConfig {
+    /// Prefix of the root element (`""` = unprefixed).
+    pub root_prefix: String,
+    /// Default prefix for scalar / valued elements.
+    pub leaf_prefix: String,
+    /// Default prefix for inferred interior and collection elements.
+    pub aggregate_prefix: String,
+    /// Declared namespaces, prefix → URI (`""` = default namespace).
+    pub declared: BTreeMap<String, String>,
+}
+
+impl NamespaceConfig {
+    /// Whether `prefix` must be, but is not, declared. The empty prefix needs
+    /// no declaration (an undeclared default namespace just means "no
+    /// namespace").
+    fn undeclared(&self, prefix: &str) -> bool {
+        !prefix.is_empty() && !self.declared.contains_key(prefix)
+    }
+}
 
 /// Synthesizes the typed source model from the mapping nodes.
 ///
@@ -39,15 +64,40 @@ use super::meta::{FieldMeta, FieldType, SourceModelMeta, StructMeta};
 ///   where its first descendant was declared. Codegen emits fields in that
 ///   order (attributes first), which is how the mapping's declaration order
 ///   becomes the emitted XML's element order.
+/// - Every element field carries the namespace `prefix` it is written with:
+///   the node's own `ns`, else the `leaf` default for scalar / valued elements
+///   and the `aggregate` default for interior and collection elements. An
+///   interior element named by a *structural node* (`ns` only, no `type`)
+///   takes that node's `ns`. Attributes and `$text` are never prefixed.
+///
+/// Namespace diagnostics (all errors): `E080` a prefix used by `root_ns`, the
+/// defaults, or a node's `ns` is not declared in `[meta.namespaces]`; `E081`
+/// `ns` on an attribute or `$text` leaf; `E083` a structural node that names no
+/// element (no typed node beneath it, or the root, whose prefix is `root_ns`).
+///
+/// This entry point uses the default [`NamespaceConfig`] (nothing prefixed or
+/// declared); [`synthesize_source_model_with`] takes the mapping's.
 pub fn synthesize_source_model(
     active: &BTreeMap<NodeId, RawNode>,
     root: &str,
     model_id: &str,
 ) -> (SourceModelMeta, BTreeMap<NodeId, String>, Vec<Diagnostic>) {
+    synthesize_source_model_with(active, root, model_id, &NamespaceConfig::default())
+}
+
+/// [`synthesize_source_model`] with an explicit namespace configuration.
+pub fn synthesize_source_model_with(
+    active: &BTreeMap<NodeId, RawNode>,
+    root: &str,
+    model_id: &str,
+    ns: &NamespaceConfig,
+) -> (SourceModelMeta, BTreeMap<NodeId, String>, Vec<Diagnostic>) {
     let mut structs: BTreeMap<String, StructMeta> = BTreeMap::new();
     structs.insert(root.to_string(), StructMeta::default());
     let mut source_paths: BTreeMap<NodeId, String> = BTreeMap::new();
     let mut diags: Vec<Diagnostic> = Vec::new();
+
+    check_namespace_meta(ns, &mut diags);
 
     // Collection nodes define scopes (and item structs). Build the lookup first
     // so every node's scope and base struct can be computed.
@@ -60,10 +110,36 @@ pub fn synthesize_source_model(
         .collect();
 
     for (id, node) in active {
+        if let Some(prefix) = node.ns.as_deref()
+            && ns.undeclared(prefix)
+        {
+            diags.push(diag(
+                "E080",
+                Some(id),
+                format!("node `{id}` uses namespace prefix `{prefix}`, which `[meta.namespaces]` does not declare"),
+            ));
+        }
         let Some(ty) = node.ty else {
             // Untyped tables are containers inferred from descendant ids, not
-            // standalone nodes; nothing to place. (A disabled-only override has
-            // already been removed before synthesis.)
+            // standalone nodes; nothing to place. A structural node (`ns` only)
+            // is consumed when the interior field it names is created — unless
+            // nothing is beneath it, which is an authoring error. (A
+            // disabled-only override has already been removed before synthesis.)
+            if node.is_structural() {
+                if id.as_str() == root {
+                    diags.push(diag(
+                        "E083",
+                        Some(id),
+                        format!("structural node `{id}` names the root element; set `[meta].root_ns` instead"),
+                    ));
+                } else if !has_descendant(active, id) {
+                    diags.push(diag(
+                        "E083",
+                        Some(id),
+                        format!("structural node `{id}` names no element: no typed node is declared beneath it"),
+                    ));
+                }
+            }
             continue;
         };
         let scope = id.nearest_collection_scope(|a| collections.contains_key(a));
@@ -77,11 +153,11 @@ pub fn synthesize_source_model(
             continue;
         }
 
-        match insert_node(&mut structs, &base, &segments, node, ty, active, id) {
+        match insert_node(&mut structs, &base, &segments, node, ty, active, id, ns) {
             Ok(path) => {
                 source_paths.insert(id.clone(), path);
             }
-            Err(msg) => diags.push(synth_err(id, msg)),
+            Err((code, msg)) => diags.push(diag(code, Some(id), msg)),
         }
     }
 
@@ -90,10 +166,50 @@ pub fn synthesize_source_model(
             model_id: model_id.to_string(),
             root: root.to_string(),
             structs,
+            namespaces: NamespaceMeta {
+                root_prefix: ns.root_prefix.clone(),
+                declared: ns.declared.clone(),
+            },
         },
         source_paths,
         diags,
     )
+}
+
+/// `E080` for the `[meta]`-level prefixes (`root_ns`, `ns_defaults`) that are
+/// not declared.
+fn check_namespace_meta(ns: &NamespaceConfig, diags: &mut Vec<Diagnostic>) {
+    for (what, prefix) in [
+        ("root_ns", ns.root_prefix.as_str()),
+        ("ns_defaults.leaf", ns.leaf_prefix.as_str()),
+        ("ns_defaults.aggregate", ns.aggregate_prefix.as_str()),
+    ] {
+        if ns.undeclared(prefix) {
+            diags.push(diag(
+                "E080",
+                None,
+                format!("`[meta].{what}` uses namespace prefix `{prefix}`, which `[meta.namespaces]` does not declare"),
+            ));
+        }
+    }
+}
+
+/// The prefix an element at `element_id` is written with when it appears as an
+/// *interior* segment of some node's path: a structural or typed node's own
+/// `ns`, else the leaf default for a valued element (a typed non-collection
+/// node with descendants) and the aggregate default for everything else.
+fn element_prefix(
+    active: &BTreeMap<NodeId, RawNode>,
+    element_id: &NodeId,
+    ns: &NamespaceConfig,
+) -> String {
+    match active.get(element_id) {
+        Some(node) if node.ns.is_some() => node.ns.clone().unwrap_or_default(),
+        Some(node) if node.ty.is_some_and(|t| t != MappingType::Collection) => {
+            ns.leaf_prefix.clone()
+        }
+        _ => ns.aggregate_prefix.clone(),
+    }
 }
 
 /// The struct a scope's nodes are placed into: the model root for root scope, or
@@ -136,19 +252,22 @@ fn element_path(id: &NodeId, scope: &Scope, root: &str) -> Vec<String> {
 /// structs as needed, and returns the node's `source_path` (dotted snake field
 /// path relative to its scope struct).
 ///
-/// `base` names the scope struct; `segments` is the element path within it.
-/// Compatible existing fields keep the earliest contributing node position.
+/// `base` names the scope struct; `segments` is the element path within it;
+/// `ns` supplies the default prefixes and the declared namespaces. Compatible
+/// existing fields keep the earliest contributing node position.
 ///
 /// # Errors
 ///
-/// Returns an error message for incompatible field bindings or `multiple` on a
-/// collection, attribute, `$text` leaf, or valued container. Earlier changes to
-/// `structs` are retained on error. The caller converts these errors into
-/// `E024` diagnostics and continues processing other nodes.
+/// Returns `(code, message)`: `E024` for incompatible field bindings or
+/// `multiple` on a collection, attribute, `$text` leaf, or valued container;
+/// `E081` for `ns` on an attribute or `$text` leaf. Earlier changes to
+/// `structs` are retained on error. The caller turns these into diagnostics and
+/// continues processing other nodes.
 ///
 /// # Panics
 ///
 /// Panics if `segments` is empty.
+#[allow(clippy::too_many_arguments)]
 fn insert_node(
     structs: &mut BTreeMap<String, StructMeta>,
     base: &str,
@@ -157,13 +276,24 @@ fn insert_node(
     ty: MappingType,
     active: &BTreeMap<NodeId, RawNode>,
     id: &NodeId,
-) -> Result<String, String> {
+    ns: &NamespaceConfig,
+) -> Result<String, (&'static str, String)> {
+    let e024 = |msg: String| ("E024", msg);
+    // The node's own prefix: its `ns`, else the default for its kind.
+    let own_prefix = |default: &str| node.ns.clone().unwrap_or_else(|| default.to_string());
+    // Full ids of the interior segments: `segments` is the id minus the scope
+    // prefix, so segment `i` is the id truncated after `stripped + i + 1`
+    // segments.
+    let all: Vec<&str> = id.segments().collect();
+    let stripped = all.len() - segments.len();
+
     // Descend/create interior structs for all but the final segment.
     let mut current = base.to_string();
     let mut path_parts: Vec<String> = Vec::new();
-    for seg in &segments[..segments.len() - 1] {
+    for (i, seg) in segments[..segments.len() - 1].iter().enumerate() {
         let field = snake_case(seg);
         let struct_name = camel_case(seg);
+        let interior_id = NodeId::new(all[..stripped + i + 1].join("."));
         upsert_field(
             structs,
             &current,
@@ -173,9 +303,11 @@ fn insert_node(
                 repeated: false,
                 ty: FieldType::Struct(struct_name.clone()),
                 xml: Some(seg.clone()),
+                prefix: element_prefix(active, &interior_id, ns),
                 order: node.position,
             },
-        )?;
+        )
+        .map_err(e024)?;
         structs.entry(struct_name.clone()).or_default();
         path_parts.push(field);
         current = struct_name;
@@ -196,10 +328,10 @@ fn insert_node(
     // Collection node: a repeated struct field; children populate the item struct.
     if ty == MappingType::Collection {
         if multi {
-            return Err(
+            return Err(e024(
                 "`multiple` is not valid on a collection node (a collection already repeats)"
                     .to_string(),
-            );
+            ));
         }
         let field = snake_case(last);
         let item = item_struct_name(id);
@@ -213,9 +345,11 @@ fn insert_node(
                 repeated: true,
                 ty: FieldType::Struct(item.clone()),
                 xml: Some(rename),
+                prefix: own_prefix(&ns.aggregate_prefix),
                 order: node.position,
             },
-        )?;
+        )
+        .map_err(e024)?;
         structs.entry(item).or_default();
         path_parts.push(field);
         return Ok(path_parts.join("."));
@@ -226,10 +360,17 @@ fn insert_node(
         && xml.starts_with('@')
     {
         if multi {
-            return Err(
+            return Err(e024(
                 "`multiple` is not valid on an attribute leaf (an XML attribute cannot repeat)"
                     .to_string(),
-            );
+            ));
+        }
+        if node.ns.is_some() {
+            return Err((
+                "E081",
+                "`ns` is not valid on an attribute leaf (attributes are never prefixed)"
+                    .to_string(),
+            ));
         }
         let field = snake_case(last);
         upsert_field(
@@ -241,9 +382,11 @@ fn insert_node(
                 repeated: false,
                 ty: FieldType::Scalar,
                 xml: Some(xml.to_string()),
+                prefix: String::new(),
                 order: node.position,
             },
-        )?;
+        )
+        .map_err(e024)?;
         path_parts.push(field);
         return Ok(path_parts.join("."));
     }
@@ -251,10 +394,17 @@ fn insert_node(
     // Element text override (`xml = "$text"`): a value field on the current struct.
     if node.xml.as_deref() == Some("$text") {
         if multi {
-            return Err(
+            return Err(e024(
                 "`multiple` is not valid on a `$text` leaf (element text cannot repeat)"
                     .to_string(),
-            );
+            ));
+        }
+        if node.ns.is_some() {
+            return Err((
+                "E081",
+                "`ns` is not valid on a `$text` leaf (set it on the element's own node)"
+                    .to_string(),
+            ));
         }
         upsert_field(
             structs,
@@ -265,9 +415,11 @@ fn insert_node(
                 repeated: false,
                 ty: FieldType::Scalar,
                 xml: Some("$text".to_string()),
+                prefix: String::new(),
                 order: node.position,
             },
-        )?;
+        )
+        .map_err(e024)?;
         path_parts.push("value".to_string());
         return Ok(path_parts.join("."));
     }
@@ -277,10 +429,10 @@ fn insert_node(
     // struct that also holds its descendants (e.g. an `@currencyID` attribute).
     if has_descendant(active, id) {
         if multi {
-            return Err(
+            return Err(e024(
                 "`multiple` is not valid on a valued container (model the repetition as a collection instead)"
                     .to_string(),
-            );
+            ));
         }
         let field = snake_case(last);
         let struct_name = camel_case(last);
@@ -294,9 +446,11 @@ fn insert_node(
                 repeated: false,
                 ty: FieldType::Struct(struct_name.clone()),
                 xml: Some(rename),
+                prefix: own_prefix(&ns.leaf_prefix),
                 order: node.position,
             },
-        )?;
+        )
+        .map_err(e024)?;
         structs.entry(struct_name.clone()).or_default();
         upsert_field(
             structs,
@@ -307,9 +461,11 @@ fn insert_node(
                 repeated: false,
                 ty: FieldType::Scalar,
                 xml: Some("$text".to_string()),
+                prefix: String::new(),
                 order: node.position,
             },
-        )?;
+        )
+        .map_err(e024)?;
         path_parts.push(field);
         path_parts.push("value".to_string());
         return Ok(path_parts.join("."));
@@ -329,9 +485,11 @@ fn insert_node(
             repeated: multi,
             ty: FieldType::Scalar,
             xml: Some(rename),
+            prefix: own_prefix(&ns.leaf_prefix),
             order: node.position,
         },
-    )?;
+    )
+    .map_err(e024)?;
     path_parts.push(field);
     Ok(path_parts.join("."))
 }
@@ -379,10 +537,15 @@ fn upsert_field(
 
 /// An `E024` synthesis diagnostic for `id`.
 fn synth_err(id: &NodeId, message: String) -> Diagnostic {
+    diag("E024", Some(id), message)
+}
+
+/// An error-severity synthesis diagnostic.
+fn diag(code: &str, id: Option<&NodeId>, message: String) -> Diagnostic {
     Diagnostic {
-        code: "E024".to_string(),
+        code: code.to_string(),
         severity: Severity::Error,
-        source_node: Some(id.to_string()),
+        source_node: id.map(ToString::to_string),
         message,
         span: None,
     }
@@ -739,6 +902,243 @@ mod tests {
             ),
         ]);
         assert_eq!(ordered(&model, "Amount"), ["currency_id", "value"]);
+    }
+
+    /// A UBL-like namespace configuration: default-namespace root, `cbc`
+    /// leaves, `cac` aggregates.
+    fn ubl_ns() -> NamespaceConfig {
+        NamespaceConfig {
+            root_prefix: String::new(),
+            leaf_prefix: "cbc".into(),
+            aggregate_prefix: "cac".into(),
+            declared: [
+                ("".to_string(), "urn:invoice".to_string()),
+                ("cbc".to_string(), "urn:cbc".to_string()),
+                ("cac".to_string(), "urn:cac".to_string()),
+                ("udt".to_string(), "urn:udt".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        }
+    }
+
+    fn synth_ns(pairs: &[(&str, &str)], ns: &NamespaceConfig) -> SourceModelMeta {
+        let (model, _, diags) =
+            synthesize_source_model_with(&nodes(pairs), "Invoice", "ubl:2.1", ns);
+        assert!(diags.is_empty(), "unexpected synth diagnostics: {diags:?}");
+        model
+    }
+
+    fn prefix_of<'a>(model: &'a SourceModelMeta, st: &str, field: &str) -> &'a str {
+        &model.structs[st].fields[field].prefix
+    }
+
+    #[test]
+    fn test_synth_default_config_leaves_everything_unprefixed() {
+        let (model, _) = synth(&[("Invoice.Totals.Amount", r#"type = "decimal""#)]);
+        assert_eq!(prefix_of(&model, "Invoice", "totals"), "");
+        assert_eq!(prefix_of(&model, "Totals", "amount"), "");
+        assert_eq!(model.namespaces, NamespaceMeta::default());
+    }
+
+    #[test]
+    fn test_synth_prefixes_leaves_and_aggregates_by_default() {
+        let model = synth_ns(
+            &[
+                ("Invoice.ID", r#"type = "identifier""#),
+                (
+                    "Invoice.LegalMonetaryTotal.PayableAmount",
+                    r#"type = "decimal""#,
+                ),
+                (
+                    "InvoiceLine",
+                    r#"type = "collection"
+                    canonical_key = "Lines""#,
+                ),
+                ("InvoiceLine.Item.Name", r#"type = "string""#),
+            ],
+            &ubl_ns(),
+        );
+        assert_eq!(prefix_of(&model, "Invoice", "id"), "cbc");
+        assert_eq!(prefix_of(&model, "Invoice", "legal_monetary_total"), "cac");
+        assert_eq!(
+            prefix_of(&model, "LegalMonetaryTotal", "payable_amount"),
+            "cbc"
+        );
+        assert_eq!(prefix_of(&model, "Invoice", "invoice_line"), "cac");
+        assert_eq!(prefix_of(&model, "InvoiceLine", "item"), "cac");
+        assert_eq!(prefix_of(&model, "Item", "name"), "cbc");
+        assert_eq!(model.namespaces.root_prefix, "");
+        assert_eq!(model.namespaces.declared.len(), 4);
+    }
+
+    #[test]
+    fn test_synth_valued_container_is_a_leaf_element_from_both_paths() {
+        // `PayableAmount` is created by its own node *and* by the attribute's
+        // path; both must agree on the leaf prefix or E024 would fire.
+        let model = synth_ns(
+            &[
+                ("Invoice.Totals.PayableAmount", r#"type = "decimal""#),
+                (
+                    "Invoice.Totals.PayableAmount.currencyID",
+                    r#"xml = "@currencyID"
+                    type = "currency""#,
+                ),
+            ],
+            &ubl_ns(),
+        );
+        assert_eq!(prefix_of(&model, "Totals", "payable_amount"), "cbc");
+        assert_eq!(prefix_of(&model, "PayableAmount", "currency_id"), "");
+        assert_eq!(prefix_of(&model, "PayableAmount", "value"), "");
+    }
+
+    #[test]
+    fn test_synth_node_ns_overrides_default_and_structural_node_prefixes_interior() {
+        let model = synth_ns(
+            &[
+                ("Invoice.Wrapper", r#"ns = "udt""#),
+                (
+                    "Invoice.Wrapper.IssueDate.DateTimeString",
+                    r#"type = "date"
+                    ns = "udt""#,
+                ),
+                (
+                    "Invoice.Lines",
+                    r#"type = "collection"
+                    canonical_key = "Lines"
+                    ns = "udt""#,
+                ),
+                ("Invoice.Lines.ID", r#"type = "identifier""#),
+            ],
+            &ubl_ns(),
+        );
+        assert_eq!(
+            prefix_of(&model, "Invoice", "wrapper"),
+            "udt",
+            "structural node"
+        );
+        assert_eq!(
+            prefix_of(&model, "Wrapper", "issue_date"),
+            "cac",
+            "inferred interior"
+        );
+        assert_eq!(
+            prefix_of(&model, "IssueDate", "date_time_string"),
+            "udt",
+            "node ns"
+        );
+        assert_eq!(
+            prefix_of(&model, "Invoice", "lines"),
+            "udt",
+            "collection ns"
+        );
+    }
+
+    #[test]
+    fn test_synth_undeclared_prefix_is_e080() {
+        let (_, _, diags) = synthesize_source_model_with(
+            &nodes(&[(
+                "Invoice.ID",
+                r#"type = "identifier"
+                ns = "nope""#,
+            )]),
+            "Invoice",
+            "ubl:2.1",
+            &ubl_ns(),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "E080" && d.message.contains("nope")),
+            "{diags:?}"
+        );
+
+        let mut bad_meta = ubl_ns();
+        bad_meta.root_prefix = "rsm".into();
+        bad_meta.aggregate_prefix = "ram".into();
+        let (_, _, diags) = synthesize_source_model_with(
+            &nodes(&[("Invoice.ID", r#"type = "identifier""#)]),
+            "Invoice",
+            "ubl:2.1",
+            &bad_meta,
+        );
+        let e080: Vec<&str> = diags
+            .iter()
+            .filter(|d| d.code == "E080")
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(e080.len(), 2, "{diags:?}");
+        assert!(
+            e080.iter()
+                .any(|m| m.contains("root_ns") && m.contains("rsm"))
+        );
+        assert!(
+            e080.iter()
+                .any(|m| m.contains("ns_defaults.aggregate") && m.contains("ram"))
+        );
+    }
+
+    #[test]
+    fn test_synth_empty_prefix_needs_no_declaration() {
+        let mut ns = ubl_ns();
+        ns.declared.remove("");
+        let (_, _, diags) = synthesize_source_model_with(
+            &nodes(&[("Invoice.ID", "type = \"identifier\"\nns = \"\"")]),
+            "Invoice",
+            "ubl:2.1",
+            &ns,
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn test_synth_ns_on_attribute_or_text_is_e081() {
+        for body in [
+            "xml = \"@currencyID\"\ntype = \"currency\"\nns = \"cbc\"",
+            "xml = \"$text\"\ntype = \"decimal\"\nns = \"cbc\"",
+        ] {
+            let (_, _, diags) = synthesize_source_model_with(
+                &nodes(&[("Invoice.Amount.Leaf", body)]),
+                "Invoice",
+                "ubl:2.1",
+                &ubl_ns(),
+            );
+            assert!(diags.iter().any(|d| d.code == "E081"), "{body}: {diags:?}");
+        }
+    }
+
+    #[test]
+    fn test_synth_dangling_or_root_structural_node_is_e083() {
+        let (_, _, diags) = synthesize_source_model_with(
+            &nodes(&[
+                ("Invoice.Nothing", r#"ns = "cac""#),
+                ("Invoice.ID", r#"type = "identifier""#),
+            ]),
+            "Invoice",
+            "ubl:2.1",
+            &ubl_ns(),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "E083" && d.message.contains("Invoice.Nothing")),
+            "{diags:?}"
+        );
+        let (_, _, diags) = synthesize_source_model_with(
+            &nodes(&[
+                ("Invoice", r#"ns = "cac""#),
+                ("Invoice.ID", r#"type = "identifier""#),
+            ]),
+            "Invoice",
+            "ubl:2.1",
+            &ubl_ns(),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "E083" && d.message.contains("root_ns")),
+            "{diags:?}"
+        );
     }
 
     #[test]

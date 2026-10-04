@@ -15,6 +15,7 @@ pointing at the offending node.
 - [How a mapping becomes code](#how-a-mapping-becomes-code)
 - [The big idea: ids mirror the XML tree](#the-big-idea-ids-mirror-the-xml-tree)
 - [Declaration order is schema order](#declaration-order-is-schema-order)
+- [Namespaces](#namespaces)
 - [The `[meta]` table](#the-meta-table)
 - [Source nodes](#source-nodes)
   - [Node fields reference](#node-fields-reference)
@@ -74,9 +75,10 @@ Interior elements (`LegalMonetaryTotal` here) are *inferred* from the ids of
 their leaf descendants — you never declare them as their own table. On the read
 side, missing interior elements simply mean the leaves under them are missing.
 
-XML matching is **namespace-agnostic**: mappings bind XML *local* names, so the
-same mapping reads real namespaced UBL (`cbc:ID`, `cac:LegalMonetaryTotal`) and
-bare-name test fixtures alike.
+XML matching is **namespace-agnostic** on the read side: mappings bind XML
+*local* names, so the same mapping reads real namespaced UBL (`cbc:ID`,
+`cac:LegalMonetaryTotal`) and bare-name test fixtures alike. On the write side
+the document is fully qualified — see [Namespaces](#namespaces).
 
 ---
 
@@ -112,6 +114,61 @@ schema, not the reading order a human might prefer.
 
 ---
 
+## Namespaces
+
+A schema-valid document declares its namespaces on the root and qualifies every
+element. Three optional `[meta]` entries describe that; all three are
+**inherited** from the parent mapping when a child omits them, so a CIUS
+declares nothing:
+
+```toml
+[meta]
+root_ns = ""                 # prefix of the root element ("" = default namespace)
+
+[meta.namespaces]            # declared on the root as xmlns / xmlns:prefix
+""  = "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+cbc = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
+cac = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+
+[meta.ns_defaults]
+leaf      = "cbc"            # scalar and valued elements
+aggregate = "cac"            # inferred interior elements and collections
+```
+
+Per node, `ns = "udt"` sets the prefix of **that node's own element**, overriding
+the default for its kind. Attributes and `$text` are never prefixed (E081).
+The empty prefix needs no declaration; every other prefix used by `root_ns`, the
+defaults, or a node must appear in `[meta.namespaces]` (E080).
+
+An inferred interior element that needs a prefix the defaults would not give it
+is named by a **structural node**: a table with `ns` (plus optionally
+`description`) and no `type`:
+
+```toml
+# CII: the root's three children are rsm:, everything beneath them ram:.
+[CrossIndustryInvoice.ExchangedDocument]
+ns = "rsm"
+```
+
+A structural node is consumed by the compiler when it creates that interior
+element; it never maps a value, so it is an error for it to name nothing (no
+typed node beneath it) or the root (whose prefix is `root_ns`) — E083. A
+`type`-less table with any *mapping* field (`canonical_key`, `xml`, `required`,
+…) is still E002.
+
+What the writer emits: `<?xml version="1.0" encoding="UTF-8"?>`, the root tag
+qualified with `root_ns` and carrying one `xmlns[:prefix]` attribute per declared
+namespace, and every element qualified. Reading never changes: prefixes in the
+source document are ignored, and the `xmlns` attributes are accepted and dropped.
+
+Per format in this repository: UBL (and so XRechnung and Peppol) uses the
+default namespace for `Invoice`, `cbc:` leaves and `cac:` aggregates; CII (and
+so Factur-X) is `rsm:` for the root and its three children, `ram:` beneath, with
+`udt:`/`qdt:` on the data-type leaves (`DateTimeString`, `Indicator`); FatturaPA
+is `p:FatturaElettronica` with unqualified children.
+
+---
+
 ## The `[meta]` table
 
 The reserved `[meta]` table identifies the format. Unknown keys are rejected
@@ -144,6 +201,9 @@ description     = "…"                       # optional, reports only
 | `inherits` | — | Parent mapping id to inherit nodes from |
 | `disabled` | — | When `true`, inherit-only base: other spokes may `inherits` it, but it emits no `Spoke` of its own |
 | `description` | — | Human note, used in reports only |
+| `root_ns` | — | Prefix of the root element (default `""`); inherited — see [Namespaces](#namespaces) |
+| `[meta.namespaces]` | — | `prefix = "URI"` declarations emitted on the root (`""` = default namespace); inherited |
+| `[meta.ns_defaults]` | — | `leaf` / `aggregate` default prefixes; inherited |
 
 `source_model` is also an assertion: if it disagrees with the synthesized
 model's id, the build fails (E020). Duplicate mapping ids or slugs across
@@ -164,7 +224,7 @@ required = true
 normalize = ["trim", "empty_as_missing"]
 ```
 
-A node plays one of four roles, depending on which fields it declares:
+A node plays one of five roles, depending on which fields it declares:
 
 | Role | Declares | Read side | Write side |
 |------|----------|-----------|------------|
@@ -172,6 +232,7 @@ A node plays one of four roles, depending on which fields it declares:
 | **Helper** | neither `canonical_key` nor `clone_of` | read only when referenced as a fallback | never written |
 | **Constant** | `constant` (with or without `canonical_key`) | unchanged (fills hub if keyed) | always emits the fixed literal |
 | **Clone** | `clone_of` | consistency check only | mirrors the target key's value |
+| **Structural** | `ns` only, no `type` | nothing | names an interior element's prefix (see [Namespaces](#namespaces)) |
 
 ### Node fields reference
 
@@ -191,6 +252,7 @@ A node plays one of four roles, depending on which fields it declares:
 | `adapter` | string | Name of a compiler-known value adapter (see [Adapters](#adapters)). |
 | `description` | string | Human note, reports only. |
 | `disabled` | bool | Remove this node from the effective mapping (useful with [inheritance](#inheritance)). |
+| `ns` | string | Namespace prefix of this node's own element on write (see [Namespaces](#namespaces)). Alone on a `type`-less table it makes a structural node. |
 
 Any other field is rejected (E001) — typos never silently no-op.
 
@@ -487,6 +549,8 @@ declares its deltas:
   position, so the element stays where the base emits it.
 - Nodes the child adds are emitted after every base node, in the child's own
   declaration order (see [Declaration order is schema order](#declaration-order-is-schema-order)).
+- The namespace entries of `[meta]` (`root_ns`, `namespaces`, `ns_defaults`)
+  are inherited whole when the child omits them.
 - `disabled = true` on a node removes it from the effective mapping.
 - `disabled = true` in `[meta]` makes the mapping itself **inherit-only**: it
   can be inherited from but emits no spoke (see [cii.toml](cii.toml), which
@@ -658,6 +722,9 @@ Validation reports **every** problem in one run, never just the first error.
 | `E070` | `clone_of` on a collection, or combined with `canonical_key`, `constant`, `fallbacks`, `multiple`, or `adapter` |
 | `E071` | `clone_of` target key not declared by a primary node in the same scope |
 | `E072` | `clone_of` node's `type` differs from its target's |
+| `E080` | Namespace prefix used by `root_ns`, `ns_defaults`, or a node's `ns` but not declared in `[meta.namespaces]` |
+| `E081` | `ns` on an attribute or `$text` leaf (never prefixed) |
+| `E083` | Structural node that names no element (nothing beneath it) or names the root (use `root_ns`) |
 
 Runtime (per-document) diagnostics — missing required values, type validation
 failures, taken fallbacks, `CLONE_MISMATCH` — are reported with severity and a

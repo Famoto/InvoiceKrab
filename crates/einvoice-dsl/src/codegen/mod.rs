@@ -243,7 +243,7 @@ pub fn plan_spoke_dedup(
 fn source_section(out: &mut String, source: &SourceModelMeta) {
     source::generate_source_structs(out, source);
     out.push('\n');
-    source::generate_xml_io(out, &source.root);
+    source::generate_xml_io(out, &source.root, &source.namespaces);
 }
 
 /// Emits the imports the `read`/`write` mappers need (the source structs and
@@ -528,6 +528,7 @@ mod tests {
             repeated: false,
             ty: FieldType::Struct("Party".into()),
             xml: Some("Party".into()),
+            prefix: String::new(),
             order: 0,
         };
         let attr = serde_attr(&field).expect("interior struct needs a serde attr");
@@ -1097,6 +1098,126 @@ mod tests {
         let attr = offset_in_struct(&out, "PayableAmount", "pub currency_id:");
         let text = offset_in_struct(&out, "PayableAmount", "pub value:");
         assert!(attr < text, "{out}");
+    }
+
+    const NAMESPACED_UBL: &str = r#"
+        [meta]
+        doc_format = "ubl-invoice"
+        format_version = "2.1"
+        mapping_version = "1.0"
+        canonical_model = "canonical-invoice:1.0"
+        root = "Invoice"
+        root_ns = ""
+
+        [meta.namespaces]
+        "" = "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+        cbc = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
+        cac = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+
+        [meta.ns_defaults]
+        leaf = "cbc"
+        aggregate = "cac"
+
+        [Invoice.ID]
+        type = "identifier"
+        canonical_key = "InvoiceNumber"
+
+        [Invoice.LegalMonetaryTotal.PayableAmount]
+        type = "decimal"
+        canonical_key = "PayableAmount"
+
+        [Invoice.LegalMonetaryTotal.PayableAmount.currencyID]
+        xml = "@currencyID"
+        type = "currency"
+        canonical_key = "PayableAmountCurrency"
+    "#;
+
+    fn compiled_namespaced() -> (MappingIr, SourceModelMeta) {
+        let (ir, source, diags) = build_ir(&[parse_mapping(NAMESPACED_UBL).expect("parses")]);
+        assert!(diags.is_empty(), "{diags:?}");
+        (ir, source)
+    }
+
+    #[test]
+    fn test_namespaced_fields_get_split_renames() {
+        let (ir, source) = compiled_namespaced();
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // Written prefixed, read by local name.
+        assert!(
+            out.contains("#[serde(rename(serialize = \"cbc:ID\", deserialize = \"ID\"), default, skip_serializing_if = \"Option::is_none\")]"),
+            "{out}"
+        );
+        assert!(
+            out.contains("rename(serialize = \"cac:LegalMonetaryTotal\", deserialize = \"LegalMonetaryTotal\")"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "rename(serialize = \"cbc:PayableAmount\", deserialize = \"PayableAmount\")"
+            ),
+            "{out}"
+        );
+        // Attributes and text are never prefixed: plain renames as before.
+        assert!(out.contains("rename = \"@currencyID\""), "{out}");
+        assert!(out.contains("rename = \"$text\""), "{out}");
+    }
+
+    #[test]
+    fn test_namespaced_root_carries_xmlns_markers_and_prefixed_root_tag() {
+        let (ir, source) = compiled_namespaced();
+        let out = generate_spoke(&ir, &source, "super::hub");
+        // One marker type per declared namespace, serializing as its URI.
+        assert!(out.contains("pub struct XmlnsDefault;"), "{out}");
+        assert!(out.contains("pub struct XmlnsCbc;"), "{out}");
+        assert!(out.contains("pub struct XmlnsCac;"), "{out}");
+        assert!(
+            out.contains("s.serialize_str(\"urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2\")"),
+            "{out}"
+        );
+        // The root struct declares them as attribute fields, before any element.
+        let xmlns = offset_in_struct(
+            &out,
+            "Invoice",
+            "#[serde(rename = \"@xmlns\", default)]\n    pub xmlns: XmlnsDefault,",
+        );
+        let cbc = offset_in_struct(
+            &out,
+            "Invoice",
+            "#[serde(rename = \"@xmlns:cbc\", default)]\n    pub xmlns_cbc: XmlnsCbc,",
+        );
+        let id = offset_in_struct(&out, "Invoice", "pub id:");
+        assert!(xmlns < id && cbc < id, "{out}");
+        // Non-root structs carry none.
+        assert!(
+            !out[out.find("pub struct LegalMonetaryTotal {").unwrap()..].contains("xmlns_cbc"),
+            "{out}"
+        );
+        // The emptiness predicate ignores the markers.
+        assert!(!out.contains("self.xmlns"), "{out}");
+        // Declaration + qualified root (the default namespace leaves it bare).
+        assert!(
+            out.contains("String::from(\"<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\"?>\\n\")"),
+            "{out}"
+        );
+        assert!(
+            out.contains("quick_xml::se::to_writer_with_root(&mut out, \"Invoice\", source)?;"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn test_prefixed_root_tag_and_no_markers_without_declarations() {
+        let (ir, source) = compile_named("cii", "");
+        let _ = ir;
+        let mut source = source;
+        source.namespaces.root_prefix = "rsm".into();
+        let out = super::generate_source_module(&source);
+        assert!(
+            out.contains("to_writer_with_root(&mut out, \"rsm:Invoice\", source)?;"),
+            "{out}"
+        );
+        assert!(!out.contains("namespace declarations"), "{out}");
+        assert!(!out.contains("Xmlns"), "{out}");
     }
 
     #[test]

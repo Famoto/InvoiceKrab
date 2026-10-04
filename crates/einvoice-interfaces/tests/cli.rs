@@ -33,7 +33,7 @@ fn invoke(args: &[&str], stdin: &[u8]) -> (i32, String, String) {
 fn test_transform_explicit_source_writes_xml_to_stdout() {
     let (code, out, err) = invoke(&["-", "ubl-invoice", "--from", "ubl-invoice"], UBL);
     assert_eq!(code, 0, "stderr: {err}");
-    assert!(out.contains("<ID>INV-42</ID>"), "got: {out}");
+    assert!(out.contains("<cbc:ID>INV-42</cbc:ID>"), "got: {out}");
     assert!(out.ends_with('\n'));
 }
 
@@ -41,7 +41,10 @@ fn test_transform_explicit_source_writes_xml_to_stdout() {
 fn test_transform_auto_detect_source_from_stdin() {
     let (code, out, _err) = invoke(&["-", "ubl-invoice"], UBL);
     assert_eq!(code, 0);
-    assert!(out.contains("<DocumentCurrencyCode>EUR</DocumentCurrencyCode>"));
+    assert!(
+        out.contains("<cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -122,7 +125,7 @@ fn test_out_flag_writes_to_file() {
     assert!(out.is_empty(), "output went to file, not stdout");
 
     let written = std::fs::read_to_string(&path).expect("output file exists");
-    assert!(written.contains("<ID>INV-42</ID>"));
+    assert!(written.contains("<cbc:ID>INV-42</cbc:ID>"), "{written}");
     let _ = std::fs::remove_file(&path);
 }
 

@@ -207,9 +207,9 @@ mod tests {
         assert!(!out.has_errors(), "{:?}", out.diagnostics);
         let xml = out.value.expect("writer yields a document");
 
-        assert!(xml.contains("<ID>INV-42</ID>"));
-        assert!(!xml.contains("<AccountingSupplierParty>"), "{xml}");
-        assert!(!xml.contains("<TaxAmount/>"), "{xml}");
+        assert!(xml.contains("<cbc:ID>INV-42</cbc:ID>"), "{xml}");
+        assert!(!xml.contains("<cac:AccountingSupplierParty>"), "{xml}");
+        assert!(!xml.contains("<cbc:TaxAmount/>"), "{xml}");
     }
 
     #[test]
@@ -227,11 +227,11 @@ mod tests {
             xml.find(needle)
                 .unwrap_or_else(|| panic!("{needle} in {xml}"))
         };
-        let id = at("<ID>INV-42</ID>");
-        let issue = at("<IssueDate>");
-        let currency = at("<DocumentCurrencyCode>");
-        let totals = at("<LegalMonetaryTotal>");
-        let line = at("<InvoiceLine>");
+        let id = at("<cbc:ID>INV-42</cbc:ID>");
+        let issue = at("<cbc:IssueDate>");
+        let currency = at("<cbc:DocumentCurrencyCode>");
+        let totals = at("<cac:LegalMonetaryTotal>");
+        let line = at("<cac:InvoiceLine>");
         assert!(
             id < issue && issue < currency && currency < totals && totals < line,
             "{xml}"
@@ -298,7 +298,7 @@ mod tests {
 
         let out = engine.from_hub(Spoke::UblInvoice, hub).expect("renderable");
         let xml = out.value.expect("document");
-        assert_eq!(xml.matches("<Note>").count(), 1, "{xml}");
+        assert_eq!(xml.matches("<cbc:Note>").count(), 1, "{xml}");
     }
 
     #[test]

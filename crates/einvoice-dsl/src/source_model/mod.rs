@@ -40,6 +40,9 @@ mod meta;
 mod resolve;
 mod synth;
 
-pub use meta::{FieldMeta, FieldType, PathError, ResolvedField, SourceModelMeta, StructMeta};
+pub use meta::{
+    FieldMeta, FieldType, NamespaceMeta, PathError, ResolvedField, SourceModelMeta, StructMeta,
+    qualify,
+};
 pub use resolve::{resolve_path, resolve_path_from};
-pub use synth::synthesize_source_model;
+pub use synth::{NamespaceConfig, synthesize_source_model, synthesize_source_model_with};

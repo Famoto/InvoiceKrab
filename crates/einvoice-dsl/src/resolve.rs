@@ -80,9 +80,11 @@ pub fn remove_disabled(nodes: BTreeMap<NodeId, RawNode>) -> BTreeMap<NodeId, Raw
 ///
 /// `source_paths` is the `NodeId → source_path` map produced by
 /// [`crate::source_model::synthesize_source_model`]; each active node takes its
-/// synthesized path. An active node missing the no-default `type` is reported as
-/// an `E002` diagnostic and excluded; the rest still resolve so diagnostics
-/// aggregate (R9 — never first-error-only).
+/// synthesized path. A structural node (`ns` only, no `type`) is not a mapping
+/// node and is skipped silently — synthesis has already consumed it. Any other
+/// active node missing the no-default `type` is reported as an `E002`
+/// diagnostic and excluded; the rest still resolve so diagnostics aggregate
+/// (R9 — never first-error-only).
 pub fn apply_defaults(
     nodes: &BTreeMap<NodeId, RawNode>,
     source_paths: &BTreeMap<NodeId, String>,
@@ -98,6 +100,9 @@ pub fn apply_defaults(
     let mut diags = Vec::new();
 
     for (id, raw) in nodes {
+        if raw.is_structural() {
+            continue;
+        }
         let Some(ty) = raw.ty else {
             diags.push(Diagnostic {
                 code: "E002".to_string(),
@@ -137,6 +142,7 @@ pub fn apply_defaults(
                 constant: raw.constant.clone(),
                 clone_of: raw.clone_of.clone(),
                 description: raw.description.clone(),
+                ns: raw.ns.clone(),
             },
         );
     }
@@ -170,6 +176,28 @@ mod tests {
         let merged = merge_inheritance(&[parsed(extra)]);
         let active = remove_disabled(merged);
         let (_model, paths, sdiags) = synthesize_source_model(&active, "Invoice", "s:1");
+        assert!(
+            sdiags.is_empty(),
+            "unexpected synth diagnostics: {sdiags:?}"
+        );
+        apply_defaults(&active, &paths)
+    }
+
+    /// Like [`resolved`], with the `rsm`/`ram` prefixes declared, for `ns` tests.
+    fn resolved_with_ns(extra: &str) -> (BTreeMap<NodeId, SourceNode>, Vec<Diagnostic>) {
+        use crate::source_model::{NamespaceConfig, synthesize_source_model_with};
+        let merged = merge_inheritance(&[parsed(extra)]);
+        let active = remove_disabled(merged);
+        let ns = NamespaceConfig {
+            declared: [
+                ("rsm".to_string(), "urn:rsm".to_string()),
+                ("ram".to_string(), "urn:ram".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let (_model, paths, sdiags) = synthesize_source_model_with(&active, "Invoice", "s:1", &ns);
         assert!(
             sdiags.is_empty(),
             "unexpected synth diagnostics: {sdiags:?}"
@@ -249,6 +277,36 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, "E002");
         assert!(diags[0].message.contains("type"));
+    }
+
+    #[test]
+    fn test_structural_node_is_skipped_without_e002() {
+        // `ns` on a type-less table names an interior element's prefix; it is
+        // consumed by synthesis and never becomes a mapping node.
+        let (nodes, diags) = resolved_with_ns(
+            r#"[Invoice.Wrapper]
+            ns = "rsm"
+
+            [Invoice.Wrapper.ID]
+            type = "identifier"
+            ns = "ram""#,
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+        assert!(!nodes.contains_key(&NodeId::new("Invoice.Wrapper")));
+        let id = &nodes[&NodeId::new("Invoice.Wrapper.ID")];
+        assert_eq!(id.ns.as_deref(), Some("ram"), "ns carried onto the node");
+    }
+
+    #[test]
+    fn test_ns_with_mapping_field_but_no_type_is_still_e002() {
+        let (nodes, diags) = resolved_with_ns(
+            r#"[Invoice.Bad]
+            ns = "ram"
+            canonical_key = "X""#,
+        );
+        assert!(nodes.is_empty());
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "E002");
     }
 
     #[test]

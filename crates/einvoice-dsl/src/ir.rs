@@ -18,12 +18,13 @@ use crate::meta::MappingMeta;
 use crate::node::{NodeId, SourceNode};
 use crate::parse::ParsedMapping;
 use crate::resolve::{apply_defaults, merge_inheritance, remove_disabled};
-use crate::source_model::{SourceModelMeta, synthesize_source_model};
+use crate::source_model::{NamespaceConfig, SourceModelMeta, synthesize_source_model_with};
 
 /// The normalized, defaults-materialized mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MappingIr {
-    /// The leaf mapping's `[meta]`.
+    /// The leaf mapping's `[meta]`, with the namespace entries (`root_ns`,
+    /// `namespaces`, `ns_defaults`) it omitted filled in from its ancestors.
     pub meta: MappingMeta,
     /// Effective active nodes, in deterministic id order.
     pub nodes: BTreeMap<NodeId, SourceNode>,
@@ -42,11 +43,21 @@ pub struct MappingIr {
 ///
 /// Panics if `chain` is empty; the caller must supply at least the leaf mapping.
 pub fn build_ir(chain: &[ParsedMapping]) -> (MappingIr, SourceModelMeta, Vec<Diagnostic>) {
-    let meta = chain
-        .last()
-        .expect("inheritance chain must contain at least the leaf mapping")
-        .meta
-        .clone();
+    let (leaf, ancestors) = chain
+        .split_last()
+        .expect("inheritance chain must contain at least the leaf mapping");
+    // Namespace meta is inherited: the nearest ancestor that declares an entry
+    // supplies it when the leaf (and every closer ancestor) omits it.
+    let mut meta = leaf.meta.clone();
+    for ancestor in ancestors.iter().rev() {
+        meta.inherit_namespaces(&ancestor.meta);
+    }
+    let ns = NamespaceConfig {
+        root_prefix: meta.root_prefix().to_string(),
+        leaf_prefix: meta.leaf_prefix().to_string(),
+        aggregate_prefix: meta.aggregate_prefix().to_string(),
+        declared: meta.declared_namespaces(),
+    };
 
     let root = meta.root.clone().unwrap_or_else(|| "Root".to_string());
     let model_id = meta
@@ -56,7 +67,7 @@ pub fn build_ir(chain: &[ParsedMapping]) -> (MappingIr, SourceModelMeta, Vec<Dia
 
     let merged = merge_inheritance(chain);
     let active = remove_disabled(merged);
-    let (source, paths, mut diags) = synthesize_source_model(&active, &root, &model_id);
+    let (source, paths, mut diags) = synthesize_source_model_with(&active, &root, &model_id, &ns);
     let (nodes, default_diags) = apply_defaults(&active, &paths);
     diags.extend(default_diags);
 
@@ -138,6 +149,36 @@ mod tests {
         let (ir, _source, _) = build_ir(&[parent, child]);
         assert_eq!(ir.meta.mapping_version, "1.0", "leaf meta wins");
         assert_eq!(ir.nodes.len(), 2, "inherited + own nodes");
+    }
+
+    #[test]
+    fn test_build_ir_inherits_namespace_meta_and_prefixes_fields() {
+        let parent = parse_mapping(&format!(
+            "{META}\nroot_ns = \"\"\n[meta.namespaces]\n\"\" = \"urn:inv\"\ncbc = \"urn:cbc\"\ncac = \"urn:cac\"\n[meta.ns_defaults]\nleaf = \"cbc\"\naggregate = \"cac\"\n\n[Invoice.ID]\ntype = \"identifier\"\n\n[Invoice.Totals.Amount]\ntype = \"decimal\""
+        ))
+        .expect("parses");
+        let child = parsed(
+            r#"[Invoice.ID]
+            type = "identifier"
+            required = true"#,
+        );
+        let (ir, source, diags) = build_ir(&[parent, child]);
+        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(ir.meta.leaf_prefix(), "cbc", "inherited into the leaf meta");
+        assert_eq!(source.structs["Invoice"].fields["id"].prefix, "cbc");
+        assert_eq!(source.structs["Invoice"].fields["totals"].prefix, "cac");
+        assert_eq!(source.structs["Totals"].fields["amount"].prefix, "cbc");
+        assert_eq!(source.namespaces.declared["cac"], "urn:cac");
+    }
+
+    #[test]
+    fn test_build_ir_undeclared_default_prefix_is_e080() {
+        let p = parse_mapping(&format!(
+            "{META}\n[meta.ns_defaults]\nleaf = \"cbc\"\n\n[Invoice.ID]\ntype = \"identifier\""
+        ))
+        .expect("parses");
+        let (_, _, diags) = build_ir(&[p]);
+        assert!(diags.iter().any(|d| d.code == "E080"), "{diags:?}");
     }
 
     #[test]

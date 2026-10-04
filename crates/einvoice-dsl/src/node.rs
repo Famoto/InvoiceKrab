@@ -35,6 +35,12 @@
 //! fills the hub from it, only checks the copy against the canonical value and
 //! warns (`CLONE_MISMATCH`) when a document's copies disagree.
 //!
+//! A table that declares only `ns` (plus `description`/`disabled`) and no
+//! `type` is a **structural node**: it names an inferred interior element to
+//! give it a namespace prefix the `[meta.ns_defaults]` would not. Structural
+//! nodes never become [`SourceNode`]s; synthesis reads them when it creates the
+//! interior struct field they describe.
+//!
 //! Every raw node also carries its declaration [`RawNode::position`]: a
 //! mapping's **declaration order is its schema order**. The parser records
 //! where each table appears, synthesis orders the source-struct fields by it,
@@ -164,6 +170,11 @@ pub struct RawNode {
     pub clone_of: Option<String>,
     /// Whether the node is removed from the effective mapping.
     pub disabled: Option<bool>,
+    /// Namespace prefix of this node's own element (write side), overriding
+    /// `[meta.ns_defaults]`. `""` means unprefixed. Must be declared in
+    /// `[meta.namespaces]` (E080); not valid on an attribute leaf (E081). On a
+    /// `type`-less table this alone makes the table a structural node.
+    pub ns: Option<String>,
     /// Declaration position within the mapping document (0-based, document
     /// order). Assigned by the parser, never authored — a `position` key in the
     /// TOML is rejected like any unknown field. It drives the order of sibling
@@ -185,8 +196,13 @@ impl RawNode {
     /// (`disabled = true` plus optional `description`) is still a node, so the
     /// caller distinguishes that case via [`RawNode::is_disabled`].
     pub fn has_active_field(&self) -> bool {
+        self.ty.is_some() || self.ns.is_some() || self.has_mapping_field()
+    }
+
+    /// Whether this node carries any field that only a *mapped* (typed) node
+    /// may have — everything beyond `type`, `ns`, `description`, `disabled`.
+    pub fn has_mapping_field(&self) -> bool {
         self.xml.is_some()
-            || self.ty.is_some()
             || self.canonical_key.is_some()
             || self.required.is_some()
             || self.fallbacks.is_some()
@@ -197,6 +213,13 @@ impl RawNode {
             || self.adapter.is_some()
             || self.constant.is_some()
             || self.clone_of.is_some()
+    }
+
+    /// Whether this is a structural node: no `type`, an `ns`, and nothing a
+    /// mapped node would declare. It names an inferred interior element to set
+    /// its namespace prefix and is consumed by synthesis, never by the IR.
+    pub fn is_structural(&self) -> bool {
+        self.ty.is_none() && self.ns.is_some() && !self.has_mapping_field()
     }
 }
 
@@ -243,6 +266,9 @@ pub struct SourceNode {
     pub clone_of: Option<String>,
     /// Human description.
     pub description: Option<String>,
+    /// Declared namespace prefix of the node's own element, if any (validated
+    /// against `[meta.namespaces]`, E080).
+    pub ns: Option<String>,
 }
 
 impl SourceNode {
@@ -316,6 +342,20 @@ mod tests {
         let n: RawNode = toml::from_str(r#"xml = "@currencyID""#).unwrap();
         assert!(n.has_active_field());
         assert_eq!(n.xml.as_deref(), Some("@currencyID"));
+    }
+
+    #[test]
+    fn test_raw_node_structural_is_ns_only_without_type() {
+        let n: RawNode = toml::from_str(r#"ns = "rsm""#).unwrap();
+        assert!(n.is_structural());
+        assert!(n.has_active_field());
+        let described: RawNode = toml::from_str("ns = \"rsm\"\ndescription = \"wrapper\"").unwrap();
+        assert!(described.is_structural(), "description is allowed");
+        let typed: RawNode = toml::from_str("ns = \"ram\"\ntype = \"string\"").unwrap();
+        assert!(!typed.is_structural(), "a typed node is a mapped node");
+        let keyed: RawNode = toml::from_str("ns = \"ram\"\ncanonical_key = \"X\"").unwrap();
+        assert!(!keyed.is_structural(), "mapping fields need a type (E002)");
+        assert!(!RawNode::default().is_structural(), "no ns: not structural");
     }
 
     #[test]
