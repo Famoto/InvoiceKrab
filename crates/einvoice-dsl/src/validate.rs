@@ -8,6 +8,7 @@
 //!
 //! # Checks
 //!
+//! - `E014` canonical key (declared, or mirrored by `clone_of`) not `PascalCase`.
 //! - `E020` source model id mismatch (`[meta].source_model` vs the metadata).
 //! - `E021` unresolvable source path.
 //! - `E022` collection node whose path is not a repeated (`Vec`) field.
@@ -44,6 +45,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::codec::CodecTable;
 use crate::error::{Diagnostic, Severity};
+use crate::ident::is_canonical_key;
 use crate::ir::MappingIr;
 use crate::node::{DerivationScope, NodeId, Scope, SourceNode};
 use crate::source_model::{PathError, SourceModelMeta, resolve_path_from};
@@ -66,6 +68,7 @@ pub fn validate(input: &ValidationInput) -> Vec<Diagnostic> {
     check_source_model_id(input, &mut diags);
     for node in input.ir.nodes.values() {
         check_path(node, input, &mut diags);
+        check_canonical_key(node, &mut diags);
         check_structural(node, &mut diags);
         check_fallbacks(node, input.ir, &mut diags);
         check_codec(node, input.codecs, &mut diags);
@@ -115,10 +118,43 @@ fn check_source_model_id(input: &ValidationInput, diags: &mut Vec<Diagnostic>) {
     }
 }
 
+/// `E014` when a node's canonical key — the one it declares, or the one its
+/// `clone_of` mirrors — is not a `PascalCase` identifier. The key names a hub
+/// field and, for a collection, the `<Key>Item` struct, so anything else would
+/// surface as a rustc error in the generated hub rather than here.
+fn check_canonical_key(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
+    let mirrored = match node.derivation() {
+        Some(Ok(derivation)) => Some(derivation.key),
+        _ => None, // absent, or malformed (E093)
+    };
+    for (field, key) in [
+        ("canonical_key", node.canonical_key.as_deref()),
+        ("clone_of", mirrored),
+    ] {
+        if let Some(key) = key
+            && !is_canonical_key(key)
+        {
+            diags.push(err(
+                "E014",
+                &node.id,
+                format!(
+                    "`{field}` names `{key}`, which is not a canonical key: use PascalCase — an \
+                     upper-case ASCII letter, then ASCII letters and digits (and not `Self`)"
+                ),
+            ));
+        }
+    }
+}
+
 fn check_path(node: &SourceNode, input: &ValidationInput, diags: &mut Vec<Diagnostic>) {
     // Skip path resolution when the model id is wrong (already reported); the
     // struct table would not be the right one to resolve against.
     if source_model_mismatch(input) {
+        return;
+    }
+    // A node synthesis could not place has no source path, and synthesis has
+    // already reported why (E024, E025, E026, E081, E087, …).
+    if node.source_path.is_empty() {
         return;
     }
     // Collection-child paths resolve against the collection's item struct, not

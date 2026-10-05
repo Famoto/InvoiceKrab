@@ -10,9 +10,10 @@
 //! The IRs and hub it returns are the inputs to the static-analysis comparison
 //! tool ([`crate::report`]) and to codegen.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::codec::CodecTable;
+use crate::codegen::naming::item_struct_name;
 use crate::contract::{check_required_routes, spoke_contract};
 use crate::error::{Diagnostic, Severity};
 use crate::hub::{CanonicalModel, derive_hub};
@@ -74,6 +75,7 @@ pub fn compile(spokes: &[SpokeInput], codecs: &CodecTable) -> CompileOutput {
     // place; no need to clone them into a temporary Vec.
     let (hub, hub_diags) = derive_hub(irs.values());
     diagnostics.extend(hub_diags);
+    diagnostics.extend(check_hub_type_shadowing(&hub, &sources));
 
     // Stage 8–20 per spoke: validate against the synthesized source + codecs.
     for spoke in spokes {
@@ -106,6 +108,42 @@ pub fn compile(spokes: &[SpokeInput], codecs: &CodecTable) -> CompileOutput {
         hub,
         diagnostics,
     }
+}
+
+/// `E012` for a synthesized source struct named like a type of the generated
+/// hub (`MainKey`, or a collection's `<Key>Item`). Spoke modules glob-import the
+/// hub, so such a struct would shadow the hub type its mappers name. Synthesis
+/// cannot rename it away — the hub is derived from every spoke afterwards — so
+/// it is reported, naming the element to rename.
+fn check_hub_type_shadowing(
+    hub: &CanonicalModel,
+    sources: &BTreeMap<String, SourceModelMeta>,
+) -> Vec<Diagnostic> {
+    let hub_types: BTreeSet<String> = std::iter::once("MainKey".to_string())
+        .chain(
+            hub.fields
+                .values()
+                .filter(|f| f.is_collection)
+                .map(|f| item_struct_name(&f.key)),
+        )
+        .collect();
+    let mut diags = Vec::new();
+    for (spoke, source) in sources {
+        for name in source.structs.keys().filter(|n| hub_types.contains(*n)) {
+            diags.push(Diagnostic {
+                code: "E012".to_string(),
+                severity: Severity::Error,
+                source_node: Some(spoke.clone()),
+                message: format!(
+                    "the source struct `{name}` synthesized for an element of this spoke has the \
+                     name of a generated hub type; rename the element's node id and bind the \
+                     element with `xml`"
+                ),
+                span: None,
+            });
+        }
+    }
+    diags
 }
 
 /// Tags each diagnostic's node id with its spoke so identical node ids across

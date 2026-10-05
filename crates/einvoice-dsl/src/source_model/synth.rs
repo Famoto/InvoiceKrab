@@ -21,10 +21,12 @@
 //! reader fills them from the physical field by selector and the writer drains
 //! them back, writing the selector values as discriminators.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::codec::CodecTable;
 use crate::error::{Diagnostic, Severity};
+use crate::ident::{RESERVED_TYPE_NAMES, escape_keyword, is_root_type_name, is_xml_name};
 use crate::node::{NodeId, RawNode, Scope};
 use crate::types::MappingType;
 
@@ -99,6 +101,11 @@ impl NamespaceConfig {
 ///   physical element with another such node, becomes a *logical* field next
 ///   to the element's one repeated *physical* field (see the module docs).
 ///
+/// Binding diagnostics (all errors): `E025` two nodes bound to one element,
+/// attribute or `$text` (see `Ctx::claim`); `E026` an id segment or `xml`
+/// binding that is not an XML name, or a `root` that is not also a plain Rust
+/// type name.
+///
 /// Namespace diagnostics (all errors): `E080` a prefix used by `root_ns`, the
 /// defaults, or a node's `ns` is not declared in `[meta.namespaces]`; `E081`
 /// `ns` on an attribute or `$text` leaf; `E083` a structural node that names no
@@ -143,6 +150,17 @@ pub fn synthesize_source_model_with(
     let mut diags: Vec<Diagnostic> = Vec::new();
 
     check_namespace_meta(ns, &mut diags);
+    if !is_xml_name(root) || !is_root_type_name(root) {
+        diags.push(diag(
+            "E026",
+            None,
+            format!(
+                "`[meta].root` `{root}` must be an XML name that is also a plain Rust type \
+                 name (ASCII letters, digits and `_`, not a keyword or a name the generated \
+                 code uses)"
+            ),
+        ));
+    }
 
     let ctx = Ctx {
         active,
@@ -150,7 +168,12 @@ pub fn synthesize_source_model_with(
         codecs,
         root,
         aliases: Aliases::collect(active, root),
+        struct_names: RefCell::default(),
+        claims: RefCell::default(),
     };
+    // Interior ids already reported as E026, so a bad interior segment is
+    // reported once rather than at every node beneath it.
+    let mut bad_interiors: BTreeSet<NodeId> = BTreeSet::new();
 
     // Collection nodes define scopes (and item structs). Build the lookup first
     // so every node's scope and base struct can be computed.
@@ -163,6 +186,12 @@ pub fn synthesize_source_model_with(
         .collect();
 
     for (id, node) in active {
+        if let Some(problem) = xml_name_problem(id, node, &mut bad_interiors) {
+            if let Some(message) = problem {
+                diags.push(diag("E026", Some(id), message));
+            }
+            continue;
+        }
         if let Some(prefix) = node.ns.as_deref()
             && ns.undeclared(prefix)
         {
@@ -244,6 +273,40 @@ pub fn synthesize_source_model_with(
     )
 }
 
+/// The `E026` problem with the XML names `node` binds, if any: an id segment
+/// or its `xml` binding that is not an XML `NCName`. `Some(None)` is a node
+/// beneath an interior segment already reported, skipped without a second
+/// diagnostic. Such a node is not synthesized: its name cannot be read or
+/// written.
+fn xml_name_problem(
+    id: &NodeId,
+    node: &RawNode,
+    bad_interiors: &mut BTreeSet<NodeId>,
+) -> Option<Option<String>> {
+    let segs: Vec<&str> = id.segments().collect();
+    for (i, seg) in segs.iter().enumerate() {
+        if is_xml_name(seg) {
+            continue;
+        }
+        let element = NodeId::new(segs[..=i].join("."));
+        if i + 1 < segs.len() && !bad_interiors.insert(element.clone()) {
+            return Some(None);
+        }
+        return Some(Some(format!(
+            "`{seg}` in `{id}` is not an XML element name (it must start with a letter or `_` \
+             and continue with letters, digits, `-`, `.` or `_`); rename the element with `xml`"
+        )));
+    }
+    let xml = node.xml.as_deref()?;
+    let name = xml.strip_prefix('@').unwrap_or(xml);
+    (xml != "$text" && !is_xml_name(name)).then(|| {
+        Some(format!(
+            "`xml = \"{xml}\"` on `{id}` does not name an element (`Name`), an attribute \
+             (`@name`) or the text (`$text`): `{name}` is not an XML name"
+        ))
+    })
+}
+
 /// Whether an `xml` binding names an attribute or the element text rather than
 /// an element.
 fn is_leaf_binding(xml: &str) -> bool {
@@ -275,6 +338,37 @@ struct Ctx<'a> {
     codecs: &'a CodecTable,
     root: &'a str,
     aliases: Aliases,
+    /// The struct name each element path was given (see [`Ctx::element_struct`]).
+    struct_names: RefCell<StructNames>,
+    /// Who binds each XML name of each struct (see [`Ctx::claim`]).
+    claims: RefCell<BTreeMap<(String, String), Claim>>,
+}
+
+/// Struct names allocated so far: an element path keeps the first name it is
+/// given, and no name is given to two paths.
+#[derive(Debug, Default)]
+struct StructNames {
+    by_path: BTreeMap<Vec<String>, String>,
+    taken: BTreeSet<String>,
+}
+
+/// What binds an XML name of a synthesized struct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Claim {
+    /// A value-bearing node: a scalar, attribute, `$text`, valued element or
+    /// collection.
+    Node(NodeId),
+    /// An inferred interior element or an aliased physical element, by field.
+    Element(String),
+}
+
+impl Claim {
+    fn describe(&self) -> String {
+        match self {
+            Claim::Node(id) => format!("node `{id}`"),
+            Claim::Element(field) => format!("the element of field `{field}`"),
+        }
+    }
 }
 
 impl Ctx<'_> {
@@ -288,8 +382,75 @@ impl Ctx<'_> {
     }
 
     /// The struct of the element a node id names, by its physical path.
+    ///
+    /// The name is the CamelCase of the path ([`struct_name_for`]) unless that
+    /// is taken — by the root struct, by a type the generated module uses
+    /// ([`RESERVED_TYPE_NAMES`]), or by another path that camel-cases the same
+    /// (`A.BC` and `AB.C`) — in which case an `Element` suffix (then a number)
+    /// keeps it distinct. Allocation follows node order, so it is deterministic.
     fn element_struct(&self, id: &NodeId) -> String {
-        struct_name_for(&self.aliases.physical_id(id), self.root)
+        let physical = self.aliases.physical_id(id);
+        let path = element_key(&physical, self.root);
+        let mut names = self.struct_names.borrow_mut();
+        if let Some(name) = names.by_path.get(&path) {
+            return name.clone();
+        }
+        let base = struct_name_for(&physical, self.root);
+        let name = (1..)
+            .map(|n| match n {
+                1 => base.clone(),
+                2 => format!("{base}Element"),
+                n => format!("{base}Element{n}"),
+            })
+            .find(|c| {
+                c != self.root
+                    && !names.taken.contains(c)
+                    && !RESERVED_TYPE_NAMES.contains(&c.as_str())
+            })
+            .expect("the candidate sequence is unbounded");
+        names.taken.insert(name.clone());
+        names.by_path.insert(path, name.clone());
+        name
+    }
+
+    /// Records that `claim` binds the XML name `xml` (an element, `@attribute`
+    /// or `$text`) on struct `owner`.
+    ///
+    /// # Errors
+    ///
+    /// `E025` when another node — or another element — already binds that
+    /// XML name: two nodes on one element would read one value into two keys
+    /// and write two values into one place. Logical nodes of one physical
+    /// element share their union item struct, so their equivalent children are
+    /// not a second binding. (Two XML names that collapse to one Rust field are
+    /// the field-level E024 instead.)
+    fn claim(&self, owner: &str, xml: &str, claim: Claim) -> Result<(), (&'static str, String)> {
+        let mut claims = self.claims.borrow_mut();
+        let key = (owner.to_string(), xml.to_string());
+        match claims.get(&key) {
+            None => {
+                claims.insert(key, claim);
+                Ok(())
+            }
+            Some(existing) if self.same_claim(existing, &claim) => Ok(()),
+            Some(existing) => Err((
+                "E025",
+                format!(
+                    "{} binds `{xml}` of `{owner}`, which {} already binds; one element or \
+                     attribute is mapped by one node (express read priority with `fallbacks`, \
+                     mirror a value with `clone_of`)",
+                    claim.describe(),
+                    existing.describe(),
+                ),
+            )),
+        }
+    }
+
+    fn same_claim(&self, existing: &Claim, new: &Claim) -> bool {
+        match (existing, new) {
+            (Claim::Node(a), Claim::Node(b)) => a == b || self.aliases.equivalents(b).contains(a),
+            (a, b) => a == b,
+        }
     }
 }
 
@@ -482,11 +643,20 @@ fn element_xml_name(active: &BTreeMap<NodeId, RawNode>, element_id: &NodeId, seg
 /// order. Collection item structs are named the same way from the collection's
 /// id. Callers pass the *physical* id ([`Aliases::physical_id`]).
 fn struct_name_for(id: &NodeId, root: &str) -> String {
+    element_key(id, root)
+        .iter()
+        .map(|seg| camel_case(seg))
+        .collect()
+}
+
+/// The element path that identifies a struct: the id's segments, the root
+/// segment dropped (so `Invoice.ID` and a bare `ID` are one element).
+fn element_key(id: &NodeId, root: &str) -> Vec<String> {
     let mut segs = id.segments().peekable();
     if segs.peek() == Some(&root) && id.segments().count() > 1 {
         segs.next();
     }
-    segs.map(camel_case).collect()
+    segs.map(str::to_string).collect()
 }
 
 /// A node's XML element path within its scope: its id segments with the scope
@@ -573,6 +743,8 @@ fn insert_node(
             // A logical structural node: the element's physical field holds
             // every occurrence; this node's own field holds the one it selects.
             Some(alias) => {
+                let physical = alias.physical_field();
+                ctx.claim(&current, &alias.xml, Claim::Element(physical.clone()))?;
                 upsert_physical(
                     structs,
                     &current,
@@ -594,16 +766,26 @@ fn insert_node(
                     alias: Some(alias.binding(&interior_id)),
                 }
             }
-            None => FieldMeta {
-                optional: false,
-                repeated: false,
-                ty: FieldType::Struct(struct_name.clone()),
-                xml: Some(element_xml_name(active, &interior_id, seg)),
-                prefix: element_prefix(active, &interior_id, ns),
-                always_present,
-                order: node.position,
-                alias: None,
-            },
+            None => {
+                let xml = element_xml_name(active, &interior_id, seg);
+                // A valued element is bound by its own typed node, whichever of
+                // it and its children is placed first.
+                let claim = match active.get(&interior_id) {
+                    Some(n) if n.ty.is_some() => Claim::Node(interior_id.clone()),
+                    _ => Claim::Element(field.clone()),
+                };
+                ctx.claim(&current, &xml, claim)?;
+                FieldMeta {
+                    optional: false,
+                    repeated: false,
+                    ty: FieldType::Struct(struct_name.clone()),
+                    xml: Some(xml),
+                    prefix: element_prefix(active, &interior_id, ns),
+                    always_present,
+                    order: node.position,
+                    alias: None,
+                }
+            }
         };
         upsert_field(structs, &current, &field, meta).map_err(e024)?;
         structs.entry(struct_name.clone()).or_default();
@@ -637,6 +819,8 @@ fn insert_node(
             // A logical collection: its items are the physical element's
             // occurrences its selector picks.
             Some(alias) => {
+                let physical = alias.physical_field();
+                ctx.claim(&current, &alias.xml, Claim::Element(physical.clone()))?;
                 upsert_physical(structs, &current, alias, id, &item, node, ctx).map_err(e024)?;
                 FieldMeta {
                     optional: false,
@@ -649,16 +833,20 @@ fn insert_node(
                     alias: Some(alias.binding(id)),
                 }
             }
-            None => FieldMeta {
-                optional: false,
-                repeated: true,
-                ty: FieldType::Struct(item.clone()),
-                xml: Some(node.xml.clone().unwrap_or_else(|| last.clone())),
-                prefix: own_prefix(&ns.aggregate_prefix),
-                always_present: false,
-                order: node.position,
-                alias: None,
-            },
+            None => {
+                let xml = node.xml.clone().unwrap_or_else(|| last.clone());
+                ctx.claim(&current, &xml, Claim::Node(id.clone()))?;
+                FieldMeta {
+                    optional: false,
+                    repeated: true,
+                    ty: FieldType::Struct(item.clone()),
+                    xml: Some(xml),
+                    prefix: own_prefix(&ns.aggregate_prefix),
+                    always_present: false,
+                    order: node.position,
+                    alias: None,
+                }
+            }
         };
         upsert_field(structs, &current, &field, meta).map_err(e024)?;
         structs.entry(item).or_default();
@@ -684,6 +872,7 @@ fn insert_node(
             ));
         }
         let field = snake_case(last);
+        ctx.claim(&current, xml, Claim::Node(id.clone()))?;
         upsert_field(
             structs,
             &current,
@@ -719,6 +908,7 @@ fn insert_node(
                     .to_string(),
             ));
         }
+        ctx.claim(&current, "$text", Claim::Node(id.clone()))?;
         upsert_field(
             structs,
             &current,
@@ -759,6 +949,8 @@ fn insert_node(
         let field = snake_case(last);
         let struct_name = ctx.element_struct(id);
         let rename = node.xml.clone().unwrap_or_else(|| last.clone());
+        ctx.claim(&current, &rename, Claim::Node(id.clone()))?;
+        ctx.claim(&struct_name, "$text", Claim::Node(id.clone()))?;
         upsert_field(
             structs,
             &current,
@@ -840,6 +1032,7 @@ fn insert_node(
     // `Option`-wrapped) so repeated source elements parse instead of failing.
     let field = snake_case(last);
     let rename = node.xml.clone().unwrap_or_else(|| last.clone());
+    ctx.claim(&current, &rename, Claim::Node(id.clone()))?;
     upsert_field(
         structs,
         &current,
@@ -1118,7 +1311,7 @@ fn diag(code: &str, id: Option<&NodeId>, message: String) -> Diagnostic {
 /// Converts a `snake_case`/`mixed` name to `CamelCase` (e.g. `legal_monetary_total`
 /// → `LegalMonetaryTotal`, `PayableAmount` → `PayableAmount`).
 fn camel_case(s: &str) -> String {
-    s.split('_')
+    s.split(['_', '-', '.'])
         .filter(|seg| !seg.is_empty())
         .map(|seg| {
             let mut chars = seg.chars();
@@ -1131,8 +1324,20 @@ fn camel_case(s: &str) -> String {
 }
 
 /// Converts an XML element/attribute local name to a `snake_case` Rust field name
-/// (e.g. `IssueDate` → `issue_date`, `currencyID` → `currency_id`).
+/// (e.g. `IssueDate` → `issue_date`, `currencyID` → `currency_id`). The XML name
+/// characters Rust identifiers lack (`-`, `.`) become `_`, and a keyword gets a
+/// trailing `_` (`type` → `type_`, `Ref` → `ref_`).
 fn snake_case(s: &str) -> String {
+    escape_keyword(
+        snake_case_raw(s)
+            .chars()
+            .map(|c| if c == '-' || c == '.' { '_' } else { c })
+            .collect(),
+    )
+}
+
+/// [`snake_case`] before sanitizing.
+fn snake_case_raw(s: &str) -> String {
     let mut out = String::new();
     let chars: Vec<char> = s.chars().collect();
     for (i, &c) in chars.iter().enumerate() {
@@ -1156,6 +1361,7 @@ mod tests {
     use super::super::resolve::resolve_path;
     use super::FieldType::{Scalar, Struct};
     use super::*;
+    use rstest::rstest;
 
     #[test]
     fn test_snake_case_xml_names() {
@@ -1852,6 +2058,55 @@ mod tests {
                 .any(|d| d.code == "E083" && d.message.contains("root_ns")),
             "{diags:?}"
         );
+    }
+
+    #[test]
+    fn test_synth_paths_that_camel_case_alike_get_distinct_structs() {
+        // `A.BC` and `AB.C` both camel-case to `ABC`; merging them would give
+        // each element the other's children.
+        let (model, _, diags) = synthesize_source_model(
+            &nodes(&[
+                ("Invoice.A.BC.X", r#"type = "string""#),
+                ("Invoice.AB.C.Y", r#"type = "string""#),
+            ]),
+            "Invoice",
+            "ubl:2.1",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+        let (first, second) = (&model.structs["ABC"], &model.structs["ABCElement"]);
+        assert_eq!(first.fields.keys().collect::<Vec<_>>(), ["x"]);
+        assert_eq!(second.fields.keys().collect::<Vec<_>>(), ["y"]);
+    }
+
+    #[rstest]
+    #[case::std_type("Invoice.Option.ID", "OptionElement")]
+    #[case::imported_type("Invoice.Decimal.ID", "DecimalElement")]
+    #[case::root_name("Invoice.Invoice.ID", "InvoiceElement")]
+    #[case::keyword_type("Invoice.Self.ID", "SelfElement")]
+    #[case::hyphenated("Invoice.my-elem.ID", "MyElem")]
+    fn test_synth_struct_names_avoid_reserved_and_invalid_names(
+        #[case] id: &str,
+        #[case] expected: &str,
+    ) {
+        let (model, paths, diags) =
+            synthesize_source_model(&nodes(&[(id, r#"type = "string""#)]), "Invoice", "ubl:2.1");
+        assert!(diags.is_empty(), "{diags:?}");
+        assert!(
+            model.structs.contains_key(expected),
+            "{:?}",
+            model.structs.keys()
+        );
+        assert!(paths[&NodeId::new(id)].ends_with(".id"), "{paths:?}");
+    }
+
+    #[rstest]
+    #[case("type", "type_")]
+    #[case("Ref", "ref_")]
+    #[case("Self", "self_")]
+    #[case("my-elem", "my_elem")]
+    #[case("a.b", "a_b")]
+    fn test_snake_case_yields_rust_identifiers(#[case] xml: &str, #[case] field: &str) {
+        assert_eq!(snake_case(xml), field);
     }
 
     #[test]

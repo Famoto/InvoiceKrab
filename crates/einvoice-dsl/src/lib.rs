@@ -24,6 +24,7 @@ pub mod compile;
 pub mod contract;
 pub mod error;
 pub mod hub;
+pub mod ident;
 pub mod ir;
 pub mod loader;
 pub mod meta;

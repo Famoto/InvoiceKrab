@@ -388,6 +388,7 @@ dependencies = [
  "insta",
  "rstest",
  "serde",
+ "syn 2.0.117",
  "thiserror",
  "toml",
 ]

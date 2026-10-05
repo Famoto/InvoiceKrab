@@ -83,6 +83,22 @@ Interior elements (`LegalMonetaryTotal` here) are *inferred* from the ids of
 their leaf descendants — you never declare them as their own table. On the read
 side, missing interior elements simply mean the leaves under them are missing.
 
+Every id segment and every `xml` binding must be an XML name (an `NCName`:
+a letter or `_`, then letters, digits, `-`, `.` or `_`; no prefix) — E026.
+The generated Rust absorbs the rest: `-` and `.` become `_` in field names, a
+Rust keyword gets a trailing `_` (`<type>` → `type_`, `<Ref>` → `ref_`), and an
+element whose struct name would clash with another path's (`A.BC` vs `AB.C`)
+or with a type the generated code uses (`Option`, `Decimal`, the root's own
+name) gets an `Element` suffix. One limitation remains: a segment spelled like
+a node field (`type`, `xml`, `match`, `ns`, …) is read as that field, so bind
+such an element under another id with `xml = "match"`. `[meta].root` names the
+root struct verbatim, so it must also be a plain Rust type name (E026).
+
+A node id may omit the root segment (`[InvoiceLine]` is
+`[Invoice.InvoiceLine]`), so `[ID]` and `[Invoice.ID]` are the *same* element:
+mapping it twice is E025, as is any second node bound to one element or
+attribute through `xml`.
+
 XML matching is **namespace-agnostic** on the read side: mappings bind XML
 *local* names, so the same mapping reads real namespaced UBL (`cbc:ID`,
 `cac:LegalMonetaryTotal`) and bare-name test fixtures alike. On the write side
@@ -514,12 +530,17 @@ Rules, all enforced at build time:
   `(scope, key)` may be mapped by only one primary node. If two source paths
   can carry the value, pick one primary and express read priority with
   `fallbacks`, or mirror the value with `clone_of` — never two primaries.
+- **Keys are PascalCase identifiers (E014).** An upper-case ASCII letter,
+  then ASCII letters and digits (not `Self`): the key names a hub field and,
+  for a collection, its `<Key>Item` struct.
 - **No orphan keys inside anonymous collections (E011).** A key inside a
   collection needs the collection itself to be keyed.
 - **No generated-name collisions (E012).** Two keys that collapse to the same
   generated Rust field name (e.g. `FooBar` and `Foo_bar`, both `foo_bar`), or a
   collection key reused in two different scopes, would break the generated
-  hub — rename one.
+  hub — rename one. So would a source struct that takes a generated hub
+  type's name (an element path camel-casing to `InvoiceLinesItem` beside the
+  `InvoiceLines` collection key).
 
 A node with **no** `canonical_key` is a *helper* node — it carries no hub
 value itself and exists only to be referenced as a fallback.
@@ -990,13 +1011,16 @@ Validation reports **every** problem in one run, never just the first error.
 | `E002` | Active node missing its `type` |
 | `E010` | Canonical key declared with conflicting types across spokes |
 | `E011` | Canonical key inside a collection that has no `canonical_key` itself |
-| `E012` | Two canonical keys collide in generated code (same Rust field name, or one collection key in two scopes) |
+| `E012` | Two canonical keys collide in generated code (same Rust field name, or one collection key in two scopes), or a source struct takes a generated hub type's name |
 | `E013` | Same canonical key mapped by two primary nodes in one spoke (use `fallbacks` or `clone_of`) |
+| `E014` | `canonical_key` (or the key a `clone_of` mirrors) is not a PascalCase identifier |
 | `E020` | `[meta].source_model` disagrees with the synthesized model id |
 | `E021` | Node id does not resolve to a source path |
 | `E022` | Collection node whose path is not a repeated field |
 | `E023` | Scalar node whose path resolves to a struct, not a leaf |
 | `E024` | Incompatible bindings of one element: a leaf, attribute, valued container or collection shape conflict; `multiple` on an attribute, `$text`, collection or valued container; logical nodes of one element disagreeing on `ns` |
+| `E025` | Two nodes bind one element, attribute or element text (e.g. `[ID]` and `[Invoice.ID]`, or a node renamed onto another's element with `xml`) |
+| `E026` | An id segment or `xml` binding is not an XML name, or `[meta].root` is not also a plain Rust type name |
 | `E030` | Fallback target does not exist or is disabled |
 | `E031` | Fallback target type incompatible with the primary |
 | `E032` | Fallback target in a different scope |
