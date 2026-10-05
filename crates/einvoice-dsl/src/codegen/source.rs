@@ -135,10 +135,16 @@ fn generate_alias_io_impl(
         let (selected, default): (Vec<_>, Vec<_>) = logical
             .iter()
             .partition(|(_, f)| f.alias.as_ref().is_some_and(|a| !a.selector.is_empty()));
-        for (lname, f) in &selected {
-            if !f.repeated {
-                let _ = writeln!(out, "        let mut extra_{lname} = 0usize;");
-            }
+        // Every single-valued logical field (selected or the default bucket)
+        // counts the surplus it drops, so no item vanishes without a warning.
+        let single: Vec<&String> = selected
+            .iter()
+            .chain(&default)
+            .filter(|(_, f)| !f.repeated)
+            .map(|(lname, _)| *lname)
+            .collect();
+        for lname in &single {
+            let _ = writeln!(out, "        let mut extra_{lname} = 0usize;");
         }
         let _ = writeln!(
             out,
@@ -185,10 +191,9 @@ fn generate_alias_io_impl(
             Some((lname, _)) => {
                 let _ = writeln!(out, "            if self.{lname}.is_none() {{");
                 let _ = writeln!(out, "                self.{lname} = Some(Box::new(item));");
-                out.push_str(
-                    "            }
-",
-                );
+                out.push_str("            } else {\n");
+                let _ = writeln!(out, "                extra_{lname} += 1;");
+                out.push_str("            }\n");
             }
             // No default bucket: an item no selector claims is not mapped.
             None => out.push_str(
@@ -200,16 +205,16 @@ fn generate_alias_io_impl(
             "        }
 ",
         );
-        for (lname, f) in &selected {
-            if !f.repeated {
-                let node = &f.alias.as_ref().expect("binding").node;
-                let _ = writeln!(out, "        if extra_{lname} > 0 {{");
-                let _ = writeln!(out, "            overflow({node:?}, extra_{lname});");
-                out.push_str(
-                    "        }
-",
-                );
-            }
+        for lname in &single {
+            let node = &logical
+                .iter()
+                .find(|(n, _)| *n == *lname)
+                .and_then(|(_, f)| f.alias.as_ref())
+                .expect("binding")
+                .node;
+            let _ = writeln!(out, "        if extra_{lname} > 0 {{");
+            let _ = writeln!(out, "            overflow({node:?}, extra_{lname});");
+            out.push_str("        }\n");
         }
     }
     for (fname, f) in &children {

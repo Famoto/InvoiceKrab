@@ -26,7 +26,9 @@
 //!
 //! An attribute of a *valued* element (`PayableAmount/@currencyID`) is written
 //! only when the element has its text value, so an absent amount never shows up
-//! as an empty element carrying just its currency.
+//! as an empty element carrying just its currency. Such attributes are written
+//! after every other scalar and clone of their scope, so the guard sees the
+//! element's text whether a primary or a clone supplies it.
 //!
 //! A node with a `codec` renders the canonical value through the codec's
 //! encoder and sets the codec's wire attributes on the element next to it
@@ -130,13 +132,12 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
         own: "main",
         parent: None,
     };
-    for node in ctx
-        .plan
-        .root_scalars
-        .iter()
-        .filter(|n| n.constant.is_none())
-        .chain(&ctx.plan.root_clones)
-    {
+    for node in scalar_write_order(
+        ctx.source,
+        &ctx.source.root,
+        &ctx.plan.root_scalars,
+        &ctx.plan.root_clones,
+    ) {
         out.push('\n');
         write_scalar_block(
             out,
@@ -359,11 +360,7 @@ fn write_collection_block(
         );
     }
     let _ = writeln!(out, "{body}let mut {elem} = {src_item_struct}::default();");
-    for child in children
-        .iter()
-        .filter(|n| n.constant.is_none())
-        .chain(clones)
-    {
+    for child in scalar_write_order(ctx.source, &src_item_struct, children, clones) {
         write_scalar_block(
             out,
             ctx,
@@ -477,15 +474,34 @@ fn write_constant_block(
     }
 }
 
-/// For an attribute leaf whose parent struct is a valued element (it carries a
-/// `$text` `value` field), the `Option<&Struct>` expression reaching that
-/// element; `None` for element leaves and for attributes of pure containers.
-fn valued_element_guard(
+/// The order a scope's scalars are written in: primaries (constants aside),
+/// then clones — and the attributes of valued elements last of all, so their
+/// guard inspects an element whose text has been written already, whichever
+/// of a primary or a clone supplies it.
+fn scalar_write_order<'a>(
     source: &SourceModelMeta,
     start_struct: &str,
-    path: &str,
-    src_var: &str,
-) -> Option<String> {
+    scalars: &[&'a SourceNode],
+    clones: &[&'a SourceNode],
+) -> Vec<&'a SourceNode> {
+    let candidates = scalars
+        .iter()
+        .filter(|n| n.constant.is_none())
+        .chain(clones)
+        .copied();
+    let (attributes, others): (Vec<&SourceNode>, Vec<&SourceNode>) = candidates
+        .partition(|n| valued_element_parent(source, start_struct, &n.source_path).is_some());
+    others.into_iter().chain(attributes).collect()
+}
+
+/// For an attribute leaf whose parent struct is a valued element (it carries a
+/// `$text` `value` field), the path of that element; `None` for element leaves
+/// and for attributes of pure containers.
+fn valued_element_parent<'p>(
+    source: &SourceModelMeta,
+    start_struct: &str,
+    path: &'p str,
+) -> Option<&'p str> {
     let (parent_path, leaf) = path.rsplit_once('.')?;
     let segs = walk_segments(source, start_struct, parent_path).ok()?;
     let parent_struct = segs.last()?.struct_name.as_deref()?;
@@ -495,7 +511,19 @@ fn valued_element_guard(
         return None;
     }
     let has_value = parent.fields.get("value").is_some_and(|f| f.is_text());
-    has_value.then(|| struct_ref_expr(source, start_struct, parent_path, src_var))
+    has_value.then_some(parent_path)
+}
+
+/// For an attribute leaf of a valued element, the `Option<&Struct>` expression
+/// reaching that element (see [`valued_element_parent`]).
+fn valued_element_guard(
+    source: &SourceModelMeta,
+    start_struct: &str,
+    path: &str,
+    src_var: &str,
+) -> Option<String> {
+    valued_element_parent(source, start_struct, path)
+        .map(|parent_path| struct_ref_expr(source, start_struct, parent_path, src_var))
 }
 
 /// The owner of a constant at `path`: its longest proper path prefix that some

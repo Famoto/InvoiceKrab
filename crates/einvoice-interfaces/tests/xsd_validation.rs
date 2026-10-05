@@ -146,6 +146,12 @@ fn allowlist(case: &Case) -> Vec<String> {
 #[test]
 fn test_emitted_documents_validate_against_their_xsd_up_to_the_allowlist() {
     if !xmllint_available() {
+        // Locally the harness is optional; on CI it is the schema gate, so a
+        // missing install step must fail loudly instead of passing silently.
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "xmllint is required on CI for XSD validation (install libxml2-utils)"
+        );
         eprintln!("xmllint not found on PATH; skipping XSD validation");
         return;
     }

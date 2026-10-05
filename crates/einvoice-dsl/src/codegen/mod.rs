@@ -646,6 +646,79 @@ mod tests {
     }
 
     #[test]
+    fn test_valued_element_attribute_is_written_after_the_clone_that_fills_its_text() {
+        // `Amount`'s text is a clone, its `@currencyID` a primary: the attribute
+        // must be written after the clone so its non-empty-owner guard holds.
+        let (ir, _hub, source) = compile(
+            r#"
+            [Invoice.Total]
+            type = "decimal"
+            canonical_key = "Total"
+
+            [Invoice.Amount]
+            type = "decimal"
+            clone_of = "Total"
+
+            [Invoice.Amount.currencyID]
+            xml = "@currencyID"
+            type = "currency"
+            canonical_key = "Currency"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, &CodecTable::new(), "super::hub");
+        let clone_at = out
+            .find("// Total -> amount.value")
+            .expect("clone block present");
+        let attr_at = out
+            .find("// Currency -> amount.currency_id")
+            .expect("attribute block present");
+        assert!(
+            clone_at < attr_at,
+            "clone must precede the attribute:\n{out}"
+        );
+        assert!(
+            out.contains("Some(&source).and_then(|v0| v0.amount.as_ref()).is_some_and(|owner| !owner.is_empty())"),
+            "the attribute keeps its owner guard:\n{out}"
+        );
+    }
+
+    #[test]
+    fn test_single_valued_default_bucket_reports_surplus_items() {
+        // A structural node without a selector shares the element with a
+        // selected node: it keeps the first unclaimed item and reports the rest.
+        let (ir, _hub, source) = compile(
+            r#"
+            [Invoice.Ref]
+            match = { "TypeCode" = "130" }
+
+            [Invoice.Ref.ID]
+            type = "identifier"
+            canonical_key = "ObjectId"
+
+            [Invoice.Ref.TypeCode]
+            type = "string"
+
+            [Invoice.OtherRef]
+            xml = "Ref"
+
+            [Invoice.OtherRef.ID]
+            type = "identifier"
+            canonical_key = "OtherId"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, &CodecTable::new(), "super::hub");
+        assert!(out.contains("let mut extra_other_ref = 0usize;"), "{out}");
+        assert!(
+            out.contains("if self.other_ref.is_none() {\n                self.other_ref = Some(Box::new(item));\n            } else {\n                extra_other_ref += 1;\n            }"),
+            "{out}"
+        );
+        assert!(
+            out.contains("overflow(\"Invoice.OtherRef\", extra_other_ref);"),
+            "{out}"
+        );
+    }
+
+    #[test]
     fn test_interior_struct_field_is_boxed_optional() {
         // An interior container is `Option<Box<…>>`: a document that omits the
         // whole element costs one `None` (8 bytes, no allocation) instead of a

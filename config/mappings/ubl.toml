@@ -54,7 +54,7 @@
 [meta]
 doc_format = "ubl-invoice"
 format_version = "2.1"
-mapping_version = "2.4"
+mapping_version = "2.5"
 source_model = "ubl-invoice:2.1"
 canonical_model = "canonical-invoice:1.0"
 root = "Invoice"
@@ -210,6 +210,17 @@ canonical_key = "SupportingDocumentDescription"
 [Invoice.AdditionalDocumentReference.Attachment.EmbeddedDocumentBinaryObject]
 type = "string"
 canonical_key = "AttachedDocument"
+
+# `udt:BinaryObjectType` requires `mimeCode` (BT-125-1); `filename` is BT-125-2.
+[Invoice.AdditionalDocumentReference.Attachment.EmbeddedDocumentBinaryObject.mimeCode]
+xml = "@mimeCode"
+type = "string"
+canonical_key = "AttachedDocumentMimeCode"
+
+[Invoice.AdditionalDocumentReference.Attachment.EmbeddedDocumentBinaryObject.filename]
+xml = "@filename"
+type = "string"
+canonical_key = "AttachedDocumentFilename"
 
 [Invoice.AdditionalDocumentReference.Attachment.ExternalReference.URI]
 type = "string"
@@ -507,6 +518,11 @@ canonical_key = "RemittanceInformation"
 [Invoice.PaymentMeans.CardAccount.PrimaryAccountNumberID]
 type = "string"
 canonical_key = "PaymentCardPrimaryAccountNumber"
+
+# Mandatory in CardAccountType; EN 16931 carries no network, so it is pinned.
+[Invoice.PaymentMeans.CardAccount.NetworkID]
+type = "identifier"
+constant = "NA"
 
 [Invoice.PaymentMeans.CardAccount.HolderName]
 type = "string"

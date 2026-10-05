@@ -43,7 +43,7 @@
 [meta]
 doc_format = "cii-invoice"
 format_version = "16931"
-mapping_version = "1.5"
+mapping_version = "1.6"
 source_model = "cii-invoice:en16931"
 canonical_model = "canonical-invoice:1.0"
 root = "CrossIndustryInvoice"
@@ -511,6 +511,17 @@ canonical_key = "SupportingDocumentDescription"
 type = "string"
 canonical_key = "AttachedDocument"
 
+# `udt:BinaryObjectType` requires both attributes (BT-125-1 / BT-125-2).
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.AdditionalReferencedDocument.AttachmentBinaryObject.mimeCode]
+xml = "@mimeCode"
+type = "string"
+canonical_key = "AttachedDocumentMimeCode"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.AdditionalReferencedDocument.AttachmentBinaryObject.filename]
+xml = "@filename"
+type = "string"
+canonical_key = "AttachedDocumentFilename"
+
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.TenderOrLotReferencedDocument]
 xml = "AdditionalReferencedDocument"
 match = { "TypeCode" = "50" }
@@ -530,6 +541,11 @@ canonical_key = "InvoicedObjectIdentifier"
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SpecifiedProcuringProject.ID]
 type = "identifier"
 canonical_key = "ProjectReference"
+
+# `Name` is mandatory in ProcuringProjectType; EN 16931 fixes it to this text.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SpecifiedProcuringProject.Name]
+type = "string"
+constant = "Project reference"
 
 # ===========================================================================
 # HEADER TRADE DELIVERY (BG-13) — ACTUAL DELIVERY (BT-72),

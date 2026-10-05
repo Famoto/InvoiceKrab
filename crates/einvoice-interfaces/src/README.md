@@ -24,8 +24,8 @@ No format is named in hand-written code.
   `build.rs` embeds one per spoke (`Spoke::contract()`).
 - `analysis.rs` — static conversion analysis (the CLI's `--analyze`): compares
   two contracts into the loss/error state of a pair plus its findings
-  (missing required routes, type clashes, dropped keys, pins, recodes,
-  collapses), without an input document.
+  (missing required routes, type clashes, dropped keys, optional feeds, pins,
+  recodes, collapses), without an input document.
 - `keys.rs` — canonical-key reporting (the CLI's `--keys`): the hub vocabulary,
   and per-spoke covered/unused keys.
 - `table.rs` — shared aligned-table rendering used by `analysis` and `keys`.

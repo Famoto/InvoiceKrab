@@ -794,12 +794,22 @@ fn insert_node(
         .map_err(e024)?;
         for attr in wire {
             // A declared attribute node on the same element would compete with
-            // the codec for the attribute's value.
-            if active.contains_key(&NodeId::new(format!("{id}.{attr}"))) {
+            // the codec for the attribute's value — whether it is bound by its
+            // id segment (`X.format`) or by an explicit `xml = "@format"`.
+            let wire_xml = format!("@{attr}");
+            let colliding = active
+                .range(NodeId::new(format!("{id}."))..)
+                .take_while(|(other, _)| other.is_descendant_of(id))
+                .find(|(other, n)| {
+                    other.parent().as_ref() == Some(id)
+                        && (n.xml.as_deref() == Some(wire_xml.as_str())
+                            || (n.xml.is_none() && other.segments().last() == Some(attr.as_str())))
+                });
+            if let Some((other, _)) = colliding {
                 return Err((
                     "E087",
                     format!(
-                        "codec wire attribute `@{attr}` collides with the attribute node `{id}.{attr}`"
+                        "codec wire attribute `@{attr}` collides with the attribute node `{other}`"
                     ),
                 ));
             }
@@ -1566,6 +1576,30 @@ mod tests {
         )]);
         assert!(diags.is_empty(), "{diags:?}");
         assert_eq!(model.structs["Invoice"].fields["issue_date"].ty, Scalar);
+    }
+
+    #[test]
+    fn test_synth_wire_attribute_colliding_by_xml_binding_is_e087() {
+        // The attribute node's id segment differs from the attribute name; its
+        // `xml` binding is what collides.
+        let (_, _, diags) = synth_codecs(&[
+            (
+                "Invoice.IssueDateTime.DateTimeString",
+                r#"type = "date"
+                codec = "cii-date-102""#,
+            ),
+            (
+                "Invoice.IssueDateTime.DateTimeString.fmt",
+                r#"xml = "@format"
+                type = "string""#,
+            ),
+        ]);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "E087" && d.message.contains("DateTimeString.fmt")),
+            "{diags:?}"
+        );
     }
 
     #[test]

@@ -723,10 +723,12 @@ contract**, embedded in the generated registry as `Spoke::contract()`:
 
 Two contracts determine a pair: `--analyze` (and `GET /analyze`) compares them
 and reports missing required routes and type clashes (blocking: the output is
-partial), dropped keys (lossy), and — as information — pins, recodes (a key
-read and written through different codecs) and the source's declared
-collapses. `--deny-lossy` turns anything but a lossless verdict into exit code
-65, for CI gates.
+partial), dropped keys (lossy), and — as information — required routes fed by
+a key the source maps but does not itself require (a document lacking it is
+`REQUIRED_MISSING` at runtime), pins, recodes (a key read and written through
+different codecs) and the source's declared collapses. `--deny-lossy` turns
+anything but a lossless verdict into exit code 65, for CI gates; the verdict is
+structural, so the informational findings never trip it.
 
 ---
 

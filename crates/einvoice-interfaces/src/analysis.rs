@@ -35,12 +35,14 @@
 //! - [`Error`](TransformState::Error): the source feeds none of the target's
 //!   required routes; the formats are incompatible.
 //!
-//! A target with no required routes is never `Partial`/`Error`. Pins (the
-//! target writes a constant where the source carried a value), recodes (a key
-//! read and written through different codecs) and the source's declared
-//! collapses (`multiple = "first" | "join"`, single-valued `match` nodes) are
-//! reported as findings but do not change the state: they describe what a
-//! particular document may lose, not what the pair always loses.
+//! A target with no required routes is never `Partial`/`Error`. Optional
+//! feeds (a required target route fed by a key the source maps but does not
+//! itself require, so a document lacking it is `REQUIRED_MISSING` at runtime),
+//! pins (the target writes a constant where the source carried a value),
+//! recodes (a key read and written through different codecs) and the source's
+//! declared collapses (`multiple = "first" | "join"`, single-valued `match`
+//! nodes) are reported as findings but do not change the state: they describe
+//! what a particular document may lose or lack, not what the pair always does.
 //!
 //! # Testing
 //!
@@ -106,6 +108,16 @@ pub enum Finding {
         label: String,
         /// Whether the route is a `clone_of` of that label.
         via_clone: bool,
+    },
+    /// A `required` target route fed by a key the source maps but does not
+    /// itself require: a source document without the value yields
+    /// `REQUIRED_MISSING` at runtime although the pair is structurally sound.
+    /// Informational.
+    OptionalFeed {
+        /// The target node id.
+        node: String,
+        /// The hub label the route needs.
+        label: String,
     },
     /// A key both spokes map under different semantic types. Blocking.
     TypeMismatch {
@@ -252,7 +264,9 @@ pub fn analyze_contracts(
         .map(str::to_string)
         .collect();
 
+    let source_required: BTreeSet<&str> = source.required_labels().into_iter().collect();
     let mut blocking = Vec::new();
+    let mut notes = Vec::new();
     for route in target.required {
         let (label, via_clone) = match route.route {
             Route::Hub(label) => (label, false),
@@ -265,9 +279,13 @@ pub fn analyze_contracts(
                 label: label.to_string(),
                 via_clone,
             });
+        } else if !source_required.contains(label) {
+            notes.push(Finding::OptionalFeed {
+                node: route.node.to_string(),
+                label: label.to_string(),
+            });
         }
     }
-    let mut notes = Vec::new();
     for key in source.keys {
         let Some(other) = target.key(key.label) else {
             continue;
@@ -411,6 +429,7 @@ pub fn render_pair(report: &TransformReport) -> String {
     };
 
     let mut missing = Vec::new();
+    let mut optional = Vec::new();
     let mut clashes = Vec::new();
     let mut dropped = Vec::new();
     let mut pinned = Vec::new();
@@ -427,6 +446,9 @@ pub fn render_pair(report: &TransformReport) -> String {
             } else {
                 format!("{label} — required by `{node}`; the source does not map it")
             }),
+            Finding::OptionalFeed { node, label } => optional.push(format!(
+                "{label} — required by `{node}`, optional in the source: a document without it fails"
+            )),
             Finding::TypeMismatch {
                 label,
                 source,
@@ -469,6 +491,11 @@ pub fn render_pair(report: &TransformReport) -> String {
         missing,
     );
     section(&mut out, "type clashes", clashes);
+    section(
+        &mut out,
+        "required routes fed by optional source keys (REQUIRED_MISSING when absent)",
+        optional,
+    );
     section(&mut out, "dropped (no slot in the target)", dropped);
     section(&mut out, "pinned by the target", pinned);
     section(&mut out, "recoded", recoded);
@@ -680,6 +707,10 @@ mod tests {
                 Finding::Dropped {
                     label: "Note".into()
                 },
+                Finding::OptionalFeed {
+                    node: "Tgt.A".into(),
+                    label: "A".into()
+                },
                 Finding::Pinned {
                     label: "A".into(),
                     value: "fixed".into()
@@ -742,6 +773,26 @@ mod tests {
     }
 
     #[test]
+    fn test_analyze_ubl_to_xrechnung_is_lossless_but_flags_the_optional_feed() {
+        // The pair is structurally sound (UBL maps SpecificationId), yet plain
+        // UBL documents may lack it: the report says so without changing the
+        // verdict, matching the runtime REQUIRED_MISSING behaviour.
+        let report = analyze(Spoke::UblInvoice, Spoke::XrechnungInvoice);
+        assert_eq!(report.state, TransformState::Lossless);
+        assert!(report.findings.iter().any(|f| matches!(
+            f,
+            Finding::OptionalFeed { node, label } if node == "Invoice.CustomizationID" && label == "SpecificationId"
+        )));
+        let text = render_pair(&report);
+        assert!(
+            text.contains(
+                "SpecificationId — required by `Invoice.CustomizationID`, optional in the source"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn test_analyze_identity_is_lossless() {
         // A spoke can always represent everything it produces.
         for &spoke in Spoke::ALL {
@@ -799,6 +850,9 @@ mod tests {
         assert!(text.contains("missing required routes (REQUIRED_MISSING at runtime) (2):"));
         assert!(text.contains("  C — required by `Tgt.C`; the source does not map it"));
         assert!(text.contains("  C — needed by `Tgt.CopyC` (a clone of it)"));
+        assert!(text.contains(
+            "required routes fed by optional source keys (REQUIRED_MISSING when absent) (1):\n  A — required by `Tgt.A`, optional in the source"
+        ));
         assert!(text.contains("type clashes (1):\n  B — source `decimal`, target `string`"));
         assert!(text.contains("dropped (no slot in the target) (1):\n  Note"));
         assert!(

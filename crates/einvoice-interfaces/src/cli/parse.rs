@@ -78,9 +78,14 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
         ));
     }
     if analyze {
-        if positionals.len() > 2 {
+        // Positionals fill only the slots `--from` / `--to` left open, so a
+        // surplus one is an error rather than silently dropped.
+        let open_slots =
+            usize::from(source_format.is_none()) + usize::from(target_format.is_none());
+        if positionals.len() > open_slots {
             return Err(CliError::Usage(
-                "--analyze takes at most a source and a target format".into(),
+                "--analyze takes at most a source and a target format (positionally or via --from/--to)"
+                    .into(),
             ));
         }
         let mut positionals = positionals.into_iter();
@@ -251,6 +256,30 @@ mod tests {
     fn test_parse_args_analyze_too_many_formats_is_usage_error() {
         let err = parse_args(&[s("--analyze"), s("a"), s("b"), s("c")]).expect_err("should fail");
         assert!(matches!(err, CliError::Usage(_)));
+    }
+
+    #[test]
+    fn test_parse_args_analyze_positionals_beyond_the_open_slots_are_usage_errors() {
+        // `--from` fills the source slot: two positionals leave one surplus.
+        let err = parse_args(&[s("--analyze"), s("a"), s("b"), s("--from"), s("c")])
+            .expect_err("should fail");
+        assert!(matches!(err, CliError::Usage(_)));
+        // Both flags given: any positional is surplus.
+        let err = parse_args(&[
+            s("--analyze"),
+            s("--from"),
+            s("a"),
+            s("--to"),
+            s("b"),
+            s("c"),
+        ])
+        .expect_err("should fail");
+        assert!(matches!(err, CliError::Usage(_)));
+        // One flag plus one positional fills the other slot.
+        assert_eq!(
+            parse_args(&[s("--analyze"), s("b"), s("--from"), s("a")]).expect("ok"),
+            analyze(Some("a"), Some("b"), false)
+        );
     }
 
     #[test]
