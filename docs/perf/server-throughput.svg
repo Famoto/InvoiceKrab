@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 400" width="760" height="400" role="img" aria-label="krab-server: POST /transform throughput">
+
+<style>
+  svg { --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+        --grid:#e1e0d9; --axis:#c3c2b7;
+        --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s0:#898781; }
+  @media (prefers-color-scheme: dark) {
+    svg { --surface:#1a1a19; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+          --grid:#2c2c2a; --axis:#383835;
+          --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s0:#898781; }
+  }
+  text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .title { font-size:16px; font-weight:600; fill:var(--ink); }
+  .sub { font-size:12px; fill:var(--ink2); }
+  .tick { font-size:11px; fill:var(--muted); font-variant-numeric:tabular-nums; }
+  .axlab { font-size:11px; fill:var(--ink2); }
+  .lab { font-size:12px; fill:var(--ink); }
+  .val { font-size:11px; fill:var(--ink2); font-variant-numeric:tabular-nums; }
+  .grid { stroke:var(--grid); stroke-width:1; }
+  .base { stroke:var(--axis); stroke-width:1; }
+  .ref { stroke:var(--muted); stroke-width:1; stroke-dasharray:4 4; fill:none; }
+</style>
+<rect width="760" height="400" rx="8" fill="var(--surface)"/>
+<text class="title" x="24" y="32">krab-server: POST /transform throughput</text>
+<text class="sub" x="24" y="52">32 connections, 4 workers, UBL source. Bar labels: MB/s of input and requests/s.</text>
+<line class="grid" x1="72" x2="736" y1="360.0" y2="360.0"/>
+<text class="tick" x="64" y="364.0" text-anchor="end">0</text>
+<line class="grid" x1="72" x2="736" y1="307.2" y2="307.2"/>
+<text class="tick" x="64" y="311.2" text-anchor="end">50</text>
+<line class="grid" x1="72" x2="736" y1="254.4" y2="254.4"/>
+<text class="tick" x="64" y="258.4" text-anchor="end">100</text>
+<line class="grid" x1="72" x2="736" y1="201.6" y2="201.6"/>
+<text class="tick" x="64" y="205.6" text-anchor="end">150</text>
+<line class="grid" x1="72" x2="736" y1="148.8" y2="148.8"/>
+<text class="tick" x="64" y="152.8" text-anchor="end">200</text>
+<line class="grid" x1="72" x2="736" y1="96.0" y2="96.0"/>
+<text class="tick" x="64" y="100.0" text-anchor="end">250</text>
+<text class="axlab" transform="translate(18 228.0) rotate(-90)" text-anchor="middle">Aggregate input throughput (MB/s)</text>
+<path d="M117.7,360.0 V247.7 Q117.7,243.7 121.7,243.7 H177.7 Q181.7,243.7 181.7,247.7 V360.0 Z" fill="var(--s1)"><title>→ UBL, 9 KB: 110 MB/s (12,144 req/s)</title></path>
+<text class="val" x="149.7" y="223.7" text-anchor="middle">110 MB/s</text>
+<text class="val" x="149.7" y="237.7" text-anchor="middle">12,144/s</text>
+<path d="M183.7,360.0 V266.9 Q183.7,262.9 187.7,262.9 H243.7 Q247.7,262.9 247.7,266.9 V360.0 Z" fill="var(--s2)"><title>→ Factur-X, 9 KB: 92 MB/s (10,145 req/s)</title></path>
+<text class="val" x="215.7" y="242.9" text-anchor="middle">92 MB/s</text>
+<text class="val" x="215.7" y="256.9" text-anchor="middle">10,145/s</text>
+<text class="lab" x="182.7" y="380" text-anchor="middle">9 KB invoice</text>
+<path d="M339.0,360.0 V184.4 Q339.0,180.4 343.0,180.4 H399.0 Q403.0,180.4 403.0,184.4 V360.0 Z" fill="var(--s1)"><title>→ UBL, 95 KB: 170 MB/s (1,787 req/s)</title></path>
+<text class="val" x="371.0" y="160.4" text-anchor="middle">170 MB/s</text>
+<text class="val" x="371.0" y="174.4" text-anchor="middle">1,787/s</text>
+<path d="M405.0,360.0 V207.4 Q405.0,203.4 409.0,203.4 H465.0 Q469.0,203.4 469.0,207.4 V360.0 Z" fill="var(--s2)"><title>→ Factur-X, 95 KB: 148 MB/s (1,558 req/s)</title></path>
+<text class="val" x="437.0" y="183.4" text-anchor="middle">148 MB/s</text>
+<text class="val" x="437.0" y="197.4" text-anchor="middle">1,558/s</text>
+<text class="lab" x="404.0" y="380" text-anchor="middle">95 KB invoice</text>
+<path d="M560.3,360.0 V159.7 Q560.3,155.7 564.3,155.7 H620.3 Q624.3,155.7 624.3,159.7 V360.0 Z" fill="var(--s1)"><title>→ UBL, 0.9 MB: 194 MB/s (216 req/s)</title></path>
+<text class="val" x="592.3" y="135.7" text-anchor="middle">194 MB/s</text>
+<text class="val" x="592.3" y="149.7" text-anchor="middle">216/s</text>
+<path d="M626.3,360.0 V194.7 Q626.3,190.7 630.3,190.7 H686.3 Q690.3,190.7 690.3,194.7 V360.0 Z" fill="var(--s2)"><title>→ Factur-X, 0.9 MB: 160 MB/s (179 req/s)</title></path>
+<text class="val" x="658.3" y="170.7" text-anchor="middle">160 MB/s</text>
+<text class="val" x="658.3" y="184.7" text-anchor="middle">179/s</text>
+<text class="lab" x="625.3" y="380" text-anchor="middle">0.9 MB invoice</text>
+<line class="base" x1="72" x2="736" y1="360" y2="360"/>
+<rect x="24" y="69" width="10" height="10" rx="2" fill="var(--s1)"/>
+<text class="lab" x="40" y="78">→ UBL</text>
+<rect x="100.0" y="69" width="10" height="10" rx="2" fill="var(--s2)"/>
+<text class="lab" x="116.0" y="78">→ Factur-X</text>
+
+</svg>

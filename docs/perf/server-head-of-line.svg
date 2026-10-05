@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" width="760" height="300" role="img" aria-label="Small requests stall behind large uploads">
+
+<style>
+  svg { --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+        --grid:#e1e0d9; --axis:#c3c2b7;
+        --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s0:#898781; }
+  @media (prefers-color-scheme: dark) {
+    svg { --surface:#1a1a19; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+          --grid:#2c2c2a; --axis:#383835;
+          --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s0:#898781; }
+  }
+  text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .title { font-size:16px; font-weight:600; fill:var(--ink); }
+  .sub { font-size:12px; fill:var(--ink2); }
+  .tick { font-size:11px; fill:var(--muted); font-variant-numeric:tabular-nums; }
+  .axlab { font-size:11px; fill:var(--ink2); }
+  .lab { font-size:12px; fill:var(--ink); }
+  .val { font-size:11px; fill:var(--ink2); font-variant-numeric:tabular-nums; }
+  .grid { stroke:var(--grid); stroke-width:1; }
+  .base { stroke:var(--axis); stroke-width:1; }
+  .ref { stroke:var(--muted); stroke-width:1; stroke-dasharray:4 4; fill:none; }
+</style>
+<rect width="760" height="300" rx="8" fill="var(--surface)"/>
+<text class="title" x="24" y="32">Small requests stall behind large uploads</text>
+<text class="sub" x="24" y="52">9 KB UBL→UBL at 8 connections, alone vs. while 8 connections send 8.9 MB documents (issue #35).</text>
+<line class="grid" x1="150.0" x2="150.0" y1="90" y2="244"/>
+<text class="tick" x="150.0" y="260" text-anchor="middle">0.1 ms</text>
+<line class="grid" x1="292.5" x2="292.5" y1="90" y2="244"/>
+<text class="tick" x="292.5" y="260" text-anchor="middle">1 ms</text>
+<line class="grid" x1="435.0" x2="435.0" y1="90" y2="244"/>
+<text class="tick" x="435.0" y="260" text-anchor="middle">10 ms</text>
+<line class="grid" x1="577.5" x2="577.5" y1="90" y2="244"/>
+<text class="tick" x="577.5" y="260" text-anchor="middle">100 ms</text>
+<line class="grid" x1="720.0" x2="720.0" y1="90" y2="244"/>
+<text class="tick" x="720.0" y="260" text-anchor="middle">1000 ms</text>
+<text class="axlab" x="435.0" y="282" text-anchor="middle">Latency of a 9 KB transform (log scale)</text>
+<text class="lab" x="138" y="127" text-anchor="end">p50</text>
+<path d="M150.0,100.0 H266.4 Q270.4,100.0 270.4,104.0 V118.0 Q270.4,122.0 266.4,122.0 H150.0 Z" fill="var(--s1)"><title>Alone, p50: 0.7 ms</title></path>
+<text class="val" x="276.4" y="115">0.7 ms</text>
+<path d="M150.0,124.0 H623.2 Q627.2,124.0 627.2,128.0 V142.0 Q627.2,146.0 623.2,146.0 H150.0 Z" fill="var(--s2)"><title>During large uploads, p50: 223.39 ms</title></path>
+<text class="val" x="633.2" y="139">223.39 ms</text>
+<text class="lab" x="138" y="197" text-anchor="end">p99</text>
+<path d="M150.0,170.0 H336.4 Q340.4,170.0 340.4,174.0 V188.0 Q340.4,192.0 336.4,192.0 H150.0 Z" fill="var(--s1)"><title>Alone, p99: 2.17 ms</title></path>
+<text class="val" x="346.4" y="185">2.17 ms</text>
+<path d="M150.0,194.0 H645.4 Q649.4,194.0 649.4,198.0 V212.0 Q649.4,216.0 645.4,216.0 H150.0 Z" fill="var(--s2)"><title>During large uploads, p99: 319.82 ms</title></path>
+<text class="val" x="655.4" y="209">319.82 ms</text>
+<line class="base" x1="150.0" x2="150.0" y1="90" y2="244"/>
+<rect x="24" y="69" width="10" height="10" rx="2" fill="var(--s1)"/>
+<text class="lab" x="40" y="78">Alone</text>
+<rect x="100.0" y="69" width="10" height="10" rx="2" fill="var(--s2)"/>
+<text class="lab" x="116.0" y="78">During large uploads</text>
+
+</svg>

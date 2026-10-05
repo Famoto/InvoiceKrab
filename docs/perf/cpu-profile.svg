@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 312" width="760" height="312" role="img" aria-label="Where transform time goes">
+
+<style>
+  svg { --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+        --grid:#e1e0d9; --axis:#c3c2b7;
+        --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s0:#898781; }
+  @media (prefers-color-scheme: dark) {
+    svg { --surface:#1a1a19; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+          --grid:#2c2c2a; --axis:#383835;
+          --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s0:#898781; }
+  }
+  text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .title { font-size:16px; font-weight:600; fill:var(--ink); }
+  .sub { font-size:12px; fill:var(--ink2); }
+  .tick { font-size:11px; fill:var(--muted); font-variant-numeric:tabular-nums; }
+  .axlab { font-size:11px; fill:var(--ink2); }
+  .lab { font-size:12px; fill:var(--ink); }
+  .val { font-size:11px; fill:var(--ink2); font-variant-numeric:tabular-nums; }
+  .grid { stroke:var(--grid); stroke-width:1; }
+  .base { stroke:var(--axis); stroke-width:1; }
+  .ref { stroke:var(--muted); stroke-width:1; stroke-dasharray:4 4; fill:none; }
+</style>
+<rect width="760" height="312" rx="8" fill="var(--surface)"/>
+<text class="title" x="24" y="32">Where transform time goes</text>
+<text class="sub" x="24" y="52">Callgrind, krab-cli UBL→UBL on a 1k-line (0.9 MB) invoice.</text>
+<line class="grid" x1="230.0" x2="230.0" y1="90" y2="260"/>
+<text class="tick" x="230.0" y="276" text-anchor="middle">0%</text>
+<line class="grid" x1="306.7" x2="306.7" y1="90" y2="260"/>
+<text class="tick" x="306.7" y="276" text-anchor="middle">10%</text>
+<line class="grid" x1="383.3" x2="383.3" y1="90" y2="260"/>
+<text class="tick" x="383.3" y="276" text-anchor="middle">20%</text>
+<line class="grid" x1="460.0" x2="460.0" y1="90" y2="260"/>
+<text class="tick" x="460.0" y="276" text-anchor="middle">30%</text>
+<line class="grid" x1="536.7" x2="536.7" y1="90" y2="260"/>
+<text class="tick" x="536.7" y="276" text-anchor="middle">40%</text>
+<line class="grid" x1="613.3" x2="613.3" y1="90" y2="260"/>
+<text class="tick" x="613.3" y="276" text-anchor="middle">50%</text>
+<line class="grid" x1="690.0" x2="690.0" y1="90" y2="260"/>
+<text class="tick" x="690.0" y="276" text-anchor="middle">60%</text>
+<text class="axlab" x="460.0" y="298" text-anchor="middle">Share of executed instructions</text>
+<text class="lab" x="220" y="112" text-anchor="end">Parse XML into typed model</text>
+<path d="M230.0,96.0 H662.2 Q666.2,96.0 666.2,100.0 V116.0 Q666.2,120.0 662.2,120.0 H230.0 Z" fill="var(--s1)"><title>Parse XML into typed model (quick-xml): 56.9%</title></path>
+<text class="val" x="672.2" y="112">56.9%</text>
+<text class="lab" x="220" y="138" text-anchor="end">Serialize (excl. name checks)</text>
+<path d="M230.0,122.0 H370.8 Q374.8,122.0 374.8,126.0 V142.0 Q374.8,146.0 370.8,146.0 H230.0 Z" fill="var(--s1)"><title>Serialize (excl. name checks) (quick-xml): 18.9%</title></path>
+<text class="val" x="380.8" y="138">18.9%</text>
+<text class="lab" x="220" y="164" text-anchor="end">Element-name validation</text>
+<path d="M230.0,148.0 H334.9 Q338.9,148.0 338.9,152.0 V168.0 Q338.9,172.0 334.9,172.0 H230.0 Z" fill="var(--s1)"><title>Element-name validation (quick-xml): 14.2%</title></path>
+<text class="val" x="344.9" y="164">14.2%</text>
+<text class="lab" x="220" y="190" text-anchor="end">Generated writer (hub → model)</text>
+<path d="M230.0,174.0 H278.7 Q282.7,174.0 282.7,178.0 V194.0 Q282.7,198.0 278.7,198.0 H230.0 Z" fill="var(--s2)"><title>Generated writer (hub → model) (Generated mapping code): 6.9%</title></path>
+<text class="val" x="288.7" y="190">6.9%</text>
+<text class="lab" x="220" y="216" text-anchor="end">Generated reader (model → hub)</text>
+<path d="M230.0,200.0 H247.0 Q251.0,200.0 251.0,204.0 V220.0 Q251.0,224.0 247.0,224.0 H230.0 Z" fill="var(--s2)"><title>Generated reader (model → hub) (Generated mapping code): 2.7%</title></path>
+<text class="val" x="257.0" y="216">2.7%</text>
+<text class="lab" x="220" y="242" text-anchor="end">Start-up, I/O, other</text>
+<path d="M230.0,226.0 H230.0 Q232.9,226.0 232.9,228.9 V247.1 Q232.9,250.0 230.0,250.0 H230.0 Z" fill="var(--s0)"><title>Start-up, I/O, other (Other): 0.4%</title></path>
+<text class="val" x="238.9" y="242">0.4%</text>
+<line class="base" x1="230.0" x2="230.0" y1="90" y2="260"/>
+<rect x="24" y="69" width="10" height="10" rx="2" fill="var(--s1)"/>
+<text class="lab" x="40" y="78">quick-xml</text>
+<rect x="128.8" y="69" width="10" height="10" rx="2" fill="var(--s2)"/>
+<text class="lab" x="144.8" y="78">Generated mapping code</text>
+<rect x="327.20000000000005" y="69" width="10" height="10" rx="2" fill="var(--s0)"/>
+<text class="lab" x="343.20000000000005" y="78">Other</text>
+
+</svg>

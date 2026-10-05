@@ -33,6 +33,7 @@ deltas — XRechnung and Peppol are a handful of lines on top of UBL.
 - [Features](#features)
 - [The mapping DSL](#the-mapping-dsl)
 - [Adding a new format](#adding-a-new-format)
+- [Performance](#performance)
 - [Workspace layout](#workspace-layout)
 - [Developer commands](#developer-commands)
 
@@ -421,6 +422,21 @@ derives the shared hub, and generates the mapper. Your format then appears in
 
 If your mapping has a problem (unknown key, type conflict, fallback cycle, …),
 the **build fails** with a diagnostic pointing at the offending node.
+
+---
+
+## Performance
+
+Transforms are CPU-bound and scale linearly with document size. On a 4-vCPU
+release build:
+
+| | Small invoice (9 KB) | Large invoice (89 MB) |
+|---|---|---|
+| `krab-cli` | 3–6 ms (mostly process start-up) | 1.2–2.2 s, peak RSS 2.5–4.7× input |
+| `krab-server` | ~10–12k transforms/s | ~110–190 MB/s total across workers |
+
+See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the full measurements,
+charts, a CPU profile and the open performance issues.
 
 ---
 
