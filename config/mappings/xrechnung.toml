@@ -11,7 +11,8 @@
 #   * `[meta]` identity: its own doc_format/format_version/source_model, plus the
 #     `detect` marker (matched case-insensitively against CustomizationID, BT-24,
 #     which for the CIUS carries `...:xrechnung_3.0`).
-#   * `CustomizationID` (BT-24) is mandatory under the CIUS — `required = true`.
+#   * `CustomizationID` (BT-24) is pinned to the XRechnung 3.0 URN, and the
+#     business process type (BT-23) is mandatory — `required = true`.
 #
 # Everything else (BT-1…BT-163, BG-1…BG-32, all collections and nesting) comes
 # from `ubl.toml` unchanged; see it for the DSL conventions and per-node docs.
@@ -33,8 +34,13 @@ detect = ["xrechnung"]
 [[meta.samples]]
 file = "testfiles/xrechnung-3.0.2-beispiel.xml"
 
-# Overrides the base UBL node: the CIUS makes CustomizationID mandatory. An
-# override merges over the inherited node, so only the delta is stated here;
-# type, canonical key and normalization come from ubl.toml.
+# Overrides the base UBL node: the CIUS writes its own specification
+# identifier (BT-24). An override merges over the inherited node, so only the
+# delta is stated here; type, canonical key and normalization come from ubl.toml.
 [Invoice.CustomizationID]
+constant = "urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0"
+
+# XRechnung 3.0 makes the business process type (BT-23) mandatory; the CIUS
+# leaves its value to the parties, so it must come from the source.
+[Invoice.ProfileID]
 required = true

@@ -9,9 +9,9 @@
 //! deepest interior element on its path that other mapped nodes also write
 //! into — must be non-empty (so `PartyTaxScheme/TaxScheme/ID = "VAT"` appears
 //! exactly when the party has a `PartyTaxScheme/CompanyID`). A constant with
-//! no such owner is written unconditionally at root and, inside a collection,
-//! on every non-empty item, so a constant never resurrects an otherwise-empty
-//! element. Constants are written last in their scope, after everything that
+//! no such owner — or whose owner is an always-present element (below) — is
+//! written unconditionally at root and, inside a collection, on every
+//! non-empty item, so a constant never resurrects an otherwise-empty element. Constants are written last in their scope, after everything that
 //! could fill their owner.
 //!
 //! A structural node with `required = true` names an interior element the
@@ -431,7 +431,8 @@ fn write_collection_block(
 /// *owner* — the deepest interior element on its path that one of
 /// `scope_content` also writes into — the assignment is guarded on that owner
 /// being non-empty, so the constant completes real content instead of
-/// conjuring an element on its own.
+/// conjuring an element on its own — unless the owner is always present, in
+/// which case there is always a hole to fill.
 #[allow(clippy::too_many_arguments)]
 fn write_constant_block(
     out: &mut String,
@@ -458,7 +459,11 @@ fn write_constant_block(
 
     let pad = "    ".repeat(indent);
     let _ = writeln!(out, "{pad}// constant -> {path}");
-    match constant_owner(path, scope_content) {
+    // An always-present owner (a `required` structural element) exists in
+    // every document, so the constant fills a hole that is always there.
+    let owner = constant_owner(path, scope_content)
+        .filter(|owner| !always_present_paths(source, start_struct, "").contains(owner));
+    match owner {
         Some(owner) => {
             let owner_ref = struct_ref_expr(source, start_struct, &owner, src_var);
             let _ = writeln!(

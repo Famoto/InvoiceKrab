@@ -11,16 +11,26 @@ use einvoice_interfaces::{Engine, Spoke};
 const UBL: &[u8] = br#"<Invoice>
   <ID>INV-1</ID>
   <IssueDate>2026-04-15</IssueDate>
+  <InvoiceTypeCode>380</InvoiceTypeCode>
   <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
   <AdditionalDocumentReference><ID>OBJ-7</ID><DocumentTypeCode>130</DocumentTypeCode></AdditionalDocumentReference>
   <AdditionalDocumentReference><ID>DOC-1</ID><DocumentDescription>Timesheet</DocumentDescription></AdditionalDocumentReference>
   <AdditionalDocumentReference><ID>OBJ-8</ID><DocumentTypeCode>130</DocumentTypeCode></AdditionalDocumentReference>
   <AccountingSupplierParty><Party>
+    <PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress>
     <PartyTaxScheme><CompanyID>DE123456789</CompanyID><TaxScheme><ID>VAT</ID></TaxScheme></PartyTaxScheme>
     <PartyTaxScheme><CompanyID>201/113/40209</CompanyID><TaxScheme><ID>FC</ID></TaxScheme></PartyTaxScheme>
     <PartyLegalEntity><RegistrationName>Seller</RegistrationName></PartyLegalEntity>
   </Party></AccountingSupplierParty>
-  <InvoiceLine><ID>1</ID></InvoiceLine>
+  <AccountingCustomerParty><Party><PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress>
+    <PartyLegalEntity><RegistrationName>Buyer</RegistrationName></PartyLegalEntity></Party></AccountingCustomerParty>
+  <TaxTotal><TaxAmount currencyID="EUR">19.00</TaxAmount><TaxSubtotal><TaxableAmount currencyID="EUR">100.00</TaxableAmount><TaxAmount currencyID="EUR">19.00</TaxAmount>
+    <TaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></TaxCategory></TaxSubtotal></TaxTotal>
+  <LegalMonetaryTotal><LineExtensionAmount currencyID="EUR">100.00</LineExtensionAmount><TaxExclusiveAmount currencyID="EUR">100.00</TaxExclusiveAmount>
+    <TaxInclusiveAmount currencyID="EUR">119.00</TaxInclusiveAmount><PayableAmount currencyID="EUR">119.00</PayableAmount></LegalMonetaryTotal>
+  <InvoiceLine><ID>1</ID><InvoicedQuantity unitCode="C62">1</InvoicedQuantity><LineExtensionAmount currencyID="EUR">100.00</LineExtensionAmount>
+    <Item><Name>X</Name><ClassifiedTaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></ClassifiedTaxCategory></Item>
+    <Price><PriceAmount currencyID="EUR">100.00</PriceAmount></Price></InvoiceLine>
 </Invoice>"#;
 
 /// One element's occurrences in document order, each flattened to its text.
@@ -168,15 +178,30 @@ fn test_cii_writes_and_reads_type_code_and_scheme_id_discriminators() {
     // A CII document with all three type codes partitions on read; the tender
     // reference lands on the same key UBL fills from OriginatorDocumentReference.
     let cii = br#"<CrossIndustryInvoice>
-      <ExchangedDocument><ID>INV-2</ID></ExchangedDocument>
+      <ExchangedDocument><ID>INV-2</ID><TypeCode>380</TypeCode>
+        <IssueDateTime><DateTimeString format="102">20260415</DateTimeString></IssueDateTime></ExchangedDocument>
       <SupplyChainTradeTransaction>
-        <IncludedSupplyChainTradeLineItem><AssociatedDocumentLineDocument><LineID>1</LineID></AssociatedDocumentLineDocument></IncludedSupplyChainTradeLineItem>
+        <IncludedSupplyChainTradeLineItem><AssociatedDocumentLineDocument><LineID>1</LineID></AssociatedDocumentLineDocument>
+          <SpecifiedTradeProduct><Name>X</Name></SpecifiedTradeProduct>
+          <SpecifiedLineTradeAgreement><NetPriceProductTradePrice><ChargeAmount>100.00</ChargeAmount></NetPriceProductTradePrice></SpecifiedLineTradeAgreement>
+          <SpecifiedLineTradeDelivery><BilledQuantity unitCode="C62">1</BilledQuantity></SpecifiedLineTradeDelivery>
+          <SpecifiedLineTradeSettlement><ApplicableTradeTax><TypeCode>VAT</TypeCode><CategoryCode>S</CategoryCode><RateApplicablePercent>19</RateApplicablePercent></ApplicableTradeTax>
+            <SpecifiedTradeSettlementLineMonetarySummation><LineTotalAmount>100.00</LineTotalAmount></SpecifiedTradeSettlementLineMonetarySummation></SpecifiedLineTradeSettlement>
+        </IncludedSupplyChainTradeLineItem>
         <ApplicableHeaderTradeAgreement>
+          <SellerTradeParty><Name>Seller</Name><PostalTradeAddress><CountryID>DE</CountryID></PostalTradeAddress></SellerTradeParty>
+          <BuyerTradeParty><Name>Buyer</Name><PostalTradeAddress><CountryID>DE</CountryID></PostalTradeAddress></BuyerTradeParty>
           <AdditionalReferencedDocument><IssuerAssignedID>SUP-1</IssuerAssignedID><TypeCode>916</TypeCode></AdditionalReferencedDocument>
           <AdditionalReferencedDocument><IssuerAssignedID>TENDER-9</IssuerAssignedID><TypeCode>50</TypeCode></AdditionalReferencedDocument>
           <AdditionalReferencedDocument><IssuerAssignedID>OBJ-3</IssuerAssignedID><TypeCode>130</TypeCode></AdditionalReferencedDocument>
           <AdditionalReferencedDocument><IssuerAssignedID>SUP-2</IssuerAssignedID></AdditionalReferencedDocument>
         </ApplicableHeaderTradeAgreement>
+        <ApplicableHeaderTradeSettlement><InvoiceCurrencyCode>EUR</InvoiceCurrencyCode>
+          <ApplicableTradeTax><CalculatedAmount>19.00</CalculatedAmount><TypeCode>VAT</TypeCode><BasisAmount>100.00</BasisAmount>
+            <CategoryCode>S</CategoryCode><RateApplicablePercent>19</RateApplicablePercent></ApplicableTradeTax>
+          <SpecifiedTradeSettlementHeaderMonetarySummation><LineTotalAmount>100.00</LineTotalAmount><TaxBasisTotalAmount>100.00</TaxBasisTotalAmount>
+            <TaxTotalAmount currencyID="EUR">19.00</TaxTotalAmount><GrandTotalAmount>119.00</GrandTotalAmount><DuePayableAmount>119.00</DuePayableAmount>
+          </SpecifiedTradeSettlementHeaderMonetarySummation></ApplicableHeaderTradeSettlement>
       </SupplyChainTradeTransaction>
     </CrossIndustryInvoice>"#;
     let result = engine

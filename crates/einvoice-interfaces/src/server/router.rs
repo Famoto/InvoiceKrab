@@ -304,12 +304,13 @@ mod tests {
 
     const UBL: &[u8] = br#"<Invoice>
         <ID>INV-42</ID>
-        <IssueDate>2026-06-27</IssueDate>
+        <IssueDate>2026-06-27</IssueDate><InvoiceTypeCode>380</InvoiceTypeCode>
         <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
+        <AccountingSupplierParty><Party><PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress><PartyLegalEntity><RegistrationName>Seller GmbH</RegistrationName></PartyLegalEntity></Party></AccountingSupplierParty><AccountingCustomerParty><Party><PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress><PartyLegalEntity><RegistrationName>Buyer AG</RegistrationName></PartyLegalEntity></Party></AccountingCustomerParty><TaxTotal><TaxAmount currencyID="EUR">19.00</TaxAmount><TaxSubtotal><TaxableAmount currencyID="EUR">100.00</TaxableAmount><TaxAmount currencyID="EUR">19.00</TaxAmount><TaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></TaxCategory></TaxSubtotal></TaxTotal>
         <LegalMonetaryTotal>
-            <PayableAmount currencyID="EUR">119.00</PayableAmount>
+            <LineExtensionAmount currencyID="EUR">100.00</LineExtensionAmount><TaxExclusiveAmount currencyID="EUR">100.00</TaxExclusiveAmount><TaxInclusiveAmount currencyID="EUR">119.00</TaxInclusiveAmount><PayableAmount currencyID="EUR">119.00</PayableAmount>
         </LegalMonetaryTotal>
-        <InvoiceLine><ID>1</ID><InvoicedQuantity>2</InvoicedQuantity><Item><Name>Widget</Name></Item></InvoiceLine>
+        <InvoiceLine><ID>1</ID><InvoicedQuantity unitCode="C62">2</InvoicedQuantity><LineExtensionAmount currencyID="EUR">50.00</LineExtensionAmount><Item><Name>Widget</Name><ClassifiedTaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></ClassifiedTaxCategory></Item><Price><PriceAmount currencyID="EUR">25.00</PriceAmount></Price></InvoiceLine>
     </Invoice>"#;
 
     const BIG_BUDGET: u64 = 64 * 1024 * 1024;
@@ -400,7 +401,7 @@ mod tests {
             .expect("infallible");
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let text = body_text(response).await;
-        assert!(text.contains("SpecificationId"), "{text}");
+        assert!(text.contains("BuyerName"), "{text}");
     }
 
     #[tokio::test]

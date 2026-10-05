@@ -774,19 +774,20 @@ mod tests {
 
     #[test]
     fn test_analyze_ubl_to_xrechnung_is_lossless_but_flags_the_optional_feed() {
-        // The pair is structurally sound (UBL maps SpecificationId), yet plain
-        // UBL documents may lack it: the report says so without changing the
-        // verdict, matching the runtime REQUIRED_MISSING behaviour.
+        // The pair is structurally sound (UBL maps BusinessProcessType), yet
+        // plain UBL documents may lack it while XRechnung requires it: the
+        // report says so without changing the verdict, matching the runtime
+        // REQUIRED_MISSING behaviour.
         let report = analyze(Spoke::UblInvoice, Spoke::XrechnungInvoice);
         assert_eq!(report.state, TransformState::Lossless);
         assert!(report.findings.iter().any(|f| matches!(
             f,
-            Finding::OptionalFeed { node, label } if node == "Invoice.CustomizationID" && label == "SpecificationId"
+            Finding::OptionalFeed { node, label } if node == "Invoice.ProfileID" && label == "BusinessProcessType"
         )));
         let text = render_pair(&report);
         assert!(
             text.contains(
-                "SpecificationId — required by `Invoice.CustomizationID`, optional in the source"
+                "BusinessProcessType — required by `Invoice.ProfileID`, optional in the source"
             ),
             "{text}"
         );

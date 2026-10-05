@@ -1672,6 +1672,34 @@ mod tests {
     }
 
     #[test]
+    fn test_constant_in_an_always_present_element_is_written_unconditionally() {
+        // CII's document context: the guideline ID is pinned, the business
+        // process is mapped, and the context element is mandatory. With no
+        // business process the context still exists, so the pinned ID must be
+        // written there rather than waiting for content that never comes.
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.Context]
+            required = true
+
+            [Invoice.Context.Process.ID]
+            type = "identifier"
+            canonical_key = "BusinessProcessType"
+
+            [Invoice.Context.Guideline.ID]
+            type = "identifier"
+            constant = "urn:cen.eu:en16931:2017"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
+        let block = &out[out
+            .find("// constant -> context.guideline.id")
+            .expect("constant block")..];
+        let block = &block[..block.find("\n\n").unwrap_or(block.len())];
+        assert!(!block.contains("is_some_and"), "unguarded: {block}");
+    }
+
+    #[test]
     fn test_generation_is_deterministic() {
         let (ir, hub, source) = compiled();
         assert_eq!(generate_hub(&hub), generate_hub(&hub));

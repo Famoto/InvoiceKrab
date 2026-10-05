@@ -42,10 +42,15 @@ fn test_to_hub_reads_namespaced_xrechnung() {
         hub.payable_amount,
         Some(Decimal::from_str("1190.00").unwrap())
     );
-    assert_eq!(hub.payable_amount_currency.as_deref(), Some("EUR"));
+    // EN 16931 scheme and unit attributes are carried (BT-34-1, BT-130).
+    assert_eq!(hub.seller_electronic_address_scheme.as_deref(), Some("EM"));
 
     assert_eq!(hub.invoice_lines.len(), 2);
     assert_eq!(hub.invoice_lines[0].line_id.as_deref(), Some("1"));
+    assert_eq!(
+        hub.invoice_lines[0].quantity_unit_code.as_deref(),
+        Some("HUR")
+    );
     assert_eq!(
         hub.invoice_lines[0].item_name.as_deref(),
         Some("Beratungsleistung — Senior Consultant")
@@ -158,15 +163,26 @@ fn test_ubl_amounts_carry_the_document_currency_and_tax_schemes_are_pinned() {
 
 #[test]
 fn test_tax_scheme_constant_is_not_written_without_its_owner() {
-    // No PartyTaxScheme/CompanyID anywhere: the constant has nothing to
-    // complete, so no TaxScheme (and no PartyTaxScheme) is emitted.
+    // No PartyTaxScheme/CompanyID anywhere: the party's constant has nothing
+    // to complete, so no PartyTaxScheme is emitted — while the VAT categories,
+    // which have content, each get their TaxScheme.
     let engine = Engine::new();
     let doc = br#"<Invoice>
         <ID>INV-1</ID>
+        <IssueDate>2026-04-15</IssueDate>
+        <InvoiceTypeCode>380</InvoiceTypeCode>
         <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
-        <AccountingSupplierParty><Party><PartyLegalEntity><RegistrationName>Seller</RegistrationName></PartyLegalEntity></Party></AccountingSupplierParty>
-        <LegalMonetaryTotal><PayableAmount currencyID="EUR">1.00</PayableAmount></LegalMonetaryTotal>
-        <InvoiceLine><ID>1</ID><InvoicedQuantity>1</InvoicedQuantity><Item><Name>X</Name></Item></InvoiceLine>
+        <AccountingSupplierParty><Party><PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress>
+          <PartyLegalEntity><RegistrationName>Seller</RegistrationName></PartyLegalEntity></Party></AccountingSupplierParty>
+  <AccountingCustomerParty><Party><PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress>
+          <PartyLegalEntity><RegistrationName>Buyer</RegistrationName></PartyLegalEntity></Party></AccountingCustomerParty>
+        <TaxTotal><TaxAmount currencyID="EUR">19.00</TaxAmount><TaxSubtotal><TaxableAmount currencyID="EUR">100.00</TaxableAmount><TaxAmount currencyID="EUR">19.00</TaxAmount>
+          <TaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></TaxCategory></TaxSubtotal></TaxTotal>
+        <LegalMonetaryTotal><LineExtensionAmount currencyID="EUR">100.00</LineExtensionAmount><TaxExclusiveAmount currencyID="EUR">100.00</TaxExclusiveAmount>
+          <TaxInclusiveAmount currencyID="EUR">119.00</TaxInclusiveAmount><PayableAmount currencyID="EUR">119.00</PayableAmount></LegalMonetaryTotal>
+        <InvoiceLine><ID>1</ID><InvoicedQuantity unitCode="C62">1</InvoicedQuantity><LineExtensionAmount currencyID="EUR">100.00</LineExtensionAmount>
+          <Item><Name>X</Name><ClassifiedTaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></ClassifiedTaxCategory></Item>
+          <Price><PriceAmount currencyID="EUR">100.00</PriceAmount></Price></InvoiceLine>
     </Invoice>"#;
     let out = engine
         .transform(Spoke::UblInvoice, Spoke::UblInvoice, doc)
@@ -177,10 +193,12 @@ fn test_tax_scheme_constant_is_not_written_without_its_owner() {
         xml.contains("<cbc:RegistrationName>Seller</cbc:RegistrationName>"),
         "{xml}"
     );
-    assert!(!xml.contains("TaxScheme"), "{xml}");
-    assert!(
-        !xml.contains("ClassifiedTaxCategory"),
-        "no category, no scheme: {xml}"
+    assert!(!xml.contains("PartyTaxScheme"), "{xml}");
+    assert_eq!(
+        xml.matches("<cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>")
+            .count(),
+        2,
+        "only the subtotal and the line category carry a scheme: {xml}"
     );
 }
 

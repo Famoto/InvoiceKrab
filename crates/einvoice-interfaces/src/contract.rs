@@ -207,7 +207,28 @@ mod tests {
                 .iter()
                 .any(|r| r.node == "InvoiceLine" && r.route == Route::Hub("InvoiceLines"))
         );
-        assert_eq!(c.required_labels(), ["InvoiceLines", "InvoiceNumber"]);
+        // The EN 16931 mandatory terms, including those inside collections.
+        let required = c.required_labels();
+        for label in [
+            "InvoiceNumber",
+            "IssueDate",
+            "SellerName",
+            "BuyerCountryCode",
+            "PayableAmount",
+            "VatBreakdown",
+            "VatBreakdown/VatCategoryCode",
+            "InvoiceLines",
+            "InvoiceLines/QuantityUnitCode",
+            "InvoiceLines/ItemNetPrice",
+        ] {
+            assert!(required.contains(&label), "{label} not in {required:?}");
+        }
+        // The specification identifier is pinned, so it is a constant route.
+        assert!(
+            c.required
+                .iter()
+                .all(|r| r.node != "Invoice.CustomizationID")
+        );
         let object = c
             .selectors
             .iter()
@@ -225,14 +246,20 @@ mod tests {
     }
 
     #[test]
-    fn test_xrechnung_pins_and_requires_the_specification_id() {
+    fn test_xrechnung_pins_the_specification_id_and_requires_the_process() {
         let c = Spoke::XrechnungInvoice.contract();
         let spec = c.key("SpecificationId").expect("mapped");
         assert_eq!(
-            spec.pinned, None,
-            "XRechnung reads the real customization id"
+            spec.pinned,
+            Some("urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0"),
+            "XRechnung writes its own CIUS identifier"
         );
-        assert!(c.required_labels().contains(&"SpecificationId"));
+        assert!(c.required_labels().contains(&"BusinessProcessType"));
+        let peppol = Spoke::PeppolBisBilling.contract();
+        assert_eq!(
+            peppol.key("BusinessProcessType").and_then(|k| k.pinned),
+            Some("urn:fdc:peppol.eu:2017:poacc:billing:01:1.0")
+        );
         let facturx = Spoke::FacturxInvoice.contract();
         let date = facturx.key("IssueDate").expect("mapped");
         assert_eq!(date.codec, Some("cii-date-102"));

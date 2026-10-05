@@ -158,13 +158,14 @@ mod tests {
 
     const UBL: &[u8] = br#"<Invoice>
         <ID>INV-42</ID>
-        <IssueDate>2026-06-27</IssueDate>
+        <IssueDate>2026-06-27</IssueDate><InvoiceTypeCode>380</InvoiceTypeCode>
         <DocumentCurrencyCode>eur</DocumentCurrencyCode>
+        <AccountingSupplierParty><Party><PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress><PartyLegalEntity><RegistrationName>Seller GmbH</RegistrationName></PartyLegalEntity></Party></AccountingSupplierParty><AccountingCustomerParty><Party><PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress><PartyLegalEntity><RegistrationName>Buyer AG</RegistrationName></PartyLegalEntity></Party></AccountingCustomerParty><TaxTotal><TaxAmount currencyID="EUR">19.00</TaxAmount><TaxSubtotal><TaxableAmount currencyID="EUR">100.00</TaxableAmount><TaxAmount currencyID="EUR">19.00</TaxAmount><TaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></TaxCategory></TaxSubtotal></TaxTotal>
         <LegalMonetaryTotal>
-            <PayableAmount currencyID="EUR">119.00</PayableAmount>
+            <LineExtensionAmount currencyID="EUR">100.00</LineExtensionAmount><TaxExclusiveAmount currencyID="EUR">100.00</TaxExclusiveAmount><TaxInclusiveAmount currencyID="EUR">119.00</TaxInclusiveAmount><PayableAmount currencyID="EUR">119.00</PayableAmount>
         </LegalMonetaryTotal>
-        <InvoiceLine><ID>1</ID><InvoicedQuantity>2</InvoicedQuantity><Item><Name>Widget</Name></Item></InvoiceLine>
-        <InvoiceLine><ID>2</ID><InvoicedQuantity>3</InvoicedQuantity><Item><Name>Gadget</Name></Item></InvoiceLine>
+        <InvoiceLine><ID>1</ID><InvoicedQuantity unitCode="C62">2</InvoicedQuantity><LineExtensionAmount currencyID="EUR">50.00</LineExtensionAmount><Item><Name>Widget</Name><ClassifiedTaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></ClassifiedTaxCategory></Item><Price><PriceAmount currencyID="EUR">25.00</PriceAmount></Price></InvoiceLine>
+        <InvoiceLine><ID>2</ID><InvoicedQuantity unitCode="C62">3</InvoicedQuantity><LineExtensionAmount currencyID="EUR">50.00</LineExtensionAmount><Item><Name>Gadget</Name><ClassifiedTaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></ClassifiedTaxCategory></Item><Price><PriceAmount currencyID="EUR">25.00</PriceAmount></Price></InvoiceLine>
     </Invoice>"#;
 
     #[test]
@@ -213,7 +214,17 @@ mod tests {
         let xml = out.value.expect("writer yields a document");
 
         assert!(xml.contains("<cbc:ID>INV-42</cbc:ID>"), "{xml}");
-        assert!(!xml.contains("<cac:AccountingSupplierParty>"), "{xml}");
+        // Containers the source fills nothing in are not emitted, even where a
+        // pinned constant (`PartyTaxScheme/TaxScheme/ID`, `CardAccount/NetworkID`)
+        // could otherwise have conjured them.
+        for empty in [
+            "<cac:PayeeParty",
+            "<cac:Delivery",
+            "<cac:PartyTaxScheme",
+            "<cac:CardAccount",
+        ] {
+            assert!(!xml.contains(empty), "{empty} in {xml}");
+        }
         assert!(!xml.contains("<cbc:TaxAmount/>"), "{xml}");
     }
 
@@ -250,11 +261,13 @@ mod tests {
             .transform(Spoke::UblInvoice, Spoke::XrechnungInvoice, UBL)
             .expect("well-formed");
 
+        // XRechnung pins its own specification identifier (BT-24) but needs
+        // the business process (BT-23) from the source, which this one lacks.
         assert!(result.has_errors());
         assert!(result.diagnostics.iter().any(|d| {
             d.code == "REQUIRED_MISSING"
-                && d.source_node == "Invoice.CustomizationID"
-                && d.canonical_key.as_deref() == Some("SpecificationId")
+                && d.source_node == "Invoice.ProfileID"
+                && d.canonical_key.as_deref() == Some("BusinessProcessType")
         }));
     }
 
@@ -284,15 +297,13 @@ mod tests {
         // values into the single canonical `InvoiceNote`, and the writer emits
         // the joined value back as one element.
         let engine = Engine::new();
-        let xml = br#"<Invoice>
-            <ID>INV-42</ID>
-            <Note>first note</Note>
-            <Note>  second note </Note>
-            <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
-            <LegalMonetaryTotal><PayableAmount currencyID="EUR">1.00</PayableAmount></LegalMonetaryTotal>
-            <InvoiceLine><ID>1</ID><InvoicedQuantity>1</InvoicedQuantity><Item><Name>X</Name></Item></InvoiceLine>
-        </Invoice>"#;
-        let result = engine.to_hub(Spoke::UblInvoice, xml).expect("well-formed");
+        let xml = String::from_utf8(UBL.to_vec()).unwrap().replace(
+            "<DocumentCurrencyCode>",
+            "<Note>first note</Note><Note>  second note </Note><DocumentCurrencyCode>",
+        );
+        let result = engine
+            .to_hub(Spoke::UblInvoice, xml.as_bytes())
+            .expect("well-formed");
         assert!(!result.has_errors(), "{:?}", result.diagnostics);
         let hub = result.value.expect("hub");
         assert_eq!(
