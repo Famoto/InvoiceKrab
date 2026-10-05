@@ -13,6 +13,11 @@
 //! / `$root.Key` clone compares against the enclosing scope's / the root's
 //! value, which is final by then (outer scalars are assigned before the loops).
 //!
+//! When the mapping aliases physical elements (`match` selectors), the source
+//! is `demux`ed first: each physical element's items are sorted into the
+//! logical fields the nodes read, and a single-valued logical node that matched
+//! several items warns `MATCH_MULTIPLE` and keeps the first.
+//!
 //! The reader **consumes** the source struct: paths read exactly once move
 //! their `String`s into the hub (`take`), so a large document's text is not
 //! duplicated. Paths read more than once in a scope — a primary that is also a
@@ -98,6 +103,19 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
     );
     out.push_str("    let mut diagnostics: Vec<MappingDiagnostic> = Vec::new();\n");
     out.push_str("    let mut main = MainKey::default();\n");
+    if super::source::root_has_alias_io(ctx.source) {
+        // Aliased elements: sort every physical element's items into the
+        // logical fields the mapping reads, warning when a single-valued
+        // logical node matched more than one item.
+        out.push_str("    source.demux(&mut |node, extra| {\n");
+        out.push_str("        diagnostics.push(MappingDiagnostic::new(\n");
+        out.push_str("            Severity::Warning,\n");
+        out.push_str("            \"MATCH_MULTIPLE\",\n");
+        out.push_str("            node,\n");
+        out.push_str("            format!(\"{extra} more item(s) match the node's selector; only the first is read\"),\n");
+        out.push_str("        ));\n");
+        out.push_str("    });\n");
+    }
 
     let shared = shared_read_paths(
         ctx,

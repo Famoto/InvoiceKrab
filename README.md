@@ -289,7 +289,9 @@ an `EngineError` only means the XML could not be parsed or rendered at all.
   language (`YYYYMMDD` plus `format="102"`) and reused by every mapping.
 - **Declarative TOML mappings.** A format is described by data, not code. The
   node ids mirror the XML element tree, so you describe *what* maps where, never
-  *how* to walk the document.
+  *how* to walk the document. One element reused for several business terms
+  (CII's `AdditionalReferencedDocument` by `TypeCode`) is split with a `match`
+  selector, read by partition and written back with its discriminators.
 - **Mapping inheritance.** A CIUS spoke inherits its base syntax's whole tree
   and restates only its deltas. A base can be inherit-only
   (`[meta].disabled = true`) so it never emits a spoke itself.

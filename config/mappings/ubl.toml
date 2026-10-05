@@ -35,13 +35,13 @@
 #
 # Remaining notes (DSL conventions, see crates/einvoice-dsl), shared with the
 # other UBL-syntax spokes:
-#   * Sibling elements distinguished only by an attribute/child value are not
-#     split by a predicate. The VAT `PartyTaxScheme` is mapped (BT-31/BT-48); a
-#     second `tax registration` scheme (BT-32) would need either a predicate or
-#     modelling `PartyTaxScheme` as its own collection. Document- and line-level
-#     `AllowanceCharge` are single collections that carry the `ChargeIndicator`
-#     (true = charge BG-21/BG-28, false = allowance BG-20/27), so allowance vs
-#     charge is preserved as data rather than as two named groups.
+#   * Sibling elements distinguished only by a child value are split with a
+#     `match` selector: the seller's `PartyTaxScheme` elements by `TaxScheme/ID`
+#     (`VAT` → BT-31, `FC` → BT-32), and `AdditionalDocumentReference` by
+#     `DocumentTypeCode` (`130` → BT-18, the rest → BG-24). Document- and
+#     line-level `AllowanceCharge` are single collections that carry the
+#     `ChargeIndicator` (true = charge BG-21/BG-28, false = allowance BG-20/27),
+#     so allowance vs charge is preserved as data rather than as two named groups.
 #   * Amounts/quantities map as scale-preserving decimals. UBL requires
 #     `@currencyID` on every amount: the `PayableAmount`/`TaxTotalAmount`
 #     attributes carry their own canonical keys, every other amount's attribute
@@ -54,7 +54,7 @@
 [meta]
 doc_format = "ubl-invoice"
 format_version = "2.1"
-mapping_version = "2.3"
+mapping_version = "2.4"
 source_model = "ubl-invoice:2.1"
 canonical_model = "canonical-invoice:1.0"
 root = "Invoice"
@@ -183,8 +183,14 @@ type = "identifier"
 canonical_key = "ContractReference"
 
 # ===========================================================================
-# ADDITIONAL SUPPORTING DOCUMENTS (BG-24) — collection
+# ADDITIONAL SUPPORTING DOCUMENTS (BG-24) — collection — and the
+# INVOICED OBJECT IDENTIFIER (BT-18): both are `AdditionalDocumentReference`.
 # ===========================================================================
+# BT-18 is the one reference carrying `DocumentTypeCode` 130; every other
+# reference is a supporting document. The supporting-documents collection has
+# no selector, so it takes what the `130` node does not. `DocumentTypeCode` is
+# declared here, under the first logical node, in its sequence position (after
+# `ID`): the shared item struct follows the first declaration of each child.
 [Invoice.AdditionalDocumentReference]
 type = "collection"
 canonical_key = "SupportingDocuments"
@@ -192,6 +198,10 @@ canonical_key = "SupportingDocuments"
 [Invoice.AdditionalDocumentReference.ID]
 type = "identifier"
 canonical_key = "SupportingDocumentReference"
+
+[Invoice.AdditionalDocumentReference.DocumentTypeCode]
+type = "string"
+description = "Reference discriminator (130 = invoiced object); read by the `match` selectors."
 
 [Invoice.AdditionalDocumentReference.DocumentDescription]
 type = "string"
@@ -204,6 +214,14 @@ canonical_key = "AttachedDocument"
 [Invoice.AdditionalDocumentReference.Attachment.ExternalReference.URI]
 type = "string"
 canonical_key = "ExternalDocumentLocation"
+
+[Invoice.InvoicedObjectReference]
+xml = "AdditionalDocumentReference"
+match = { "DocumentTypeCode" = "130" }
+
+[Invoice.InvoicedObjectReference.ID]
+type = "identifier"
+canonical_key = "InvoicedObjectIdentifier"
 
 # BT-11 project reference — follows the supporting documents in the UBL sequence.
 [Invoice.ProjectReference.ID]
@@ -254,6 +272,12 @@ type = "string"
 canonical_key = "SellerCountryCode"
 normalize = ["trim", "uppercase"]
 
+# BT-31 / BT-32: the seller may carry two `PartyTaxScheme` elements, told apart
+# by `TaxScheme/ID`. Each is a structural node with a `match` selector on the
+# same physical element; the selector value is written back as the scheme id.
+[Invoice.AccountingSupplierParty.Party.PartyTaxScheme]
+match = { "TaxScheme.ID" = "VAT" }
+
 [Invoice.AccountingSupplierParty.Party.PartyTaxScheme.CompanyID]
 type = "identifier"
 canonical_key = "SellerVatIdentifier"
@@ -261,7 +285,16 @@ normalize = ["trim"]
 
 [Invoice.AccountingSupplierParty.Party.PartyTaxScheme.TaxScheme.ID]
 type = "identifier"
-constant = "VAT"
+description = "Scheme discriminator; written from the `match` selector."
+
+[Invoice.AccountingSupplierParty.Party.SellerTaxRegistration]
+xml = "PartyTaxScheme"
+match = { "TaxScheme.ID" = "FC" }
+
+[Invoice.AccountingSupplierParty.Party.SellerTaxRegistration.CompanyID]
+type = "identifier"
+canonical_key = "SellerTaxRegistrationIdentifier"
+normalize = ["trim"]
 
 [Invoice.AccountingSupplierParty.Party.PartyLegalEntity.RegistrationName]
 type = "string"

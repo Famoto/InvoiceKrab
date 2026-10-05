@@ -5,6 +5,21 @@
 //! every node's `source_path` are derived here from the node ids, their
 //! `type`/`required`/`xml`, and `[meta].root` — no separate `[source]` tree.
 //! Codegen then emits the source structs from the same [`SourceModelMeta`].
+//!
+//! # Physical-element aliasing
+//!
+//! A collection or structural node may bind a physical element other than its
+//! own id segment (`xml = "AdditionalReferencedDocument"`) and/or restrict
+//! itself to the occurrences a `match` selector picks. Every such *logical*
+//! node, and every other node bound to the same element, is an **alias** of
+//! that element: the element is synthesized once as a repeated *physical* field
+//! (`all_additional_referenced_document: Vec<Item>`, the item struct being the
+//! union of every logical node's children) plus one *logical* field per logical
+//! node (`tender_or_lot_referenced_document: Option<Box<Item>>` for a
+//! structural node, `Vec<Item>` for a collection) carrying an [`AliasBinding`].
+//! Logical fields are what the nodes' `source_path`s run through; the generated
+//! reader fills them from the physical field by selector and the writer drains
+//! them back, writing the selector values as discriminators.
 
 use std::collections::BTreeMap;
 
@@ -13,7 +28,7 @@ use crate::error::{Diagnostic, Severity};
 use crate::node::{NodeId, RawNode, Scope};
 use crate::types::MappingType;
 
-use super::meta::{FieldMeta, FieldType, NamespaceMeta, SourceModelMeta, StructMeta};
+use super::meta::{AliasBinding, FieldMeta, FieldType, NamespaceMeta, SourceModelMeta, StructMeta};
 
 /// The namespace configuration synthesis works from: the effective `[meta]`
 /// entries `root_ns`, `[meta.ns_defaults]` and `[meta.namespaces]` (after
@@ -58,8 +73,9 @@ impl NamespaceConfig {
 ///   `$text` `value` field plus its descendants' fields); a leaf without
 ///   descendants is a scalar field; a `collection` node is a `Vec<Item>` field.
 /// - Every interior element, valued container and collection item gets its own
-///   struct, named from its element path (`InvoiceLineItem`), so same-named
-///   elements under different parents never share a struct or a field order.
+///   struct, named from its *physical* element path (`InvoiceLineItem`), so
+///   same-named elements under different parents never share a struct or a
+///   field order, while logical nodes aliasing one element do share its struct.
 /// - Every scalar leaf is `Option<String>` (or `Vec<String>` with `multiple`);
 ///   `required` is enforced by the generated reader/writer as a
 ///   `REQUIRED_MISSING` diagnostic, never by failing deserialization.
@@ -73,21 +89,27 @@ impl NamespaceConfig {
 ///   and the `aggregate` default for interior and collection elements. An
 ///   interior element named by a *structural node* (`ns` only, no `type`)
 ///   takes that node's `ns`. Attributes and `$text` are never prefixed.
-///
 /// - A node whose `codec` carries *wire attributes* (`wire = { "@format" =
 ///   "102" }`) is a valued container even without descendants: its struct gets
 ///   one attribute field per wire attribute, which the writer sets alongside
 ///   the encoded value.
 /// - An interior element named by a structural node with `required = true` is
 ///   flagged `always_present`: the writer materializes it even when empty.
+/// - A collection or structural node with a `match` selector, or sharing its
+///   physical element with another such node, becomes a *logical* field next
+///   to the element's one repeated *physical* field (see the module docs).
 ///
 /// Namespace diagnostics (all errors): `E080` a prefix used by `root_ns`, the
 /// defaults, or a node's `ns` is not declared in `[meta.namespaces]`; `E081`
 /// `ns` on an attribute or `$text` leaf; `E083` a structural node that names no
-/// element (no typed node beneath it, or the root, whose prefix is `root_ns`).
-/// Codec diagnostic: `E087` a wire attribute that collides with an attribute
-/// node the mapping declares on the same element. (Unknown codec ids and type
-/// mismatches are the validator's E084/E085.)
+/// element (no typed node beneath it, an attribute or `$text` binding, or the
+/// root, whose prefix is `root_ns`). Codec diagnostic: `E087` a wire attribute
+/// that collides with an attribute node the mapping declares on the same
+/// element. (Unknown codec ids and type mismatches are the validator's
+/// E084/E085.) Aliasing diagnostics: `E090` two logical nodes of one element
+/// whose selectors can both match an item (or two without a selector); `E091`
+/// `match` on a scalar node; `E092` a selector key that does not name a single
+/// scalar declared beneath the element's logical nodes.
 ///
 /// This entry point uses the default [`NamespaceConfig`] (nothing prefixed or
 /// declared) and no codecs; [`synthesize_source_model_with`] takes the
@@ -122,6 +144,14 @@ pub fn synthesize_source_model_with(
 
     check_namespace_meta(ns, &mut diags);
 
+    let ctx = Ctx {
+        active,
+        ns,
+        codecs,
+        root,
+        aliases: Aliases::collect(active, root),
+    };
+
     // Collection nodes define scopes (and item structs). Build the lookup first
     // so every node's scope and base struct can be computed.
     let collections: BTreeMap<NodeId, MappingType> = active
@@ -144,16 +174,22 @@ pub fn synthesize_source_model_with(
         }
         let Some(ty) = node.ty else {
             // Untyped tables are containers inferred from descendant ids, not
-            // standalone nodes; nothing to place. A structural node (`ns` only)
-            // is consumed when the interior field it names is created — unless
-            // nothing is beneath it, which is an authoring error. (A
-            // disabled-only override has already been removed before synthesis.)
+            // standalone nodes; nothing to place. A structural node is consumed
+            // when the interior field it names is created — unless nothing is
+            // beneath it, which is an authoring error. (A disabled-only
+            // override has already been removed before synthesis.)
             if node.is_structural() {
                 if id.as_str() == root {
                     diags.push(diag(
                         "E083",
                         Some(id),
                         format!("structural node `{id}` names the root element; set `[meta].root_ns` instead"),
+                    ));
+                } else if node.xml.as_deref().is_some_and(is_leaf_binding) {
+                    diags.push(diag(
+                        "E083",
+                        Some(id),
+                        format!("structural node `{id}` must bind an element: `xml` names an attribute or `$text`"),
                     ));
                 } else if !has_descendant(active, id) {
                     diags.push(diag(
@@ -165,8 +201,15 @@ pub fn synthesize_source_model_with(
             }
             continue;
         };
+        if node.match_.is_some() && ty != MappingType::Collection {
+            diags.push(diag(
+                "E091",
+                Some(id),
+                format!("`match` on scalar node `{id}`: a selector belongs on a collection or structural node"),
+            ));
+        }
         let scope = id.nearest_collection_scope(|a| collections.contains_key(a));
-        let base = scope_struct(&scope, root);
+        let base = ctx.scope_struct(&scope);
         let segments = element_path(id, &scope, root);
         if segments.is_empty() {
             diags.push(synth_err(
@@ -176,24 +219,15 @@ pub fn synthesize_source_model_with(
             continue;
         }
 
-        match insert_node(
-            &mut structs,
-            &base,
-            &segments,
-            node,
-            ty,
-            active,
-            id,
-            ns,
-            codecs,
-            root,
-        ) {
+        match insert_node(&mut structs, &base, &segments, node, ty, id, &ctx) {
             Ok(path) => {
                 source_paths.insert(id.clone(), path);
             }
             Err((code, msg)) => diags.push(diag(code, Some(id), msg)),
         }
     }
+
+    check_selectors(&mut structs, &ctx, &mut diags);
 
     (
         SourceModelMeta {
@@ -208,6 +242,12 @@ pub fn synthesize_source_model_with(
         source_paths,
         diags,
     )
+}
+
+/// Whether an `xml` binding names an attribute or the element text rather than
+/// an element.
+fn is_leaf_binding(xml: &str) -> bool {
+    xml.starts_with('@') || xml == "$text"
 }
 
 /// `E080` for the `[meta]`-level prefixes (`root_ns`, `ns_defaults`) that are
@@ -225,6 +265,182 @@ fn check_namespace_meta(ns: &NamespaceConfig, diags: &mut Vec<Diagnostic>) {
                 format!("`[meta].{what}` uses namespace prefix `{prefix}`, which `[meta.namespaces]` does not declare"),
             ));
         }
+    }
+}
+
+/// The invariant inputs of one synthesis run.
+struct Ctx<'a> {
+    active: &'a BTreeMap<NodeId, RawNode>,
+    ns: &'a NamespaceConfig,
+    codecs: &'a CodecTable,
+    root: &'a str,
+    aliases: Aliases,
+}
+
+impl Ctx<'_> {
+    /// The struct a scope's nodes are placed into: the model root for root
+    /// scope, or the collection's item struct for a collection scope.
+    fn scope_struct(&self, scope: &Scope) -> String {
+        match scope {
+            Scope::Root => self.root.to_string(),
+            Scope::Collection(coll) => self.element_struct(coll),
+        }
+    }
+
+    /// The struct of the element a node id names, by its physical path.
+    fn element_struct(&self, id: &NodeId) -> String {
+        struct_name_for(&self.aliases.physical_id(id), self.root)
+    }
+}
+
+/// One logical node's binding to its physical element.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Alias {
+    /// Id of the physical element (the parent id plus the element name).
+    physical: NodeId,
+    /// XML local name of the physical element.
+    xml: String,
+    /// The raw selector (child paths → text), `None` for the default bucket.
+    selector: Option<BTreeMap<String, String>>,
+    /// Declaration position of the logical node (orders siblings for E090).
+    position: usize,
+}
+
+impl Alias {
+    /// The Rust name of the physical field holding every occurrence.
+    fn physical_field(&self) -> String {
+        format!("all_{}", snake_case(&self.xml))
+    }
+
+    /// The binding stored on the logical field; its selector is in raw key form
+    /// until [`check_selectors`] resolves it to item field paths.
+    fn binding(&self, node: &NodeId) -> AliasBinding {
+        AliasBinding {
+            physical: self.physical_field(),
+            node: node.to_string(),
+            selector: self
+                .selector
+                .iter()
+                .flatten()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        }
+    }
+}
+
+/// The aliasing structure of a mapping: which element-level nodes rename their
+/// element, and which are logical nodes of a shared physical element.
+#[derive(Debug, Default)]
+struct Aliases {
+    /// Collection / structural nodes with an `xml` element name: id → name.
+    renames: BTreeMap<NodeId, String>,
+    /// Logical nodes (an element bound by several nodes, or by a selector).
+    logical: BTreeMap<NodeId, Alias>,
+    /// The logical nodes of each physical element id, in declaration order.
+    by_physical: BTreeMap<NodeId, Vec<NodeId>>,
+}
+
+impl Aliases {
+    /// Groups every collection and structural node by the physical element it
+    /// binds; a group with more than one node, or with any selector, is aliased.
+    fn collect(active: &BTreeMap<NodeId, RawNode>, root: &str) -> Self {
+        let mut renames = BTreeMap::new();
+        let mut groups: BTreeMap<NodeId, Vec<(&NodeId, &RawNode)>> = BTreeMap::new();
+        for (id, node) in active {
+            let element_level = node.ty == Some(MappingType::Collection) || node.is_structural();
+            if !element_level || id.as_str() == root {
+                continue;
+            }
+            let own = id.segments().last().unwrap_or_default().to_string();
+            let xml = match node.xml.as_deref() {
+                Some(xml) if !is_leaf_binding(xml) => xml.to_string(),
+                _ => own.clone(),
+            };
+            if xml != own {
+                renames.insert(id.clone(), xml.clone());
+            }
+            let physical = match id.parent() {
+                Some(parent) => NodeId::new(format!("{parent}.{xml}")),
+                None => NodeId::new(xml),
+            };
+            groups.entry(physical).or_default().push((id, node));
+        }
+        let mut logical = BTreeMap::new();
+        let mut by_physical = BTreeMap::new();
+        for (physical, mut members) in groups {
+            if members.len() < 2 && members.iter().all(|(_, n)| n.match_.is_none()) {
+                continue;
+            }
+            members.sort_by_key(|(_, n)| n.position);
+            let xml = physical.segments().last().unwrap_or_default().to_string();
+            let mut ids = Vec::new();
+            for (id, node) in members {
+                logical.insert(
+                    id.clone(),
+                    Alias {
+                        physical: physical.clone(),
+                        xml: xml.clone(),
+                        selector: node.match_.clone(),
+                        position: node.position,
+                    },
+                );
+                ids.push(id.clone());
+            }
+            by_physical.insert(physical, ids);
+        }
+        Self {
+            renames,
+            logical,
+            by_physical,
+        }
+    }
+
+    /// The ids that name the same physical element path as `id` from the point
+    /// of view of the logical nodes sharing its nearest aliased ancestor: `id`
+    /// itself, plus `id` with that ancestor swapped for each of its logical
+    /// siblings. Children of logical nodes of one element land in one union
+    /// item struct, so whether an element has children is decided across all
+    /// of them.
+    fn equivalents(&self, id: &NodeId) -> Vec<NodeId> {
+        let segs: Vec<&str> = id.segments().collect();
+        let mut out = vec![id.clone()];
+        for len in (1..segs.len()).rev() {
+            let prefix = NodeId::new(segs[..len].join("."));
+            let Some(alias) = self.logical.get(&prefix) else {
+                continue;
+            };
+            let rest = segs[len..].join(".");
+            for sibling in self.by_physical.get(&alias.physical).into_iter().flatten() {
+                if *sibling != prefix {
+                    out.push(NodeId::new(format!("{sibling}.{rest}")));
+                }
+            }
+            break;
+        }
+        out
+    }
+
+    /// The id of the physical element path a node id denotes: every segment
+    /// that is a renamed or aliased element-level node is replaced by the
+    /// element's XML name. Struct names derive from this, so logical nodes of
+    /// one element share its struct (and their descendants share its
+    /// interior structs).
+    fn physical_id(&self, id: &NodeId) -> NodeId {
+        let mut prefix = String::new();
+        let mut out: Vec<String> = Vec::new();
+        for seg in id.segments() {
+            if !prefix.is_empty() {
+                prefix.push('.');
+            }
+            prefix.push_str(seg);
+            let name = self
+                .renames
+                .get(&NodeId::new(prefix.as_str()))
+                .cloned()
+                .unwrap_or_else(|| seg.to_string());
+            out.push(name);
+        }
+        NodeId::new(out.join("."))
     }
 }
 
@@ -246,13 +462,15 @@ fn element_prefix(
     }
 }
 
-/// The struct a scope's nodes are placed into: the model root for root scope, or
-/// the collection's item struct for a collection scope.
-fn scope_struct(scope: &Scope, root: &str) -> String {
-    match scope {
-        Scope::Root => root.to_string(),
-        Scope::Collection(coll) => struct_name_for(coll, root),
-    }
+/// The XML local name an interior element at `element_id` is written as: the
+/// node's own element `xml` rename when it has one, else its id segment.
+fn element_xml_name(active: &BTreeMap<NodeId, RawNode>, element_id: &NodeId, seg: &str) -> String {
+    active
+        .get(element_id)
+        .and_then(|n| n.xml.as_deref())
+        .filter(|xml| !is_leaf_binding(xml))
+        .unwrap_or(seg)
+        .to_string()
 }
 
 /// The struct name of the element at `id`: the CamelCase of its id segments
@@ -262,7 +480,7 @@ fn scope_struct(scope: &Scope, root: &str) -> String {
 /// so two elements that share a local name (CII's header and line
 /// `ApplicableTradeTax`) never share a struct, and each keeps its own field
 /// order. Collection item structs are named the same way from the collection's
-/// id.
+/// id. Callers pass the *physical* id ([`Aliases::physical_id`]).
 fn struct_name_for(id: &NodeId, root: &str) -> String {
     let mut segs = id.segments().peekable();
     if segs.peek() == Some(&root) && id.segments().count() > 1 {
@@ -297,40 +515,40 @@ fn element_path(id: &NodeId, scope: &Scope, root: &str) -> Vec<String> {
 /// path relative to its scope struct).
 ///
 /// `base` names the scope struct; `segments` is the element path within it;
-/// `ns` supplies the default prefixes and the declared namespaces. Compatible
-/// existing fields keep the earliest contributing node position.
+/// `ctx` supplies the other nodes, the namespace defaults, the codecs and the
+/// aliasing structure. Compatible existing fields keep the earliest
+/// contributing node position.
 ///
 /// # Errors
 ///
 /// Returns `(code, message)`: `E024` for incompatible field bindings or
 /// `multiple` on a collection, attribute, `$text` leaf, or valued container;
-/// `E081` for `ns` on an attribute or `$text` leaf. Earlier changes to
-/// `structs` are retained on error. The caller turns these into diagnostics and
-/// continues processing other nodes.
+/// `E081` for `ns` on an attribute or `$text` leaf; `E087` for a codec wire
+/// attribute colliding with a declared attribute node. Earlier changes to
+/// `structs` are retained on error. The caller turns these into diagnostics
+/// and continues processing other nodes.
 ///
 /// # Panics
 ///
 /// Panics if `segments` is empty.
-#[allow(clippy::too_many_arguments)]
 fn insert_node(
     structs: &mut BTreeMap<String, StructMeta>,
     base: &str,
     segments: &[String],
     node: &RawNode,
     ty: MappingType,
-    active: &BTreeMap<NodeId, RawNode>,
     id: &NodeId,
-    ns: &NamespaceConfig,
-    codecs: &CodecTable,
-    root: &str,
+    ctx: &Ctx,
 ) -> Result<String, (&'static str, String)> {
+    let active = ctx.active;
+    let ns = ctx.ns;
     let e024 = |msg: String| ("E024", msg);
     // The codec's wire attributes, if the node names a known codec that has
     // any: they make the element a valued container with attribute fields.
     let wire: Vec<&String> = node
         .codec
         .as_deref()
-        .and_then(|c| codecs.get(c))
+        .and_then(|c| ctx.codecs.get(c))
         .map(|c| c.wire.keys().collect())
         .unwrap_or_default();
     // The node's own prefix: its `ns`, else the default for its kind.
@@ -347,24 +565,47 @@ fn insert_node(
     for (i, seg) in segments[..segments.len() - 1].iter().enumerate() {
         let field = snake_case(seg);
         let interior_id = NodeId::new(all[..stripped + i + 1].join("."));
-        let struct_name = struct_name_for(&interior_id, root);
-        upsert_field(
-            structs,
-            &current,
-            &field,
-            FieldMeta {
+        let struct_name = ctx.element_struct(&interior_id);
+        let always_present = active
+            .get(&interior_id)
+            .is_some_and(RawNode::is_always_present);
+        let meta = match ctx.aliases.logical.get(&interior_id) {
+            // A logical structural node: the element's physical field holds
+            // every occurrence; this node's own field holds the one it selects.
+            Some(alias) => {
+                upsert_physical(
+                    structs,
+                    &current,
+                    alias,
+                    &interior_id,
+                    &struct_name,
+                    node,
+                    ctx,
+                )
+                .map_err(e024)?;
+                FieldMeta {
+                    optional: false,
+                    repeated: false,
+                    ty: FieldType::Struct(struct_name.clone()),
+                    xml: None,
+                    prefix: String::new(),
+                    always_present,
+                    order: node.position,
+                    alias: Some(alias.binding(&interior_id)),
+                }
+            }
+            None => FieldMeta {
                 optional: false,
                 repeated: false,
                 ty: FieldType::Struct(struct_name.clone()),
-                xml: Some(seg.clone()),
+                xml: Some(element_xml_name(active, &interior_id, seg)),
                 prefix: element_prefix(active, &interior_id, ns),
-                always_present: active
-                    .get(&interior_id)
-                    .is_some_and(RawNode::is_always_present),
+                always_present,
                 order: node.position,
+                alias: None,
             },
-        )
-        .map_err(e024)?;
+        };
+        upsert_field(structs, &current, &field, meta).map_err(e024)?;
         structs.entry(struct_name.clone()).or_default();
         path_parts.push(field);
         current = struct_name;
@@ -391,23 +632,35 @@ fn insert_node(
             ));
         }
         let field = snake_case(last);
-        let item = struct_name_for(id, root);
-        let rename = node.xml.clone().unwrap_or_else(|| last.clone());
-        upsert_field(
-            structs,
-            &current,
-            &field,
-            FieldMeta {
+        let item = ctx.element_struct(id);
+        let meta = match ctx.aliases.logical.get(id) {
+            // A logical collection: its items are the physical element's
+            // occurrences its selector picks.
+            Some(alias) => {
+                upsert_physical(structs, &current, alias, id, &item, node, ctx).map_err(e024)?;
+                FieldMeta {
+                    optional: false,
+                    repeated: true,
+                    ty: FieldType::Struct(item.clone()),
+                    xml: None,
+                    prefix: String::new(),
+                    always_present: false,
+                    order: node.position,
+                    alias: Some(alias.binding(id)),
+                }
+            }
+            None => FieldMeta {
                 optional: false,
                 repeated: true,
                 ty: FieldType::Struct(item.clone()),
-                xml: Some(rename),
+                xml: Some(node.xml.clone().unwrap_or_else(|| last.clone())),
                 prefix: own_prefix(&ns.aggregate_prefix),
                 always_present: false,
                 order: node.position,
+                alias: None,
             },
-        )
-        .map_err(e024)?;
+        };
+        upsert_field(structs, &current, &field, meta).map_err(e024)?;
         structs.entry(item).or_default();
         path_parts.push(field);
         return Ok(path_parts.join("."));
@@ -443,6 +696,7 @@ fn insert_node(
                 prefix: String::new(),
                 always_present: false,
                 order: node.position,
+                alias: None,
             },
         )
         .map_err(e024)?;
@@ -477,6 +731,7 @@ fn insert_node(
                 prefix: String::new(),
                 always_present: false,
                 order: node.position,
+                alias: None,
             },
         )
         .map_err(e024)?;
@@ -488,7 +743,13 @@ fn insert_node(
     // a *valued container*: its own value is the element text, carried by a
     // `$text` `value` field inside a struct that also holds its descendants
     // (e.g. an `@currencyID` attribute) and the wire attributes.
-    if has_descendant(active, id) || !wire.is_empty() {
+    if ctx
+        .aliases
+        .equivalents(id)
+        .iter()
+        .any(|eq| has_descendant(active, eq))
+        || !wire.is_empty()
+    {
         if multi {
             return Err(e024(
                 "`multiple` is not valid on a valued container (model the repetition as a collection instead)"
@@ -496,7 +757,7 @@ fn insert_node(
             ));
         }
         let field = snake_case(last);
-        let struct_name = struct_name_for(id, root);
+        let struct_name = ctx.element_struct(id);
         let rename = node.xml.clone().unwrap_or_else(|| last.clone());
         upsert_field(
             structs,
@@ -510,6 +771,7 @@ fn insert_node(
                 prefix: own_prefix(&ns.leaf_prefix),
                 always_present: false,
                 order: node.position,
+                alias: None,
             },
         )
         .map_err(e024)?;
@@ -526,6 +788,7 @@ fn insert_node(
                 prefix: String::new(),
                 always_present: false,
                 order: node.position,
+                alias: None,
             },
         )
         .map_err(e024)?;
@@ -552,6 +815,7 @@ fn insert_node(
                     prefix: String::new(),
                     always_present: false,
                     order: node.position,
+                    alias: None,
                 },
             )
             .map_err(e024)?;
@@ -578,11 +842,209 @@ fn insert_node(
             prefix: own_prefix(&ns.leaf_prefix),
             always_present: false,
             order: node.position,
+            alias: None,
         },
     )
     .map_err(e024)?;
     path_parts.push(field);
     Ok(path_parts.join("."))
+}
+
+/// Ensures the physical repeated field of an aliased element exists on struct
+/// `parent`: `all_<element>: Vec<Item>`, written with the logical node's `ns`
+/// or the aggregate default. Every logical node's descendants pass through
+/// here, so the field takes the earliest contributing position.
+fn upsert_physical(
+    structs: &mut BTreeMap<String, StructMeta>,
+    parent: &str,
+    alias: &Alias,
+    logical_id: &NodeId,
+    item: &str,
+    contributing: &RawNode,
+    ctx: &Ctx,
+) -> Result<(), String> {
+    upsert_field(
+        structs,
+        parent,
+        &alias.physical_field(),
+        FieldMeta {
+            optional: false,
+            repeated: true,
+            ty: FieldType::Struct(item.to_string()),
+            xml: Some(alias.xml.clone()),
+            prefix: element_prefix(ctx.active, logical_id, ctx.ns),
+            always_present: false,
+            order: contributing.position,
+            alias: None,
+        },
+    )
+    .map_err(|msg| {
+        format!(
+            "{msg}: the logical nodes of `{}` must agree on `ns`",
+            alias.xml
+        )
+    })?;
+    structs.entry(item.to_string()).or_default();
+    Ok(())
+}
+
+/// Resolves every logical field's selector against its item struct (`E092`
+/// when a key names nothing, something repeated, or an element with children
+/// but no text), rewriting the keys to item field paths for codegen, and
+/// checks that the logical nodes of each element are disjoint (`E090`).
+fn check_selectors(
+    structs: &mut BTreeMap<String, StructMeta>,
+    ctx: &Ctx,
+    diags: &mut Vec<Diagnostic>,
+) {
+    // E090: pairwise over the logical nodes of each physical element.
+    for ids in ctx.aliases.by_physical.values() {
+        for (i, later) in ids.iter().enumerate() {
+            let later_alias = &ctx.aliases.logical[later];
+            for earlier in &ids[..i] {
+                let earlier_alias = &ctx.aliases.logical[earlier];
+                if selectors_overlap(earlier_alias, later_alias) {
+                    let what = match (&earlier_alias.selector, &later_alias.selector) {
+                        (None, None) => "neither has a `match` selector, so both would take every unmatched item".to_string(),
+                        _ => "their `match` selectors share no key with different values, so one item could satisfy both".to_string(),
+                    };
+                    diags.push(diag(
+                        "E090",
+                        Some(later),
+                        format!(
+                            "logical nodes `{earlier}` and `{later}` both bind `{}` but overlap: {what}",
+                            later_alias.xml
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    // E092: resolve each selector key to a scalar field path in the item.
+    let logical_fields: Vec<(String, String, String, AliasBinding)> = structs
+        .iter()
+        .flat_map(|(st, meta)| {
+            meta.fields.iter().filter_map(move |(name, f)| {
+                let alias = f.alias.clone()?;
+                let FieldType::Struct(item) = &f.ty else {
+                    return None;
+                };
+                Some((st.clone(), name.clone(), item.clone(), alias))
+            })
+        })
+        .collect();
+    for (st, name, item, alias) in logical_fields {
+        let node = NodeId::new(alias.node.as_str());
+        let raw = ctx
+            .aliases
+            .logical
+            .get(&node)
+            .and_then(|a| a.selector.as_ref());
+        let Some(raw) = raw else {
+            continue;
+        };
+        if raw.is_empty() {
+            diags.push(diag(
+                "E092",
+                Some(&node),
+                format!("`match` on `{node}` is empty; name at least one child value to select by"),
+            ));
+            continue;
+        }
+        let mut resolved = Vec::new();
+        for (key, value) in raw {
+            match resolve_selector_key(structs, &item, key) {
+                Ok(path) => resolved.push((path, value.clone())),
+                Err(reason) => diags.push(diag(
+                    "E092",
+                    Some(&node),
+                    format!("`match` key `{key}` on `{node}` does not resolve: {reason}"),
+                )),
+            }
+        }
+        if let Some(field) = structs.get_mut(&st).and_then(|m| m.fields.get_mut(&name))
+            && let Some(binding) = field.alias.as_mut()
+        {
+            binding.selector = resolved;
+        }
+    }
+}
+
+/// Whether two logical nodes of one element could claim the same item: both
+/// without a selector, or neither selector naming a key the other gives a
+/// different value.
+fn selectors_overlap(a: &Alias, b: &Alias) -> bool {
+    match (&a.selector, &b.selector) {
+        (None, None) => true,
+        (Some(a), Some(b)) => !a
+            .iter()
+            .any(|(key, value)| b.get(key).is_some_and(|other| other != value)),
+        _ => false,
+    }
+}
+
+/// Resolves a selector key (`TypeCode`, `TaxScheme.ID`, `ID.@schemeID`,
+/// `@schemeID`, `$text`) against the item struct to the dotted field path of
+/// the scalar it names. Segments are matched by XML binding, so attributes and
+/// text need no snake-casing by the author; a valued container resolves to its
+/// `value`.
+fn resolve_selector_key(
+    structs: &BTreeMap<String, StructMeta>,
+    item: &str,
+    key: &str,
+) -> Result<String, String> {
+    if key.is_empty() {
+        return Err("the key is empty".to_string());
+    }
+    let mut current = item.to_string();
+    let mut path: Vec<String> = Vec::new();
+    let segments: Vec<&str> = key.split('.').collect();
+    for (i, seg) in segments.iter().enumerate() {
+        let is_last = i + 1 == segments.len();
+        let meta = structs
+            .get(&current)
+            .ok_or_else(|| format!("struct `{current}` is missing"))?;
+        let Some((name, field)) = meta
+            .fields
+            .iter()
+            .find(|(_, f)| f.xml.as_deref() == Some(*seg))
+        else {
+            return Err(format!(
+                "`{seg}` is not declared beneath the element by any of its logical nodes"
+            ));
+        };
+        if field.repeated {
+            return Err(format!(
+                "`{seg}` repeats; a selector compares a single value"
+            ));
+        }
+        path.push(name.clone());
+        match &field.ty {
+            FieldType::Scalar if is_last => return Ok(path.join(".")),
+            FieldType::Scalar => {
+                return Err(format!(
+                    "`{seg}` is a value; it has no child `{}`",
+                    segments[i + 1]
+                ));
+            }
+            FieldType::Struct(inner) if is_last => {
+                let has_text = structs
+                    .get(inner)
+                    .and_then(|m| m.fields.get("value"))
+                    .is_some_and(FieldMeta::is_text);
+                if has_text {
+                    path.push("value".to_string());
+                    return Ok(path.join("."));
+                }
+                return Err(format!(
+                    "`{seg}` is an element with children but no text of its own; name one of its children"
+                ));
+            }
+            FieldType::Struct(inner) => current = inner.clone(),
+        }
+    }
+    unreachable!("a non-empty key returns inside the loop")
 }
 
 /// Whether any active node has `id` as a strict id prefix (i.e. `id` is a parent
@@ -1371,6 +1833,375 @@ mod tests {
             "ubl:2.1",
         );
         assert!(diags.iter().any(|d| d.code == "E024"), "{diags:?}");
+    }
+
+    /// Three logical nodes on CII's `AdditionalReferencedDocument`: tender (50)
+    /// and object (130) as structural nodes, supporting documents (916) as the
+    /// collection — all declared with the physical element's children.
+    const REFERENCED_DOCUMENTS: &[(&str, &str)] = &[
+        (
+            "Invoice.Agreement.TenderDocument",
+            r#"xml = "AdditionalReferencedDocument"
+            match = { "TypeCode" = "50" }"#,
+        ),
+        (
+            "Invoice.Agreement.TenderDocument.IssuerAssignedID",
+            r#"type = "identifier"
+            canonical_key = "TenderOrLotReference""#,
+        ),
+        (
+            "Invoice.Agreement.TenderDocument.TypeCode",
+            r#"type = "string""#,
+        ),
+        (
+            "Invoice.Agreement.ObjectDocument",
+            r#"xml = "AdditionalReferencedDocument"
+            match = { "TypeCode" = "130" }"#,
+        ),
+        (
+            "Invoice.Agreement.ObjectDocument.IssuerAssignedID",
+            r#"type = "identifier"
+            canonical_key = "InvoicedObjectIdentifier""#,
+        ),
+        (
+            "Invoice.Agreement.AdditionalReferencedDocument",
+            r#"type = "collection"
+            canonical_key = "SupportingDocuments"
+            match = { "TypeCode" = "916" }"#,
+        ),
+        (
+            "Invoice.Agreement.AdditionalReferencedDocument.IssuerAssignedID",
+            r#"type = "identifier"
+            canonical_key = "SupportingDocumentReference""#,
+        ),
+        (
+            "Invoice.Agreement.AdditionalReferencedDocument.Name",
+            r#"type = "string"
+            canonical_key = "SupportingDocumentDescription""#,
+        ),
+    ];
+
+    #[test]
+    fn test_synth_aliased_element_has_one_physical_and_one_logical_field_per_node() {
+        let (model, paths) = synth(REFERENCED_DOCUMENTS);
+        let agreement = &model.structs["Agreement"];
+        let physical = &agreement.fields["all_additional_referenced_document"];
+        assert!(physical.repeated && !physical.is_logical());
+        assert_eq!(
+            physical.xml.as_deref(),
+            Some("AdditionalReferencedDocument")
+        );
+        let item = "AgreementAdditionalReferencedDocument";
+        assert_eq!(physical.ty, Struct(item.into()));
+
+        let tender = &agreement.fields["tender_document"];
+        assert!(!tender.repeated && tender.is_logical());
+        assert_eq!(
+            tender.ty,
+            Struct(item.into()),
+            "logical nodes share the item struct"
+        );
+        assert_eq!(tender.xml, None, "never on the wire");
+        let binding = tender.alias.as_ref().unwrap();
+        assert_eq!(binding.physical, "all_additional_referenced_document");
+        assert_eq!(binding.node, "Invoice.Agreement.TenderDocument");
+        assert_eq!(
+            binding.selector,
+            [("type_code".to_string(), "50".to_string())],
+            "selector keys are resolved to item field paths"
+        );
+
+        let supporting = &agreement.fields["additional_referenced_document"];
+        assert!(supporting.repeated && supporting.is_logical());
+        assert_eq!(
+            supporting.alias.as_ref().unwrap().selector,
+            [("type_code".to_string(), "916".to_string())]
+        );
+
+        // The item struct is the union of every logical node's children.
+        assert_eq!(
+            ordered(&model, item),
+            ["issuer_assigned_id", "type_code", "name"]
+        );
+        // Paths run through the logical fields.
+        assert_eq!(
+            paths[&NodeId::new("Invoice.Agreement.TenderDocument.IssuerAssignedID")],
+            "agreement.tender_document.issuer_assigned_id"
+        );
+        assert_eq!(
+            paths[&NodeId::new("Invoice.Agreement.AdditionalReferencedDocument")],
+            "agreement.additional_referenced_document"
+        );
+        assert_eq!(
+            paths[&NodeId::new("Invoice.Agreement.AdditionalReferencedDocument.Name")],
+            "name"
+        );
+        // The physical field sits where the first logical node's children are.
+        assert_eq!(
+            ordered(&model, "Agreement"),
+            [
+                "all_additional_referenced_document",
+                "tender_document",
+                "object_document",
+                "additional_referenced_document"
+            ]
+        );
+        let groups = agreement.aliased_fields();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].1.len(), 3);
+        assert!(
+            resolve_path(&model, "agreement.tender_document.issuer_assigned_id").is_ok(),
+            "paths through a logical field resolve"
+        );
+    }
+
+    #[test]
+    fn test_synth_default_bucket_and_nested_selector_keys() {
+        // UBL: the plain collection takes what the `130` node leaves; the
+        // selector names a nested valued element and an attribute.
+        let (model, _) = synth(&[
+            (
+                "Invoice.AdditionalDocumentReference",
+                r#"type = "collection"
+                canonical_key = "SupportingDocuments""#,
+            ),
+            (
+                "Invoice.AdditionalDocumentReference.ID",
+                r#"type = "identifier"
+                canonical_key = "SupportingDocumentReference""#,
+            ),
+            (
+                "Invoice.InvoicedObjectReference",
+                r#"xml = "AdditionalDocumentReference"
+                match = { "DocumentTypeCode" = "130", "ID.@schemeID" = "ABZ", "Scheme.ID" = "S" }"#,
+            ),
+            (
+                "Invoice.InvoicedObjectReference.ID",
+                r#"type = "identifier"
+                canonical_key = "InvoicedObjectIdentifier""#,
+            ),
+            (
+                "Invoice.InvoicedObjectReference.ID.schemeID",
+                r#"xml = "@schemeID"
+                type = "string""#,
+            ),
+            (
+                "Invoice.InvoicedObjectReference.DocumentTypeCode",
+                r#"type = "string""#,
+            ),
+            (
+                "Invoice.InvoicedObjectReference.Scheme.ID",
+                r#"type = "string""#,
+            ),
+        ]);
+        let inv = &model.structs["Invoice"];
+        let default = inv.fields["additional_document_reference"]
+            .alias
+            .as_ref()
+            .unwrap();
+        assert!(
+            default.selector.is_empty(),
+            "no selector: the default bucket"
+        );
+        let object = inv.fields["invoiced_object_reference"]
+            .alias
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            object.selector,
+            [
+                ("document_type_code".to_string(), "130".to_string()),
+                ("id.scheme_id".to_string(), "ABZ".to_string()),
+                ("scheme.id".to_string(), "S".to_string()),
+            ]
+        );
+        // `ID` became a valued container because of the attribute declared
+        // under one logical node; the other node's `ID` leaf follows suit, so
+        // both land on the same union field.
+        assert_eq!(
+            inv.fields["all_additional_document_reference"].ty,
+            Struct("AdditionalDocumentReference".into())
+        );
+        assert_eq!(
+            model.structs["AdditionalDocumentReference"].fields["id"].ty,
+            Struct("AdditionalDocumentReferenceID".into())
+        );
+    }
+
+    #[test]
+    fn test_synth_single_matched_structural_node_is_aliased_alone() {
+        let (model, paths) = synth(&[
+            (
+                "Invoice.Party.PartyTaxScheme",
+                r#"match = { "TaxScheme.ID" = "VAT" }"#,
+            ),
+            (
+                "Invoice.Party.PartyTaxScheme.CompanyID",
+                r#"type = "identifier"
+                canonical_key = "SellerVatIdentifier""#,
+            ),
+            (
+                "Invoice.Party.PartyTaxScheme.TaxScheme.ID",
+                r#"type = "identifier"
+                constant = "VAT""#,
+            ),
+        ]);
+        let party = &model.structs["Party"];
+        assert!(party.fields["all_party_tax_scheme"].repeated);
+        let logical = &party.fields["party_tax_scheme"];
+        assert!(logical.is_logical() && !logical.repeated);
+        assert_eq!(
+            logical.alias.as_ref().unwrap().selector,
+            [("tax_scheme.id".to_string(), "VAT".to_string())]
+        );
+        assert_eq!(
+            paths[&NodeId::new("Invoice.Party.PartyTaxScheme.CompanyID")],
+            "party.party_tax_scheme.company_id"
+        );
+    }
+
+    #[test]
+    fn test_synth_rename_only_structural_node_is_a_plain_rename() {
+        let (model, paths) = synth(&[
+            ("Invoice.Wrapper", r#"xml = "Envelope""#),
+            ("Invoice.Wrapper.ID", r#"type = "identifier""#),
+        ]);
+        let wrapper = &model.structs["Invoice"].fields["wrapper"];
+        assert!(!wrapper.is_logical() && !wrapper.repeated);
+        assert_eq!(wrapper.xml.as_deref(), Some("Envelope"));
+        assert_eq!(
+            wrapper.ty,
+            Struct("Envelope".into()),
+            "struct named physically"
+        );
+        assert_eq!(paths[&NodeId::new("Invoice.Wrapper.ID")], "wrapper.id");
+    }
+
+    #[test]
+    fn test_synth_match_on_scalar_is_e091() {
+        let (_, _, diags) = synthesize_source_model(
+            &nodes(&[(
+                "Invoice.ID",
+                r#"type = "identifier"
+                match = { "x" = "y" }"#,
+            )]),
+            "Invoice",
+            "ubl:2.1",
+        );
+        assert!(diags.iter().any(|d| d.code == "E091"), "{diags:?}");
+    }
+
+    #[test]
+    fn test_synth_overlapping_selectors_are_e090() {
+        let base = |sel_a: &str, sel_b: &str| {
+            let a = format!("xml = \"Ref\"\n{sel_a}");
+            let b = format!("xml = \"Ref\"\n{sel_b}");
+            let (_, _, diags) = synthesize_source_model(
+                &nodes(&[
+                    ("Invoice.A", a.as_str()),
+                    ("Invoice.A.TypeCode", r#"type = "string""#),
+                    ("Invoice.A.Kind", r#"type = "string""#),
+                    ("Invoice.B", b.as_str()),
+                    ("Invoice.B.TypeCode", r#"type = "string""#),
+                ]),
+                "Invoice",
+                "ubl:2.1",
+            );
+            diags
+                .iter()
+                .filter(|d| d.code == "E090")
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            base(
+                r#"match = { "TypeCode" = "50" }"#,
+                r#"match = { "TypeCode" = "130" }"#
+            )
+            .is_empty()
+        );
+        assert!(
+            base("", r#"match = { "TypeCode" = "130" }"#).is_empty(),
+            "default + selector"
+        );
+        let same = base(
+            r#"match = { "TypeCode" = "50" }"#,
+            r#"match = { "TypeCode" = "50" }"#,
+        );
+        assert_eq!(same.len(), 1, "{same:?}");
+        assert!(same[0].contains("Invoice.A") && same[0].contains("Invoice.B"));
+        let subset = base(
+            r#"match = { "TypeCode" = "50" }"#,
+            r#"match = { "TypeCode" = "50", "Kind" = "x" }"#,
+        );
+        assert_eq!(subset.len(), 1, "{subset:?}");
+        let disjoint_keys = base(
+            r#"match = { "Kind" = "x" }"#,
+            r#"match = { "TypeCode" = "50" }"#,
+        );
+        assert_eq!(disjoint_keys.len(), 1, "different keys can co-occur");
+        let two_defaults = base("", "");
+        assert_eq!(two_defaults.len(), 1, "{two_defaults:?}");
+        assert!(two_defaults[0].contains("neither has a `match`"));
+    }
+
+    #[test]
+    fn test_synth_unresolvable_selector_key_is_e092() {
+        let run = |sel: &str| {
+            let a = format!("xml = \"Ref\"\nmatch = {sel}");
+            let (_, _, diags) = synthesize_source_model(
+                &nodes(&[
+                    ("Invoice.A", a.as_str()),
+                    ("Invoice.A.TypeCode", r#"type = "string""#),
+                    (
+                        "Invoice.A.Notes",
+                        r#"type = "string"
+                        multiple = "first""#,
+                    ),
+                    ("Invoice.A.Inner.Leaf", r#"type = "string""#),
+                ]),
+                "Invoice",
+                "ubl:2.1",
+            );
+            diags
+                .iter()
+                .filter(|d| d.code == "E092")
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(run(r#"{ "TypeCode" = "1" }"#).is_empty());
+        assert!(run(r#"{ "Inner.Leaf" = "1" }"#).is_empty());
+        assert_eq!(run(r#"{ "Missing" = "1" }"#).len(), 1, "undeclared child");
+        assert_eq!(run(r#"{ "Notes" = "1" }"#).len(), 1, "repeated leaf");
+        assert_eq!(
+            run(r#"{ "Inner" = "1" }"#).len(),
+            1,
+            "container without text"
+        );
+        assert_eq!(
+            run(r#"{ "TypeCode.Deeper" = "1" }"#).len(),
+            1,
+            "below a value"
+        );
+        assert_eq!(run("{ }").len(), 1, "empty selector");
+    }
+
+    #[test]
+    fn test_synth_structural_node_bound_to_attribute_is_e083() {
+        let (_, _, diags) = synthesize_source_model(
+            &nodes(&[
+                ("Invoice.A", r#"xml = "@attr""#),
+                ("Invoice.A.ID", r#"type = "string""#),
+            ]),
+            "Invoice",
+            "ubl:2.1",
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "E083" && d.message.contains("attribute")),
+            "{diags:?}"
+        );
     }
 
     #[test]

@@ -15,6 +15,8 @@
 //! - The full dotted table name is the node id (`[Invoice.ID]` → `Invoice.ID`).
 //! - A table may be *both* a node and a container (a collection node with child
 //!   nodes). Own scalar/array fields define the node; sub-tables recurse.
+//! - A table's `match` key is its selector (an inline table), never a child
+//!   element: `match` is a reserved node field.
 //! - Unknown fields inside a node are rejected (E001).
 //! - Stray top-level scalar keys (outside `[meta]` and any table) are rejected.
 //! - Every node records its declaration [`RawNode::position`]: nodes are
@@ -31,6 +33,10 @@ use toml::Value;
 use crate::error::ConfigError;
 use crate::meta::MappingMeta;
 use crate::node::{NodeId, RawNode};
+
+/// The one node field whose value is a table: the `match` selector. A table
+/// under this key is the node's own field, not a child element.
+const MATCH_FIELD: &str = "match";
 
 /// A parsed mapping document: its `[meta]` and its raw nodes (pre-resolution).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,7 +119,10 @@ fn flatten(
 
     for (key, value) in table {
         match value {
-            Value::Table(child) => {
+            // A `match` selector is written as an inline table, which TOML
+            // does not distinguish from a sub-table: the key is reserved for
+            // the node field, never a child element.
+            Value::Table(child) if key != MATCH_FIELD => {
                 children.push((NodeId::new(format!("{id}.{key}")), child));
             }
             other => {
@@ -152,6 +161,36 @@ mod tests {
 
     fn parse(extra: &str) -> ParsedMapping {
         parse_mapping(&format!("{META}\n{extra}")).expect("parses")
+    }
+
+    #[test]
+    fn test_match_inline_table_is_a_node_field_not_a_child() {
+        let parsed = parse_mapping(
+            r#"
+            [meta]
+            doc_format = "f"
+            format_version = "1"
+            mapping_version = "1"
+            canonical_model = "c:1"
+
+            [Invoice.Ref]
+            xml = "AdditionalDocumentReference"
+            match = { "DocumentTypeCode" = "130", "ID.@schemeID" = "ABZ" }
+
+            [Invoice.Ref.ID]
+            type = "identifier"
+            "#,
+        )
+        .expect("parses");
+        let node = &parsed.nodes[&NodeId::new("Invoice.Ref")];
+        let selector = node.match_.as_ref().expect("match is a node field");
+        assert_eq!(selector["DocumentTypeCode"], "130");
+        assert_eq!(selector["ID.@schemeID"], "ABZ");
+        assert!(
+            !parsed.nodes.contains_key(&NodeId::new("Invoice.Ref.match")),
+            "the selector table is not a child node"
+        );
+        assert!(parsed.nodes.contains_key(&NodeId::new("Invoice.Ref.ID")));
     }
 
     #[test]

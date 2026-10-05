@@ -34,16 +34,16 @@
 #   * Document- and line-level `SpecifiedTradeAllowanceCharge` are single
 #     collections carrying `ChargeIndicator/Indicator` (true = charge BG-21/BG-28,
 #     false = allowance BG-20/BG-27), so allowance vs charge is preserved as data.
-#   * Two EN 16931 terms are intentionally NOT mapped because CII models them as
-#     predicate-discriminated siblings of an element already mapped, which the DSL
-#     forbids (model as a collection instead, not a predicate split):
-#       - BT-7 Tax point date — lives per `ApplicableTradeTax`, no header scalar.
-#       - BT-17 Tender or lot reference — a `TypeCode`-tagged sibling of the
-#         `AdditionalReferencedDocument` elements captured by `SupportingDocuments`.
+#   * Siblings told apart by a child value are split with `match` selectors: the
+#     seller's `SpecifiedTaxRegistration` by `ID/@schemeID` (`VA` → BT-31, `FC` →
+#     BT-32) and the header `AdditionalReferencedDocument` by `TypeCode` (`50` →
+#     BT-17, `130` → BT-18, the rest → BG-24, written as `916`).
+#   * BT-7 Tax point date is intentionally NOT mapped: it lives per
+#     `ApplicableTradeTax`, with no header scalar.
 [meta]
 doc_format = "cii-invoice"
 format_version = "16931"
-mapping_version = "1.4"
+mapping_version = "1.5"
 source_model = "cii-invoice:en16931"
 canonical_model = "canonical-invoice:1.0"
 root = "CrossIndustryInvoice"
@@ -342,11 +342,29 @@ canonical_key = "SellerCountrySubdivision"
 type = "identifier"
 canonical_key = "SellerElectronicAddress"
 
-# BT-31 seller VAT: `SpecifiedTaxRegistration/ID` (schemeID VA; a second FC scheme
-# would need a predicate — not modelled, matching the UBL spoke's simplification).
+# BT-31 / BT-32: the seller's `SpecifiedTaxRegistration` elements, told apart by
+# `ID/@schemeID` (VA = VAT identifier, FC = tax registration). The attribute is
+# written back from each node's `match` selector.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.SpecifiedTaxRegistration]
+match = { "ID.@schemeID" = "VA" }
+
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.SpecifiedTaxRegistration.ID]
 type = "identifier"
 canonical_key = "SellerVatIdentifier"
+normalize = ["trim"]
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.SpecifiedTaxRegistration.ID.schemeID]
+xml = "@schemeID"
+type = "string"
+description = "Registration scheme discriminator; written from the `match` selector."
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.SellerTaxRegistration]
+xml = "SpecifiedTaxRegistration"
+match = { "ID.@schemeID" = "FC" }
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SellerTradeParty.SellerTaxRegistration.ID]
+type = "identifier"
+canonical_key = "SellerTaxRegistrationIdentifier"
 normalize = ["trim"]
 
 # --- BUYER (BG-7) + POSTAL ADDRESS (BG-8) + CONTACT (BG-9) ---
@@ -464,9 +482,11 @@ canonical_key = "PurchaseOrderReference"
 type = "identifier"
 canonical_key = "ContractReference"
 
-# --- ADDITIONAL SUPPORTING DOCUMENTS (BG-24) — collection over
-# AdditionalReferencedDocument. TypeCode (50 tender / 130 object / 916 supporting)
-# is not modelled, so all such references round-trip through this one collection.
+# --- ADDITIONAL REFERENCED DOCUMENTS: one physical element, three logical nodes
+# split by `TypeCode` — 50 tender or lot reference (BT-17), 130 invoiced object
+# identifier (BT-18), and the supporting documents (BG-24), which take every
+# other reference and are written with `TypeCode` 916. `TypeCode` is declared
+# under the first logical node, in its sequence position (after `URIID`).
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.AdditionalReferencedDocument]
 type = "collection"
 canonical_key = "SupportingDocuments"
@@ -479,6 +499,11 @@ canonical_key = "SupportingDocumentReference"
 type = "string"
 canonical_key = "ExternalDocumentLocation"
 
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.AdditionalReferencedDocument.TypeCode]
+type = "string"
+constant = "916"
+description = "Reference discriminator (50 tender / 130 object / 916 supporting); supporting documents are written as 916."
+
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.AdditionalReferencedDocument.Name]
 type = "string"
 canonical_key = "SupportingDocumentDescription"
@@ -486,6 +511,22 @@ canonical_key = "SupportingDocumentDescription"
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.AdditionalReferencedDocument.AttachmentBinaryObject]
 type = "string"
 canonical_key = "AttachedDocument"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.TenderOrLotReferencedDocument]
+xml = "AdditionalReferencedDocument"
+match = { "TypeCode" = "50" }
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.TenderOrLotReferencedDocument.IssuerAssignedID]
+type = "identifier"
+canonical_key = "TenderOrLotReference"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.InvoicedObjectReferencedDocument]
+xml = "AdditionalReferencedDocument"
+match = { "TypeCode" = "130" }
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.InvoicedObjectReferencedDocument.IssuerAssignedID]
+type = "identifier"
+canonical_key = "InvoicedObjectIdentifier"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeAgreement.SpecifiedProcuringProject.ID]
 type = "identifier"

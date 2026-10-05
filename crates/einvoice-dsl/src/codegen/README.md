@@ -79,6 +79,16 @@ The hub is never filled from a clone. A `$parent.Key` / `$root.Key` clone
 reads (and compares against) the enclosing scope's / the root's hub value;
 the planner records such keys so their primaries borrow instead of move.
 
+A physical element bound by several logical nodes (`match` selectors, `xml`
+aliases) is one repeated field on the wire plus one `#[serde(skip)]` *logical*
+field per node. `source.rs` emits `demux`/`mux` on every struct holding such an
+element: the reader calls `source.demux(..)` first, which hands each item to
+the first logical field whose selector it satisfies (warning `MATCH_MULTIPLE`
+when a single-valued node matched more), and the writer calls `source.mux()`
+last, which moves the logical items back and writes the selector values as
+discriminators. The read/write generators themselves see only ordinary paths
+through the logical fields.
+
 ## Testing
 
 Unit tests live in `mod.rs` and assert on the generated hub + spoke for the

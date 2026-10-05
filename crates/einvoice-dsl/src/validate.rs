@@ -38,7 +38,10 @@
 //! - `W050` `adapter` is deprecated (warning): use `normalize` or a codec.
 //!
 //! Unknown TOML fields (`E001`), missing `path`/`type` (`E002`), and cross-spoke
-//! hub conflicts (`E010`/`E011`) are caught earlier (parse / resolve / hub).
+//! hub conflicts (`E010`/`E011`) are caught earlier (parse / resolve / hub), as
+//! are the source-model shape checks — namespaces (`E080`–`E083`), codec wire
+//! attributes (`E087`) and `match` selectors (`E090`–`E092`) — which synthesis
+//! reports while it builds the struct tree.
 
 use std::collections::{BTreeMap, BTreeSet};
 

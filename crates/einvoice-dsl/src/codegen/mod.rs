@@ -563,6 +563,91 @@ mod tests {
     }
 
     #[test]
+    fn test_aliased_element_generates_skip_fields_and_demux_mux() {
+        let (ir, hub, source) = compile(
+            r#"
+            [Invoice.AdditionalDocumentReference]
+            type = "collection"
+            canonical_key = "SupportingDocuments"
+
+            [Invoice.AdditionalDocumentReference.ID]
+            type = "identifier"
+            canonical_key = "SupportingDocumentReference"
+
+            [Invoice.AdditionalDocumentReference.DocumentTypeCode]
+            type = "string"
+
+            [Invoice.InvoicedObjectReference]
+            xml = "AdditionalDocumentReference"
+            match = { "DocumentTypeCode" = "130" }
+
+            [Invoice.InvoicedObjectReference.ID]
+            type = "identifier"
+            canonical_key = "InvoicedObjectIdentifier"
+            "#,
+        );
+        let _ = hub;
+        let out = generate_spoke(&ir, &source, &CodecTable::new(), "super::hub");
+        // One physical field on the wire, two logical fields off it.
+        assert!(
+            out.contains(
+                "#[serde(rename = \"AdditionalDocumentReference\", default, skip_serializing_if = \"Vec::is_empty\")]\n    pub all_additional_document_reference: Vec<AdditionalDocumentReference>,"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("#[serde(skip)]\n    pub additional_document_reference: Vec<AdditionalDocumentReference>,"),
+            "{out}"
+        );
+        assert!(
+            out.contains("#[serde(skip)]\n    pub invoiced_object_reference: Option<Box<AdditionalDocumentReference>>,"),
+            "{out}"
+        );
+        // demux: selector first, default bucket last, overflow reported.
+        assert!(
+            out.contains(
+                "for item in std::mem::take(&mut self.all_additional_document_reference) {"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("if item.document_type_code.as_ref().and_then(|v0| Some(v0.as_str())).is_some_and(|v| v.trim() == \"130\") {"),
+            "{out}"
+        );
+        assert!(
+            out.contains("self.additional_document_reference.push(item);"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "overflow(\"Invoice.InvoicedObjectReference\", extra_invoiced_object_reference);"
+            ),
+            "{out}"
+        );
+        // mux: the discriminator is written from the selector.
+        assert!(
+            out.contains("item.document_type_code = Some(CompactString::from(\"130\"));"),
+            "{out}"
+        );
+        // The mappers call them on the root.
+        assert!(out.contains("source.demux(&mut |node, extra| {"), "{out}");
+        assert!(out.contains("\"MATCH_MULTIPLE\""), "{out}");
+        assert!(out.contains("    source.mux();\n"), "{out}");
+        // The nodes map through the logical fields: read by moving out of the
+        // logical struct, written by materializing it.
+        assert!(
+            out.contains("source.invoiced_object_reference.as_mut().and_then(|v0| v0.id.take())"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "source.invoiced_object_reference.get_or_insert_default().id = Some(rendered);"
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
     fn test_interior_struct_field_is_boxed_optional() {
         // An interior container is `Option<Box<…>>`: a document that omits the
         // whole element costs one `None` (8 bytes, no allocation) instead of a
@@ -577,6 +662,7 @@ mod tests {
             prefix: String::new(),
             always_present: false,
             order: 0,
+            alias: None,
         };
         let attr = serde_attr(&field).expect("interior struct needs a serde attr");
         assert!(attr.contains("default"), "{attr}");

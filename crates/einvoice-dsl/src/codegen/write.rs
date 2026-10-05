@@ -32,6 +32,11 @@
 //! encoder and sets the codec's wire attributes on the element next to it
 //! (`<DateTimeString format="102">20260718</DateTimeString>`).
 //!
+//! When the mapping aliases physical elements (`match` selectors), every node
+//! writes into its logical field, and the finished source is `mux`ed last:
+//! each logical field's items move into the physical element in declaration
+//! order, with the selector values written as discriminators.
+//!
 //! The writer **consumes** the hub: canonical fields written exactly once move
 //! their values into the target struct (`take`); a key written from more than
 //! one node (a primary plus its clones) stays a borrow + clone.
@@ -184,6 +189,12 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
         );
     }
     write_always_present(out, ctx.source, &ctx.source.root, "source", 1);
+    if super::source::root_has_alias_io(ctx.source) {
+        // Aliased elements: move every logical field's items back into the
+        // physical element, with the selector values as discriminators.
+        out.push('\n');
+        out.push_str("    source.mux();\n");
+    }
 
     out.push('\n');
     out.push_str("    MappingResult::new(Some(source), diagnostics)\n");

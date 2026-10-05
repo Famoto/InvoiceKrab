@@ -89,6 +89,25 @@ impl StructMeta {
         });
         fields
     }
+
+    /// The physical repeated fields that logical fields partition, each with
+    /// its logical fields in emission order: `(physical, [(logical, meta)])`.
+    /// The physical fields come in emission order too.
+    pub fn aliased_fields(&self) -> Vec<(&String, Vec<(&String, &FieldMeta)>)> {
+        let ordered = self.ordered_fields();
+        let mut out: Vec<(&String, Vec<(&String, &FieldMeta)>)> = Vec::new();
+        for (physical, _) in &ordered {
+            let logical: Vec<(&String, &FieldMeta)> = ordered
+                .iter()
+                .filter(|(_, f)| f.alias.as_ref().is_some_and(|a| &a.physical == *physical))
+                .copied()
+                .collect();
+            if !logical.is_empty() {
+                out.push((physical, logical));
+            }
+        }
+        out
+    }
 }
 
 /// One field of a source struct.
@@ -118,6 +137,33 @@ pub struct FieldMeta {
     /// interior element inherits the position of its first declared
     /// descendant. See [`StructMeta::ordered_fields`].
     pub order: usize,
+    /// Set on a *logical* field: one that is not serialized itself but holds
+    /// the items of a sibling *physical* repeated field selected by a `match`
+    /// selector (or left over by every selector). The generated reader fills it
+    /// from the physical field before mapping and the writer merges it back
+    /// afterwards. `None` for every ordinary field.
+    pub alias: Option<AliasBinding>,
+}
+
+/// How a logical field partitions its physical element's items.
+///
+/// Several logical nodes of a mapping may bind one physical XML element
+/// (`AdditionalReferencedDocument` with `TypeCode` 50 / 130 / 916). The
+/// physical element is synthesized once, as a repeated field holding the union
+/// item struct; each logical node gets a field of its own, carrying this
+/// binding, that the reader fills with the items its selector picks (the first
+/// such item for a non-repeated logical field) and the writer drains back into
+/// the physical field, setting the selector values on every item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AliasBinding {
+    /// The physical field, in the same struct, whose items this field partitions.
+    pub physical: String,
+    /// The id of the logical mapping node (named in runtime diagnostics).
+    pub node: String,
+    /// The selector as `(field path inside the item struct, expected text)`
+    /// pairs, in key order. Empty for the default bucket: the logical field
+    /// that takes every item no selector matched.
+    pub selector: Vec<(String, String)>,
 }
 
 impl FieldMeta {
@@ -133,6 +179,13 @@ impl FieldMeta {
             && self.ty == other.ty
             && self.xml == other.xml
             && self.prefix == other.prefix
+            && self.alias == other.alias
+    }
+
+    /// Whether this is a logical (alias) field: never serialized, filled from
+    /// and drained into its physical sibling by the generated mappers.
+    pub fn is_logical(&self) -> bool {
+        self.alias.is_some()
     }
 
     /// The name serde *writes* for this field: the prefixed element name, or
@@ -246,6 +299,7 @@ impl SourceModelBuilder {
                     prefix: String::new(),
                     always_present: false,
                     order,
+                    alias: None,
                 },
             );
         }
@@ -320,6 +374,7 @@ mod tests {
             prefix: String::new(),
             always_present: false,
             order,
+            alias: None,
         }
     }
 
@@ -403,6 +458,44 @@ mod tests {
         assert!(!a.same_binding(&c));
         let d = field("Id", 1);
         assert!(!a.same_binding(&d));
+    }
+
+    #[test]
+    fn test_aliased_fields_groups_logical_by_physical_in_order() {
+        let mut meta = StructMeta::default();
+        meta.fields.insert("all_ref".into(), field("Ref", 3));
+        let logical = |physical: &str, node: &str, selector: &[(&str, &str)], order| FieldMeta {
+            alias: Some(AliasBinding {
+                physical: physical.into(),
+                node: node.into(),
+                selector: selector
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                    .collect(),
+            }),
+            xml: None,
+            ..field("x", order)
+        };
+        meta.fields.insert(
+            "tender".into(),
+            logical("all_ref", "A.Tender", &[("type_code", "50")], 5),
+        );
+        meta.fields.insert(
+            "object".into(),
+            logical("all_ref", "A.Object", &[("type_code", "130")], 4),
+        );
+        meta.fields.insert("plain".into(), field("Plain", 0));
+        let groups = meta.aliased_fields();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, "all_ref");
+        let names: Vec<&str> = groups[0].1.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            ["object", "tender"],
+            "logical fields in emission order"
+        );
+        assert!(meta.fields["object"].is_logical());
+        assert!(!meta.fields["plain"].is_logical());
     }
 
     #[test]

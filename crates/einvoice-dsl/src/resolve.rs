@@ -285,8 +285,8 @@ mod tests {
     #[test]
     fn test_missing_type_is_e002_and_excluded() {
         let (nodes, diags) = resolved(
-            r#"[Bad]
-            xml = "x""#,
+            r#"[Invoice.Bad]
+            canonical_key = "X""#,
         );
         assert!(nodes.is_empty());
         assert_eq!(diags.len(), 1);

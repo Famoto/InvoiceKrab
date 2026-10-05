@@ -43,6 +43,17 @@
 //! make it mandatory). Structural nodes never become [`SourceNode`]s; synthesis
 //! reads them when it creates the interior struct field they describe.
 //!
+//! A collection node or a structural node may carry a `match` selector
+//! (`match = { "TypeCode" = "916" }`): the node binds only the occurrences of
+//! its element whose child values equal the selector's. Several such *logical*
+//! nodes may share one *physical* element — a second node names the element
+//! through `xml = "AdditionalReferencedDocument"` while its own id segment is a
+//! free alias — so a format that tells its references apart by a type code
+//! maps each kind to its own canonical key. The physical element is then
+//! synthesized as one repeated field whose items the generated reader
+//! partitions by selector and the generated writer re-merges with the
+//! selector values written back as discriminators.
+//!
 //! `clone_of` may reach outside the node's scope: `$parent.Key` names a key of
 //! the enclosing collection's scope and `$root.Key` a key of the invoice root
 //! ([`parse_derivation`]) — how every line amount gets the document currency.
@@ -52,6 +63,8 @@
 //! where each table appears, synthesis orders the source-struct fields by it,
 //! and the writer therefore emits sibling XML elements in the order the mapping
 //! declares them — which the author keeps aligned with the XSD sequence.
+
+use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
@@ -141,10 +154,12 @@ pub enum Scope {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawNode {
-    /// Leaf XML binding override. Marks the node's
-    /// final id segment as an attribute (`@currencyID`) or element text (`$text`),
-    /// or renames the element. Absent means the element local name equals the id
-    /// segment. Interior segments are always taken verbatim from the id.
+    /// XML binding override. On a leaf, marks the node's final id segment as an
+    /// attribute (`@currencyID`) or element text (`$text`), or renames the
+    /// element. On a collection or structural node, names the physical element
+    /// the node binds — so two logical nodes with different ids can share one
+    /// element (see `match`). Absent means the element local name equals the
+    /// id segment. Interior segments are always taken verbatim from the id.
     pub xml: Option<String>,
     /// Value type.
     #[serde(rename = "type")]
@@ -190,6 +205,17 @@ pub struct RawNode {
     /// `[meta.namespaces]` (E080); not valid on an attribute leaf (E081). On a
     /// `type`-less table this alone makes the table a structural node.
     pub ns: Option<String>,
+    /// Structural selector on a collection or structural node: the node binds
+    /// only the occurrences of its element whose child values equal these.
+    /// Keys are child element paths inside the element (`TypeCode`,
+    /// `TaxScheme.ID`, `ID.@schemeID`, `@schemeID`), values are the literal
+    /// text to match (trimmed, exact). Several logical nodes may bind one
+    /// physical element with disjoint selectors; at most one may carry none
+    /// and takes what no selector matched. Not valid on a scalar node (E091);
+    /// every key must name a scalar declared beneath one of the element's
+    /// logical nodes (E092); selectors on one element must be disjoint (E090).
+    #[serde(rename = "match")]
+    pub match_: Option<BTreeMap<String, String>>,
     /// Declaration position within the mapping document (0-based, document
     /// order). Assigned by the parser, never authored — a `position` key in the
     /// TOML is rejected like any unknown field. It drives the order of sibling
@@ -211,15 +237,20 @@ impl RawNode {
     /// (`disabled = true` plus optional `description`) is still a node, so the
     /// caller distinguishes that case via [`RawNode::is_disabled`].
     pub fn has_active_field(&self) -> bool {
-        self.ty.is_some() || self.ns.is_some() || self.has_mapping_field()
+        self.ty.is_some() || self.has_structural_field() || self.has_mapping_field()
+    }
+
+    /// Whether this node carries a field a structural node may declare besides
+    /// `required`: `ns`, `xml` (the physical element it binds) or `match`.
+    fn has_structural_field(&self) -> bool {
+        self.ns.is_some() || self.xml.is_some() || self.match_.is_some()
     }
 
     /// Whether this node carries any field that only a *mapped* (typed) node
-    /// may have — everything beyond `type`, `ns`, `required`, `description`,
-    /// `disabled`, `replace`.
+    /// may have — everything beyond `type`, `ns`, `xml`, `match`, `required`,
+    /// `description`, `disabled`, `replace`.
     pub fn has_mapping_field(&self) -> bool {
-        self.xml.is_some()
-            || self.canonical_key.is_some()
+        self.canonical_key.is_some()
             || self.fallbacks.is_some()
             || self.min_items.is_some()
             || self.multiple.is_some()
@@ -231,13 +262,14 @@ impl RawNode {
             || self.codec.is_some()
     }
 
-    /// Whether this is a structural node: no `type`, an `ns` and/or
-    /// `required = true`, and nothing a mapped node would declare. It names an
-    /// inferred interior element to set its namespace prefix or force its
-    /// emission, and is consumed by synthesis, never by the IR.
+    /// Whether this is a structural node: no `type`, at least one of `ns`,
+    /// `xml`, `match` or `required = true`, and nothing a mapped node would
+    /// declare. It names an inferred interior element to set its namespace
+    /// prefix, force its emission, or bind it to a physical element by
+    /// selector, and is consumed by synthesis, never by the IR.
     pub fn is_structural(&self) -> bool {
         self.ty.is_none()
-            && (self.ns.is_some() || self.required == Some(true))
+            && (self.has_structural_field() || self.required == Some(true))
             && !self.has_mapping_field()
     }
 
@@ -278,6 +310,7 @@ impl RawNode {
                 replace: None,
                 codec: child.codec.clone().or_else(|| self.codec.clone()),
                 ns: child.ns.clone().or_else(|| self.ns.clone()),
+                match_: child.match_.clone().or_else(|| self.match_.clone()),
                 position: self.position,
             }
         };
@@ -471,6 +504,43 @@ mod tests {
         let n: RawNode = toml::from_str(r#"xml = "@currencyID""#).unwrap();
         assert!(n.has_active_field());
         assert_eq!(n.xml.as_deref(), Some("@currencyID"));
+        assert!(
+            !n.has_mapping_field(),
+            "xml alone does not demand a type: a structural node may alias"
+        );
+    }
+
+    #[test]
+    fn test_raw_node_match_and_xml_make_a_structural_node() {
+        let n: RawNode =
+            toml::from_str(r#"match = { "TypeCode" = "130", "ID.@schemeID" = "X" }"#).unwrap();
+        assert!(n.is_structural());
+        assert!(n.has_active_field());
+        assert!(!n.is_always_present());
+        let sel = n.match_.as_ref().unwrap();
+        assert_eq!(sel["TypeCode"], "130");
+        assert_eq!(sel["ID.@schemeID"], "X");
+        let aliased: RawNode = toml::from_str(r#"xml = "AdditionalReferencedDocument""#).unwrap();
+        assert!(aliased.is_structural(), "xml alone aliases an element");
+        let coll: RawNode =
+            toml::from_str("type = \"collection\"\nmatch = { \"TypeCode\" = \"916\" }").unwrap();
+        assert!(!coll.is_structural(), "a typed node is a mapped node");
+        assert!(coll.match_.is_some());
+    }
+
+    #[test]
+    fn test_merged_with_carries_match() {
+        let base: RawNode = toml::from_str(r#"match = { "TypeCode" = "50" }"#).unwrap();
+        let child: RawNode = toml::from_str("required = true").unwrap();
+        let merged = base.merged_with(&child);
+        assert_eq!(merged.match_, base.match_, "kept from base");
+        assert_eq!(merged.required, Some(true));
+        let override_: RawNode = toml::from_str(r#"match = { "TypeCode" = "51" }"#).unwrap();
+        assert_eq!(
+            base.merged_with(&override_).match_.unwrap()["TypeCode"],
+            "51",
+            "child wins"
+        );
     }
 
     #[test]

@@ -25,6 +25,7 @@ pointing at the offending node.
 - [Normalization](#normalization)
 - [Multiple values](#multiple-values)
 - [Collections & scopes](#collections--scopes)
+- [Structural matching: one element, several nodes](#structural-matching-one-element-several-nodes)
 - [Canonical keys & the hub](#canonical-keys--the-hub)
 - [Fallbacks](#fallbacks)
 - [Constants: pinning write-side values](#constants-pinning-write-side-values)
@@ -156,9 +157,10 @@ ns = "rsm"
 
 A structural node is consumed by the compiler when it creates that interior
 element; it never maps a value, so it is an error for it to name nothing (no
-typed node beneath it) or the root (whose prefix is `root_ns`) — E083. A
-`type`-less table with any *mapping* field (`canonical_key`, `xml`, `required`,
-…) is still E002.
+typed node beneath it), to bind an attribute or `$text`, or to name the root
+(whose prefix is `root_ns`) — E083. A `type`-less table with any *mapping*
+field (`canonical_key`, `normalize`, `constant`, …) is still E002; only `ns`,
+`xml`, `match`, `required`, `description` and `disabled` may stand alone.
 
 What the writer emits: `<?xml version="1.0" encoding="UTF-8"?>`, the root tag
 qualified with `root_ns` and carrying one `xmlns[:prefix]` attribute per declared
@@ -236,7 +238,7 @@ A node plays one of five roles, depending on which fields it declares:
 | **Helper** | neither `canonical_key` nor `clone_of` | read only when referenced as a fallback | never written |
 | **Constant** | `constant` (with or without `canonical_key`) | unchanged (fills hub if keyed) | always emits the fixed literal |
 | **Clone** | `clone_of` | consistency check only | mirrors the target key's value |
-| **Structural** | `ns` and/or `required = true`, no `type` | nothing | names an interior element's prefix (see [Namespaces](#namespaces)) or forces its emission (see [Constants](#constants-pinning-write-side-values)) |
+| **Structural** | `ns`, `xml`, `match` and/or `required = true`, no `type` | nothing (or picks the element occurrence its `match` selects) | names an interior element's prefix (see [Namespaces](#namespaces)), forces its emission (see [Constants](#constants-pinning-write-side-values)), or binds one of several same-named elements (see [Structural matching](#structural-matching-one-element-several-nodes)) |
 
 ### Node fields reference
 
@@ -244,7 +246,7 @@ A node plays one of five roles, depending on which fields it declares:
 |-------|------|---------|
 | `type` | string | Value type (see [Types](#types)). Required for active nodes (E002). |
 | `canonical_key` | string | Target field in the canonical hub. Omit for a helper node. |
-| `xml` | string | Leaf binding override (see [below](#the-xml-field-attributes-text-renames)). |
+| `xml` | string | Leaf binding override (see [below](#the-xml-field-attributes-text-renames)); on a collection or structural node, the physical element it binds (see [Structural matching](#structural-matching-one-element-several-nodes)). |
 | `required` | bool | Whether the value must be present (default `false`). |
 | `normalize` | array | String transforms, applied in order (see [Normalization](#normalization)). |
 | `fallbacks` | array | Other node ids to try, in order, when this node is missing (see [Fallbacks](#fallbacks)). |
@@ -258,6 +260,7 @@ A node plays one of five roles, depending on which fields it declares:
 | `description` | string | Human note, reports only. |
 | `disabled` | bool | Remove this node from the effective mapping (useful with [inheritance](#inheritance)). |
 | `ns` | string | Namespace prefix of this node's own element on write (see [Namespaces](#namespaces)). Alone on a `type`-less table it makes a structural node. |
+| `match` | inline table | Selector on a collection or structural node: child value → literal, e.g. `{ "TypeCode" = "130" }` (see [Structural matching](#structural-matching-one-element-several-nodes)). Not valid on a scalar (E091). |
 | `replace` | bool | Under [inheritance](#inheritance), replace the inherited node whole instead of merging over it. |
 
 Any other field is rejected (E001) — typos never silently no-op.
@@ -273,7 +276,10 @@ field overrides only that leaf binding:
 - `xml = "SomeOtherName"` — the leaf element is **renamed** (useful when the
   XML name is not a valid TOML key or clashes with a sibling).
 
-Interior segments are always taken verbatim from the id and cannot be renamed.
+Interior segments are taken verbatim from the id unless the interior element
+is itself declared as a collection or structural node with an `xml` name — the
+way a second node binds an element another node already uses (see
+[Structural matching](#structural-matching-one-element-several-nodes)).
 
 A node whose text is a value *and* which has attribute children (a "valued
 element") — or whose [codec](#codecs) carries wire attributes — is handled
@@ -403,6 +409,78 @@ Scopes matter for two rules:
 - A **canonical key declared inside a collection** attaches to that
   collection's canonical item — so the enclosing collection node must itself
   have a `canonical_key` (E011).
+
+---
+
+## Structural matching: one element, several nodes
+
+Formats often reuse one element for several business terms and tell the
+occurrences apart by a child value: CII's `AdditionalReferencedDocument` is a
+tender reference (`TypeCode` 50), an invoiced object (130) or a supporting
+document (916); UBL's seller `PartyTaxScheme` is the VAT id (`TaxScheme/ID`
+`VAT`) or the tax registration (`FC`). A `match` selector binds a node to just
+the occurrences whose child values equal the selector's, and `xml` on a
+collection or structural node lets a second node — under an id of its own —
+bind the same physical element:
+
+```toml
+# <ram:AdditionalReferencedDocument><ram:IssuerAssignedID>…</ram:IssuerAssignedID>
+#   <ram:TypeCode>916</ram:TypeCode>…</ram:AdditionalReferencedDocument>
+[Agreement.AdditionalReferencedDocument]         # BG-24: the rest, written as 916
+type = "collection"
+canonical_key = "SupportingDocuments"
+
+[Agreement.AdditionalReferencedDocument.IssuerAssignedID]
+type = "identifier"
+canonical_key = "SupportingDocumentReference"
+
+[Agreement.AdditionalReferencedDocument.TypeCode] # the discriminator, in sequence position
+type = "string"
+constant = "916"
+
+[Agreement.TenderOrLotReferencedDocument]        # BT-17: the one with TypeCode 50
+xml = "AdditionalReferencedDocument"
+match = { "TypeCode" = "50" }
+
+[Agreement.TenderOrLotReferencedDocument.IssuerAssignedID]
+type = "identifier"
+canonical_key = "TenderOrLotReference"
+```
+
+Every node bound to the element — the one keeping the element's own name and
+every `xml` alias — is a **logical node** of that **physical element**. The
+compiler synthesizes the element once, as one repeated field whose item struct
+is the union of all logical nodes' children, plus one field per logical node.
+The generated reader first sorts every occurrence into the logical node whose
+selector it satisfies (a structural node keeps the first and warns
+`MATCH_MULTIPLE` on more; a logical node without a selector takes what no
+selector matched; an occurrence nothing claims is ignored), then maps as usual.
+The writer maps into the logical fields and finally merges them back into the
+element in declaration order, **writing each selector's values as
+discriminators** — so a node needs no `constant` for its own discriminator; a
+`constant` is only how the selector-less default node pins its code (`916`
+above).
+
+Rules:
+
+- `match` keys are child paths inside the element — an element (`TypeCode`), a
+  nested one (`TaxScheme.ID`), an attribute (`@schemeID`, `ID.@schemeID`) or
+  `$text`; values are compared trimmed and exactly. Every key must name a
+  single scalar declared beneath one of the element's logical nodes (E092);
+  declare the discriminator as a node (a helper is enough) under the *first*
+  logical node, in its schema position, because the shared item struct orders
+  each child by its first declaration.
+- The logical nodes of one element must be **disjoint**: two selectors must
+  share a key with different values, and at most one node may have no
+  selector (E090). `match` belongs on a collection or structural node, never
+  a scalar (E091). The logical nodes must agree on `ns` (E024 otherwise), and
+  a child element declared under several of them must have the same shape.
+- A structural node with a selector is single-valued: its children are
+  ordinary scalars of the enclosing scope (`TenderOrLotReference` above is a
+  root key). A collection with a selector is a collection like any other.
+- Under [inheritance](#inheritance) a CIUS restates only the selector
+  ([peppol.toml](peppol.toml) changes the tax-registration scheme id from
+  `FC` to `TAX`); the `xml` alias and the children are inherited.
 
 ---
 
@@ -814,15 +892,18 @@ Validation reports **every** problem in one run, never just the first error.
 | `E072` | `clone_of` node's `type` differs from its target's |
 | `E080` | Namespace prefix used by `root_ns`, `ns_defaults`, or a node's `ns` but not declared in `[meta.namespaces]` |
 | `E081` | `ns` on an attribute or `$text` leaf (never prefixed) |
-| `E083` | Structural node that names no element (nothing beneath it) or names the root (use `root_ns`) |
+| `E083` | Structural node that names no element (nothing beneath it, or an attribute/`$text` binding) or names the root (use `root_ns`) |
 | `E084` | Unknown codec id |
 | `E085` | `codec` on a collection, or codec `for_type` differs from the node's `type` |
 | `E087` | Codec wire attribute collides with an attribute node on the same element |
+| `E090` | Two logical nodes of one element overlap: identical or non-disjoint `match` selectors, or two nodes without one |
+| `E091` | `match` on a scalar node |
+| `E092` | `match` key does not name a single scalar declared beneath the element's logical nodes (or the selector is empty) |
 | `E093` | Malformed `clone_of` derivation (`$sibling.Key`, `$root.A.B`), or `$parent` at root scope |
 | `W050` | `adapter` is deprecated (warning): use `normalize` or a codec |
 
 Runtime (per-document) diagnostics — missing required values, type validation
 failures, taken fallbacks, `CLONE_MISMATCH`, `CODEC_INVALID`,
-`CODEC_WIRE_MISMATCH` — are reported with severity and a
+`CODEC_WIRE_MISMATCH`, `MATCH_MULTIPLE` — are reported with severity and a
 source-node reference when a document is transformed; they never silently
 vanish.
