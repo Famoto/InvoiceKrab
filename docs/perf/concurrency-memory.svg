@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 380" width="760" height="380" role="img" aria-label="Memory stays bounded under load">
+
+<style>
+  svg { --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+        --grid:#e1e0d9; --axis:#c3c2b7;
+        --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; }
+  @media (prefers-color-scheme: dark) {
+    svg { --surface:#1a1a19; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+          --grid:#2c2c2a; --axis:#383835;
+          --s1:#3987e5; --s2:#d95926; --s3:#199e70; }
+  }
+  text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .title { font-size:16px; font-weight:600; fill:var(--ink); }
+  .sub { font-size:12px; fill:var(--ink2); }
+  .tick { font-size:11px; fill:var(--muted); font-variant-numeric:tabular-nums; }
+  .axlab { font-size:11px; fill:var(--ink2); }
+  .lab { font-size:12px; fill:var(--ink); }
+  .val { font-size:11px; fill:var(--ink2); font-variant-numeric:tabular-nums; }
+  .grid { stroke:var(--grid); stroke-width:1; }
+  .base { stroke:var(--axis); stroke-width:1; }
+  .ref { stroke:var(--muted); stroke-width:1; stroke-dasharray:4 4; fill:none; }
+</style>
+<rect width="760" height="380" rx="8" fill="var(--surface)"/>
+<text class="title" x="24" y="32">Memory stays bounded under load</text>
+<text class="sub" x="24" y="52">Idle: 3 MB. Beyond 4 at once (one per worker) extra invoices wait in line instead of using more memory.</text>
+<line class="grid" x1="80" x2="728" y1="320.0" y2="320.0"/>
+<text class="tick" x="72" y="324.0" text-anchor="end">0 MB</text>
+<line class="grid" x1="80" x2="728" y1="264.0" y2="264.0"/>
+<text class="tick" x="72" y="268.0" text-anchor="end">50 MB</text>
+<line class="grid" x1="80" x2="728" y1="208.0" y2="208.0"/>
+<text class="tick" x="72" y="212.0" text-anchor="end">100 MB</text>
+<line class="grid" x1="80" x2="728" y1="152.0" y2="152.0"/>
+<text class="tick" x="72" y="156.0" text-anchor="end">150 MB</text>
+<line class="grid" x1="80" x2="728" y1="96.0" y2="96.0"/>
+<text class="tick" x="72" y="100.0" text-anchor="end">200 MB</text>
+<text class="axlab" transform="translate(18 208.0) rotate(-90)" text-anchor="middle">Server peak memory</text>
+<path d="M125.0,320.0 V271.4 Q125.0,267.4 129.0,267.4 H193.0 Q197.0,267.4 197.0,271.4 V320.0 Z" fill="var(--s1)"><title>1 large invoices at once: 47 MB</title></path>
+<text class="val" x="161.0" y="259.4" text-anchor="middle">47 MB</text>
+<text class="lab" x="161.0" y="340" text-anchor="middle">1 at once</text>
+<path d="M287.0,320.0 V243.4 Q287.0,239.4 291.0,239.4 H355.0 Q359.0,239.4 359.0,243.4 V320.0 Z" fill="var(--s1)"><title>2 large invoices at once: 72 MB</title></path>
+<text class="val" x="323.0" y="231.4" text-anchor="middle">72 MB</text>
+<text class="lab" x="323.0" y="340" text-anchor="middle">2 at once</text>
+<path d="M449.0,320.0 V171.7 Q449.0,167.7 453.0,167.7 H517.0 Q521.0,167.7 521.0,171.7 V320.0 Z" fill="var(--s1)"><title>4 large invoices at once: 136 MB</title></path>
+<text class="val" x="485.0" y="159.7" text-anchor="middle">136 MB</text>
+<text class="lab" x="485.0" y="340" text-anchor="middle">4 at once</text>
+<path d="M611.0,320.0 V129.1 Q611.0,125.1 615.0,125.1 H679.0 Q683.0,125.1 683.0,129.1 V320.0 Z" fill="var(--s1)"><title>8 large invoices at once: 174 MB</title></path>
+<text class="val" x="647.0" y="117.1" text-anchor="middle">174 MB</text>
+<text class="lab" x="647.0" y="340" text-anchor="middle">8 at once</text>
+<line class="base" x1="80" x2="728" y1="320" y2="320"/>
+<text class="axlab" x="404.0" y="364" text-anchor="middle">Large (8.9 MB) invoices sent at the same time — 4 workers</text>
+</svg>

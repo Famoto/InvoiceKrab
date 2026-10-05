@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 420" width="760" height="420" role="img" aria-label="Time to convert one invoice">
+
+<style>
+  svg { --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+        --grid:#e1e0d9; --axis:#c3c2b7;
+        --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; }
+  @media (prefers-color-scheme: dark) {
+    svg { --surface:#1a1a19; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+          --grid:#2c2c2a; --axis:#383835;
+          --s1:#3987e5; --s2:#d95926; --s3:#199e70; }
+  }
+  text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .title { font-size:16px; font-weight:600; fill:var(--ink); }
+  .sub { font-size:12px; fill:var(--ink2); }
+  .tick { font-size:11px; fill:var(--muted); font-variant-numeric:tabular-nums; }
+  .axlab { font-size:11px; fill:var(--ink2); }
+  .lab { font-size:12px; fill:var(--ink); }
+  .val { font-size:11px; fill:var(--ink2); font-variant-numeric:tabular-nums; }
+  .grid { stroke:var(--grid); stroke-width:1; }
+  .base { stroke:var(--axis); stroke-width:1; }
+  .ref { stroke:var(--muted); stroke-width:1; stroke-dasharray:4 4; fill:none; }
+</style>
+<rect width="760" height="420" rx="8" fill="var(--surface)"/>
+<text class="title" x="24" y="32">Time to convert one invoice</text>
+<text class="sub" x="24" y="52">End to end, command line, from a UBL invoice. Small invoices are dominated by the ~3 ms program start.</text>
+<line class="grid" x1="80" x2="560" y1="360.0" y2="360.0"/>
+<text class="tick" x="72" y="364.0" text-anchor="end">1 ms</text>
+<line class="grid" x1="80" x2="560" y1="294.0" y2="294.0"/>
+<text class="tick" x="72" y="298.0" text-anchor="end">10 ms</text>
+<line class="grid" x1="80" x2="560" y1="228.0" y2="228.0"/>
+<text class="tick" x="72" y="232.0" text-anchor="end">100 ms</text>
+<line class="grid" x1="80" x2="560" y1="162.0" y2="162.0"/>
+<text class="tick" x="72" y="166.0" text-anchor="end">1 s</text>
+<line class="grid" x1="80" x2="560" y1="96.0" y2="96.0"/>
+<text class="tick" x="72" y="100.0" text-anchor="end">10 s</text>
+<text class="tick" x="80.0" y="378" text-anchor="middle"></text>
+<text class="tick" x="112.3" y="378" text-anchor="middle">10 KB</text>
+<text class="tick" x="219.5" y="378" text-anchor="middle">100 KB</text>
+<text class="tick" x="326.7" y="378" text-anchor="middle">1 MB</text>
+<text class="tick" x="433.9" y="378" text-anchor="middle">10 MB</text>
+<text class="tick" x="541.1" y="378" text-anchor="middle">100 MB</text>
+<text class="tick" x="560.0" y="378" text-anchor="middle"></text>
+<line class="base" x1="80" x2="560" y1="360" y2="360"/>
+<text class="axlab" x="320.0" y="400" text-anchor="middle">Invoice file size (log scale)</text>
+<text class="axlab" transform="translate(18 228.0) rotate(-90)" text-anchor="middle">Time (log scale)</text>
+<polyline points="107.7,317.3 217.2,309.1 321.6,271.5 428.5,211.9 535.8,142.2" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"/>
+<circle cx="107.7" cy="317.3" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 4.43 ms</title></circle>
+<circle cx="217.2" cy="309.1" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 5.9 ms</title></circle>
+<circle cx="321.6" cy="271.5" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 22 ms</title></circle>
+<circle cx="428.5" cy="211.9" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 175 ms</title></circle>
+<circle cx="535.8" cy="142.2" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 2.0 s</title></circle>
+<polyline points="107.7,308.4 217.2,307.3 321.6,270.7 428.5,206.7 535.8,139.6" fill="none" stroke="var(--s2)" stroke-width="2" stroke-linejoin="round"/>
+<circle cx="107.7" cy="308.4" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 6.05 ms</title></circle>
+<circle cx="217.2" cy="307.3" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 6.29 ms</title></circle>
+<circle cx="321.6" cy="270.7" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 23 ms</title></circle>
+<circle cx="428.5" cy="206.7" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 210 ms</title></circle>
+<circle cx="535.8" cy="139.6" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 2.2 s</title></circle>
+<polyline points="107.7,319.5 217.2,314.4 321.6,281.5 428.5,221.5 535.8,156.3" fill="none" stroke="var(--s3)" stroke-width="2" stroke-linejoin="round"/>
+<circle cx="107.7" cy="319.5" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 4.11 ms</title></circle>
+<circle cx="217.2" cy="314.4" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 4.9 ms</title></circle>
+<circle cx="321.6" cy="281.5" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 15 ms</title></circle>
+<circle cx="428.5" cy="221.5" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 125 ms</title></circle>
+<circle cx="535.8" cy="156.3" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 1.2 s</title></circle>
+<rect x="572" y="127.6" width="10" height="10" rx="2" fill="var(--s2)"/>
+<text class="lab" x="588" y="136.6">To Factur-X</text>
+<text class="val" x="588" y="150.6">2.2 s</text>
+<rect x="572" y="157.6" width="10" height="10" rx="2" fill="var(--s1)"/>
+<text class="lab" x="588" y="166.6">To UBL</text>
+<text class="val" x="588" y="180.6">2.0 s</text>
+<rect x="572" y="187.6" width="10" height="10" rx="2" fill="var(--s3)"/>
+<text class="lab" x="588" y="196.6">To FatturaPA</text>
+<text class="val" x="588" y="210.6">1.2 s</text>
+<rect x="24" y="69" width="10" height="10" rx="2" fill="var(--s1)"/>
+<text class="lab" x="40" y="78">To UBL</text>
+<rect x="107.2" y="69" width="10" height="10" rx="2" fill="var(--s2)"/>
+<text class="lab" x="123.2" y="78">To Factur-X</text>
+<rect x="226.4" y="69" width="10" height="10" rx="2" fill="var(--s3)"/>
+<text class="lab" x="242.4" y="78">To FatturaPA</text>
+
+</svg>
