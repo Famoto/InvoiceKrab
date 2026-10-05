@@ -393,6 +393,31 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_hub_walks_values_by_scope_qualified_label() {
+        let (_, hub, _) = compiled();
+        let out = generate_hub(&hub);
+        assert!(
+            out.contains("pub fn values(&self) -> Vec<(&'static str, String)> {"),
+            "{out}"
+        );
+        // A root scalar under its key, a collection item's scalar under its
+        // scope-qualified label, and the collection by walking its items.
+        assert!(
+            out.contains("if let Some(value) = &self.invoice_number {\n            out.push((\"InvoiceNumber\", value.to_string()));"),
+            "{out}"
+        );
+        assert!(
+            out.contains("for item in &self.invoice_lines {\n            item.push_values(out);"),
+            "{out}"
+        );
+        let item = &out[out.find("impl InvoiceLinesItem {").expect("item walker")..];
+        assert!(
+            item.contains("out.push((\"InvoiceLines/Quantity\", value.to_string()));"),
+            "{item}"
+        );
+    }
+
+    #[test]
     fn test_generate_spoke_emits_source_structs_and_mappers() {
         let (ir, _, source) = compiled();
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");

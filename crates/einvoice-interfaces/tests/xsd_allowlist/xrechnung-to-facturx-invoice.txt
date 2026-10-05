@@ -1,2 +1,0 @@
-# No residual Factur-X (CII D16B) schema errors: the emitted document must validate.
-# Add a substring pattern per line only for a documented, temporary gap.

@@ -6,12 +6,14 @@
 //! real process streams.
 
 use std::io::Write as _;
+use std::path::Path;
 
 use super::{
     Args, CliError, Command, detect_source, format_list, parse_args, render_diagnostics,
     resolve_spoke, usage,
 };
 use crate::analysis::TransformState;
+use crate::conformance::Xmllint;
 use crate::{Engine, Spoke};
 use einvoice_transformator::result::{MappingDiagnostic, MappingResult};
 
@@ -80,6 +82,10 @@ fn dispatch(
             write_all(stdout, keys_output(format.as_deref())?.as_bytes())?;
             Ok(Vec::new())
         }
+        Command::Check(root) => {
+            write_all(stdout, check_output(root.as_deref())?.as_bytes())?;
+            Ok(Vec::new())
+        }
         Command::Transform(args) => transform(&args, stdin, stdout),
     }
 }
@@ -121,6 +127,32 @@ pub fn analyze_output(
         )));
     }
     Ok(rendered)
+}
+
+/// Builds the `--check` output: runs every schema-conformance check the
+/// mappings declare (see [`crate::conformance`]) against the files under the
+/// workspace `root` (default: the current directory), validating with
+/// `xmllint` when it is installed.
+///
+/// # Errors
+///
+/// Returns [`CliError::Io`] when `root` is not a directory, and
+/// [`CliError::Nonconformant`] carrying the rendered report when any check
+/// fails.
+pub fn check_output(root: Option<&str>) -> Result<String, CliError> {
+    let root = Path::new(root.unwrap_or("."));
+    if !root.is_dir() {
+        return Err(CliError::Io(format!(
+            "workspace root {root:?} is not a directory"
+        )));
+    }
+    let report = crate::conformance::check(root, Xmllint::detect());
+    let rendered = report.render();
+    if report.is_ok() {
+        Ok(rendered)
+    } else {
+        Err(CliError::Nonconformant(rendered))
+    }
 }
 
 /// Builds the `--keys` output: the whole hub vocabulary when `format` is `None`,
@@ -229,6 +261,13 @@ mod tests {
     fn test_keys_output_unknown_format_is_unknown_format() {
         let err = keys_output(Some("totally-made-up")).expect_err("unknown");
         assert!(matches!(err, CliError::UnknownFormat(_)));
+    }
+
+    #[test]
+    fn test_check_output_root_that_is_no_directory_is_an_io_error() {
+        let err = check_output(Some("/no/such/workspace")).expect_err("no root");
+        assert!(matches!(err, CliError::Io(_)), "{err:?}");
+        assert_eq!(err.exit_code(), 74);
     }
 
     #[test]

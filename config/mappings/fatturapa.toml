@@ -34,6 +34,19 @@ root_ns = "p"
 [meta.namespaces]
 p = "http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2"
 
+# Schema conformance: written documents must validate against the FatturaPA
+# 1.2.2 schema. It imports xmldsig by absolute URL; the catalog maps that to
+# the vendored copy, so validation runs offline.
+[meta.schema]
+xsd = "testfiles/xsd/fatturapa-1.2.2/Schema_del_file_xml_FatturaPA_v1.2.2.xsd"
+catalog = "testfiles/xsd/fatturapa-1.2.2/catalog.xml"
+# Schema errors the output still produces, as substring patterns. Delete a
+# pattern as soon as its fix lands: one no error matches fails the check.
+#
+# FatturaElettronicaHeader (DatiTrasmissione, CedentePrestatore,
+# CessionarioCommittente) is mandatory and not yet mapped by this file.
+known_gaps = ["Expected is ( FatturaElettronicaHeader )"]
+
 # The schema-version attribute every FatturaPA document carries on its root.
 [FatturaElettronica.versione]
 xml = "@versione"

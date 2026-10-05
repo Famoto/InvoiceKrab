@@ -34,6 +34,7 @@ pointing at the offending node.
 - [`required` and the transformation contract](#required-and-the-transformation-contract)
 - [Inheritance](#inheritance)
 - [Auto-detection](#auto-detection)
+- [Schema conformance](#schema-conformance)
 - [A complete example](#a-complete-example)
 - [Checking your mapping](#checking-your-mapping)
 - [Diagnostic code reference](#diagnostic-code-reference)
@@ -57,8 +58,9 @@ and compiles every `*.toml` through the DSL pipeline:
    spokes; every problem is reported (never just the first).
 6. **Codegen** — the `read`/`write` mappers and the format registry (the
    `Spoke` enum, display names, detection markers, each spoke's
-   [transformation contract](#required-and-the-transformation-contract)) are
-   emitted as Rust.
+   [transformation contract](#required-and-the-transformation-contract) and
+   its [schema-conformance](#schema-conformance) declarations) are emitted as
+   Rust.
 
 Two spokes round-trip through the hub precisely because they share canonical
 keys — adding a spoke makes it interoperable with *all* existing formats, with
@@ -196,6 +198,12 @@ detect          = ["xrechnung"]             # optional auto-detection markers
 inherits        = "ubl-invoice:2.0"         # optional parent mapping to inherit from
 disabled        = true                      # optional — inherit-only base, emits no spoke
 description     = "…"                       # optional, reports only
+
+[meta.schema]                               # optional — the XSD the format is defined by
+xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
+
+[[meta.samples]]                            # optional, repeatable — a document proving the mapping
+file = "testfiles/xrechnung-3.0.2-beispiel.xml"
 ```
 
 | Field | Required | Purpose |
@@ -213,6 +221,8 @@ description     = "…"                       # optional, reports only
 | `root_ns` | — | Prefix of the root element (default `""`); inherited — see [Namespaces](#namespaces) |
 | `[meta.namespaces]` | — | `prefix = "URI"` declarations emitted on the root (`""` = default namespace); inherited |
 | `[meta.ns_defaults]` | — | `leaf` / `aggregate` default prefixes; inherited |
+| `[meta.schema]` | — | `xsd`, `catalog`, `known_gaps`: the schema the spoke's documents must satisfy; inherited — see [Schema conformance](#schema-conformance) |
+| `[[meta.samples]]` | — | `file`, `source`: sample documents every spoke with a schema must write validly and round-trip; not inherited |
 
 `source_model` is also an assertion: if it disagrees with the synthesized
 model's id, the build fails (E020). Duplicate mapping ids or slugs across
@@ -747,7 +757,8 @@ declares its deltas:
 - Nodes the child adds are emitted after every base node, in the child's own
   declaration order (see [Declaration order is schema order](#declaration-order-is-schema-order)).
 - The namespace entries of `[meta]` (`root_ns`, `namespaces`, `ns_defaults`)
-  are inherited whole when the child omits them.
+  and `[meta.schema]` are inherited whole when the child omits them;
+  `[[meta.samples]]` never are.
 - `disabled = true` on a node removes it from the effective mapping.
 - `disabled = true` in `[meta]` makes the mapping itself **inherit-only**: it
   can be inherited from but emits no spoke (see [cii.toml](cii.toml), which
@@ -793,6 +804,83 @@ detect = ["xrechnung"]
 
 A base format (plain UBL) simply leaves `detect` empty and acts as the
 fallback when no marker matches.
+
+---
+
+## Schema conformance
+
+A mapping can declare the schema its format is defined by and the documents
+that prove the mapping right. The build embeds both in the registry
+(`Spoke::schema`, `Spoke::samples`) and the checks are derived from them, so
+no output test has to be written or kept in step with the TOML by hand.
+
+```toml
+[meta.schema]
+xsd = "testfiles/xsd/fatturapa-1.2.2/Schema_del_file_xml_FatturaPA_v1.2.2.xsd"
+catalog = "testfiles/xsd/fatturapa-1.2.2/catalog.xml"
+known_gaps = ["Expected is ( FatturaElettronicaHeader )"]
+
+[[meta.samples]]
+file = "testfiles/xrechnung-3.0.2-beispiel.xml"
+source = "xrechnung-invoice"     # optional: the spoke that reads it
+```
+
+| Field | Required | Purpose |
+|-------|----------|---------|
+| `schema.xsd` | ✅ | The root XSD |
+| `schema.catalog` | — | An XML catalog resolving the schema's remote imports offline (passed as `XML_CATALOG_FILES`) |
+| `schema.known_gaps` | — | Substring patterns of the schema errors the spoke's output is documented to still produce |
+| `samples.file` | ✅ | A sample document |
+| `samples.source` | — | The spoke that reads the sample, as a mapping id or a bare `doc_format`; default: the declaring mapping |
+
+Every path is relative to the workspace root (the parent of `config/`). A
+path that names no file fails the build (E100), and so does a sample no
+spoke reads: a `source` naming no emitted spoke, or a sample on an
+inherit-only base without a `source` (E101).
+
+`[meta.schema]` is inherited like the namespace entries, so XRechnung and
+Peppol validate against the UBL 2.1 schema [ubl.toml](ubl.toml) declares; a
+child's own table replaces the parent's whole. Samples are never inherited:
+each runs once, read by its spoke.
+
+### What gets verified
+
+For every sample `D`, read by its spoke `R`, and every spoke `S` with a
+`[meta.schema]`:
+
+1. **Sample validity** — `D` validates against `R`'s XSD, and `R` reads it
+   without error diagnostics. A broken fixture fails here, at the fixture;
+   its pairs are not run.
+2. **Emitted validity** — `D` read by `R` and written by `S` validates against
+   `S`'s XSD, up to `S`'s `known_gaps`. Every schema error must match a gap
+   pattern, and every pattern must still match an error of some document `S`
+   wrote: a stale pattern fails, so the lists only ever shrink. A sample has
+   no gaps; it must validate outright.
+3. **Round trip** — the document `S` wrote, read back by `S`, yields the
+   same hub values as reading `D`, for every canonical key `S` covers.
+   Keys `D` carries that `S` does not cover (dropped), and keys `S` pins to a
+   [constant](#constants-pinning-write-side-values) on write, are reported,
+   never failed.
+
+Validation runs `xmllint --noout --nonet --schema <xsd>`. Without `xmllint`
+on `PATH` the schema checks are skipped with a notice and the round trips
+still run; CI installs `libxml2-utils`, so there they always run.
+
+The checks run in `cargo test` (`crates/einvoice-interfaces/tests/xsd_validation.rs`)
+and on demand, with the report, as `krab-cli --check [ROOT]`:
+
+```text
+sample testfiles/xrechnung-3.0.2-beispiel.xml (read by xrechnung-invoice:3.0.2)
+  valid against testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd
+  -> facturx-invoice:1.0: ok (valid, 50 key(s) round-trip)
+  -> fatturapa:1.2.2: ok (valid up to 1 known-gap error(s), 10 key(s) round-trip)
+       known gap: Element 'FatturaElettronicaBody': This element is not expected. Expected is ( FatturaElettronicaHeader ).
+       dropped (40): BusinessProcessType, BuyerAddressLine1, …
+```
+
+The mapping stays the source of truth for element order and cardinalities;
+the schema is the oracle that checks them. Schematron business rules are
+not run.
 
 ---
 
@@ -875,12 +963,16 @@ cargo run -p einvoice-dsl -- check config
 cargo run -p einvoice-dsl -- report config
 ```
 
+`check` also verifies the files your `[meta.schema]` and `[[meta.samples]]`
+declare exist (E100) and that every sample has a reader (E101).
+
 Once it builds, the CLI offers two static authoring aids (no input document
-needed):
+needed), and the schema verdict on your declared samples:
 
 ```bash
 krab-cli --keys <your-format>    # covered vs. unused canonical keys
 krab-cli --analyze <your-format> # which conversions lose data, and what
+krab-cli --check                 # XSD validity and round trips (see Schema conformance)
 ```
 
 Validation reports **every** problem in one run, never just the first error.
@@ -924,6 +1016,8 @@ Validation reports **every** problem in one run, never just the first error.
 | `E092` | `match` key does not name a single scalar declared beneath the element's logical nodes (or the selector is empty) |
 | `E093` | Malformed `clone_of` derivation (`$sibling.Key`, `$root.A.B`), or `$parent` at root scope |
 | `W095` | A `required` node needs a hub key no other spoke maps (warning): no transform into this spoke, except from itself, can supply it |
+| `E100` | A `[meta.schema]` or `[[meta.samples]]` path is absolute or names no file under the workspace root |
+| `E101` | A sample has no reader: its `source` names no emitted spoke, or it is declared on an inherit-only base without a `source` |
 
 Runtime (per-document) diagnostics — missing required values, type validation
 failures, taken fallbacks, `CLONE_MISMATCH`, `CODEC_INVALID`,

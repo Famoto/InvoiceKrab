@@ -25,7 +25,8 @@ use crate::source_model::{NamespaceConfig, SourceModelMeta, synthesize_source_mo
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MappingIr {
     /// The leaf mapping's `[meta]`, with the namespace entries (`root_ns`,
-    /// `namespaces`, `ns_defaults`) it omitted filled in from its ancestors.
+    /// `namespaces`, `ns_defaults`) and the `schema` table it omitted filled in
+    /// from its ancestors.
     pub meta: MappingMeta,
     /// Effective active nodes, in deterministic id order.
     pub nodes: BTreeMap<NodeId, SourceNode>,
@@ -57,11 +58,13 @@ pub fn build_ir_with(
     let (leaf, ancestors) = chain
         .split_last()
         .expect("inheritance chain must contain at least the leaf mapping");
-    // Namespace meta is inherited: the nearest ancestor that declares an entry
-    // supplies it when the leaf (and every closer ancestor) omits it.
+    // Namespace and schema meta are inherited: the nearest ancestor that
+    // declares an entry supplies it when the leaf (and every closer ancestor)
+    // omits it.
     let mut meta = leaf.meta.clone();
     for ancestor in ancestors.iter().rev() {
         meta.inherit_namespaces(&ancestor.meta);
+        meta.inherit_schema(&ancestor.meta);
     }
     let ns = NamespaceConfig {
         root_prefix: meta.root_prefix().to_string(),
@@ -181,6 +184,27 @@ mod tests {
         assert_eq!(source.structs["Invoice"].fields["totals"].prefix, "cac");
         assert_eq!(source.structs["Totals"].fields["amount"].prefix, "cbc");
         assert_eq!(source.namespaces.declared["cac"], "urn:cac");
+    }
+
+    #[test]
+    fn test_build_ir_inherits_schema_but_not_samples() {
+        let parent = parse_mapping(&format!(
+            "{META}\n[meta.schema]\nxsd = \"base.xsd\"\n[[meta.samples]]\nfile = \"base.xml\"\n\n[Invoice.ID]\ntype = \"identifier\""
+        ))
+        .expect("parses");
+        let child = parsed(
+            r#"[Invoice.ID]
+            type = "identifier"
+            required = true"#,
+        );
+        let (ir, _, diags) = build_ir(&[parent, child]);
+        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(
+            ir.meta.schema.as_ref().map(|s| s.xsd.as_str()),
+            Some("base.xsd"),
+            "the CIUS validates against its base syntax's schema"
+        );
+        assert!(ir.meta.samples.is_empty(), "samples stay with their spoke");
     }
 
     #[test]

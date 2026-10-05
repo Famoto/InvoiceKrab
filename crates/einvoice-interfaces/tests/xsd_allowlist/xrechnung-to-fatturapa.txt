@@ -1,6 +1,0 @@
-# Residual FatturaPA 1.2.2 schema errors, one substring pattern per line.
-# Delete a line as soon as the fix lands; the harness fails on stale lines.
-
-# FatturaElettronicaHeader (DatiTrasmissione, CedentePrestatore,
-# CessionarioCommittente) is mandatory and not yet mapped by fatturapa.toml.
-Expected is ( FatturaElettronicaHeader )

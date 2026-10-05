@@ -11,7 +11,10 @@
 //! # Commands
 //!
 //! - `check  <config-dir>` — compile the mappings; print every diagnostic (R9:
-//!   all of them). Exits non-zero on any error-severity diagnostic.
+//!   all of them). Exits non-zero on any error-severity diagnostic. Loading
+//!   already fails (exit 2) on a declared schema or sample file that does not
+//!   exist under the workspace root, the config dir's parent (E100), or a
+//!   sample no spoke reads (E101).
 //! - `report <config-dir>` — print the canonical coverage matrix and the gap
 //!   report.
 //!

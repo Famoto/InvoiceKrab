@@ -18,8 +18,8 @@ Notes:
 - The FatturaPA schema imports xmldsig via an absolute URL
   (http://www.w3.org/TR/2002/REC-xmldsig-core-20020212/xmldsig-core-schema.xsd).
   `fatturapa-1.2.2/catalog.xml` (ours, not upstream) is the XML catalog that maps
-  it to the local `xmldsig-core-schema.xsd`; the harness in
-  `crates/einvoice-interfaces/tests/xsd_validation.rs` passes it via
+  it to the local `xmldsig-core-schema.xsd`. `config/mappings/fatturapa.toml`
+  declares it as `[meta.schema].catalog`, the conformance checks pass it via
   `XML_CATALOG_FILES`, and `xmllint --nonet` then validates offline.
 - Not yet compared against the official downloads; SHA256SUMS lets you do that.
 - Only Invoice and CreditNote were taken from the UBL maindoc set.

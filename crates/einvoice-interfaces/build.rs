@@ -25,8 +25,9 @@
 //!   module is byte-identical to an earlier one emits no file (aliased module).
 //! - `spokes.rs` — the generated glue: a `mod <slug>` per spoke (include or
 //!   alias), the shared structs modules, the public `Spoke` enum with each
-//!   spoke's embedded transformation contract (`Spoke::contract`), and the
-//!   `read`/`write` dispatch over it.
+//!   spoke's embedded transformation contract (`Spoke::contract`) and its
+//!   schema-conformance declarations (`Spoke::schema`, `Spoke::samples`), and
+//!   the `read`/`write` dispatch over it.
 //!
 //! `compile` synthesizes each spoke's typed source model from its nodes (the ids
 //! mirror the XML element tree); `lib.rs` `include!`s the generated code. There is
@@ -39,8 +40,8 @@ use std::path::{Path, PathBuf};
 use einvoice_dsl::compile::{CompileOutput, SpokeInput};
 use einvoice_dsl::ir::MappingIr;
 use einvoice_dsl::{
-    Severity, SourceModelMeta, SpokeContract, SpokeDedupPlan, SpokeModule, compile, generate_hub,
-    load_config, plan_spoke_dedup, render_contract, spoke_contract,
+    LoadedSpoke, SchemaMeta, Severity, SourceModelMeta, SpokeContract, SpokeDedupPlan, SpokeModule,
+    compile, generate_hub, load_config, plan_spoke_dedup, render_contract, spoke_contract,
 };
 
 /// One discovered spoke: its meta-derived names plus its compiled artifacts.
@@ -63,6 +64,12 @@ struct Spoke {
     source: SourceModelMeta,
     /// The spoke's transformation contract (embedded in the registry).
     contract: SpokeContract,
+    /// The effective `[meta.schema]` (inherited by a CIUS), carried into
+    /// `Spoke::schema`.
+    schema: Option<SchemaMeta>,
+    /// The workspace-relative sample documents this spoke reads, carried into
+    /// `Spoke::samples`.
+    samples: Vec<String>,
 }
 
 fn main() {
@@ -81,7 +88,9 @@ fn main() {
     // check` uses.
     let loaded = load_config(&config_dir)
         .unwrap_or_else(|e| panic!("loading {}: {e}", config_dir.display()));
-    for path in &loaded.files {
+    // The declared schema and sample files too: the loader checked they
+    // exist, and a deleted one must fail the next build (E100).
+    for path in loaded.files.iter().chain(&loaded.declared_files) {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     let inputs: Vec<SpokeInput> = loaded
@@ -95,7 +104,7 @@ fn main() {
     let out = compile(&inputs, &loaded.codecs);
     assert_clean(&out);
 
-    let spokes = collect_spokes(&out);
+    let spokes = collect_spokes(&out, &loaded.spokes);
 
     // Emit the shared hub once (already derived + validated by `compile`).
     std::fs::write(out_dir.join("hub.rs"), generate_hub(&out.hub)).expect("write hub.rs");
@@ -138,8 +147,9 @@ fn workspace_config_dir() -> PathBuf {
 
 /// Builds the per-spoke codegen descriptors from a clean [`CompileOutput`]. Every
 /// name (`variant`, `name`, `detect`) is derived from the compiled IR's `[meta]`,
-/// and the `ir` + `source` are the exact artifacts `compile` validated.
-fn collect_spokes(out: &CompileOutput) -> Vec<Spoke> {
+/// and the `ir` + `source` are the exact artifacts `compile` validated; the
+/// samples each spoke reads come from the loader (`loaded`).
+fn collect_spokes(out: &CompileOutput, loaded: &[LoadedSpoke]) -> Vec<Spoke> {
     out.irs
         .iter()
         .map(|(slug, ir)| {
@@ -154,6 +164,12 @@ fn collect_spokes(out: &CompileOutput) -> Vec<Spoke> {
                 .unwrap_or_else(|| panic!("compile output missing source for `{slug}`"))
                 .clone();
             let contract = spoke_contract(&name, ir, &source);
+            let samples = loaded
+                .iter()
+                .find(|l| &l.slug == slug)
+                .unwrap_or_else(|| panic!("loader output missing spoke `{slug}`"))
+                .samples
+                .clone();
             Spoke {
                 slug: slug.clone(),
                 variant: pascal_of(&meta.doc_format),
@@ -163,6 +179,8 @@ fn collect_spokes(out: &CompileOutput) -> Vec<Spoke> {
                 ir: ir.clone(),
                 source,
                 contract,
+                schema: meta.schema.clone(),
+                samples,
             }
         })
         .collect()
@@ -250,13 +268,12 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
     out.push_str("    pub fn detect_markers(self) -> &'static [&'static str] {\n");
     out.push_str("        match self {\n");
     for spoke in spokes {
-        let markers = spoke
-            .detect
-            .iter()
-            .map(|m| format!("{m:?}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let _ = writeln!(out, "            Spoke::{} => &[{markers}],", spoke.variant);
+        let _ = writeln!(
+            out,
+            "            Spoke::{} => &[{}],",
+            spoke.variant,
+            str_list(&spoke.detect)
+        );
     }
     out.push_str("        }\n");
     out.push_str("    }\n\n");
@@ -290,6 +307,49 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
             "            Spoke::{} => &{},",
             spoke.variant,
             contract_static(spoke)
+        );
+    }
+    out.push_str("        }\n");
+    out.push_str("    }\n\n");
+
+    // The schema-conformance declarations: the XSD the spoke's documents are
+    // validated against, and the sample documents it reads.
+    out.push_str(
+        "    /// The XSD this spoke's documents are defined by, from `[meta.schema]`\n\
+         \x20\x20\x20\x20/// (inherited by a CIUS); `None` when the mapping declares none.\n",
+    );
+    out.push_str("    pub fn schema(self) -> Option<&'static crate::conformance::Schema> {\n");
+    out.push_str("        match self {\n");
+    for spoke in spokes {
+        let schema = match &spoke.schema {
+            None => "None".to_string(),
+            Some(schema) => format!(
+                "Some(&crate::conformance::Schema {{ xsd: {:?}, catalog: {}, known_gaps: &[{}] }})",
+                schema.xsd,
+                match &schema.catalog {
+                    Some(catalog) => format!("Some({catalog:?})"),
+                    None => "None".to_string(),
+                },
+                str_list(&schema.known_gaps)
+            ),
+        };
+        let _ = writeln!(out, "            Spoke::{} => {schema},", spoke.variant);
+    }
+    out.push_str("        }\n");
+    out.push_str("    }\n\n");
+    out.push_str(
+        "    /// The sample documents this spoke reads, from `[[meta.samples]]`:\n\
+         \x20\x20\x20\x20/// workspace-relative paths, each to be schema-valid itself and to\n\
+         \x20\x20\x20\x20/// round-trip through every spoke with a schema.\n",
+    );
+    out.push_str("    pub fn samples(self) -> &'static [&'static str] {\n");
+    out.push_str("        match self {\n");
+    for spoke in spokes {
+        let _ = writeln!(
+            out,
+            "            Spoke::{} => &[{}],",
+            spoke.variant,
+            str_list(&spoke.samples)
         );
     }
     out.push_str("        }\n");
@@ -343,6 +403,15 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
     out.push_str("}\n");
 
     out
+}
+
+/// `items` as the elements of a Rust string-slice literal (`"a", "b"`).
+fn str_list(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|item| format!("{item:?}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The name of the `static` holding a spoke's embedded contract

@@ -27,6 +27,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
     let mut analyze = false;
     let mut deny_lossy = false;
     let mut keys = false;
+    let mut check = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -40,6 +41,10 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
             }
             "--keys" => {
                 keys = true;
+                i += 1;
+            }
+            "--check" => {
+                check = true;
                 i += 1;
             }
             "--deny-lossy" => {
@@ -67,14 +72,15 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
         }
     }
 
-    // `--analyze` and `--keys` are mode switches: the optional format(s) come
-    // from `--from` / `--to` or positionals, so e.g. `--keys`, `--keys
-    // ubl-invoice`, `--keys --from ubl-invoice`, `--analyze ubl-invoice
-    // xrechnung-invoice` and `--analyze --from ubl-invoice --to xrechnung-invoice`
-    // all work. They are mutually exclusive.
-    if analyze && keys {
+    // `--analyze`, `--keys` and `--check` are mode switches: the optional
+    // format(s) come from `--from` / `--to` or positionals, so e.g. `--keys`,
+    // `--keys ubl-invoice`, `--keys --from ubl-invoice`, `--analyze
+    // ubl-invoice xrechnung-invoice` and `--analyze --from ubl-invoice --to
+    // xrechnung-invoice` all work; `--check` takes an optional workspace root.
+    // They are mutually exclusive.
+    if [analyze, keys, check].iter().filter(|&&mode| mode).count() > 1 {
         return Err(CliError::Usage(
-            "--analyze and --keys cannot be combined".into(),
+            "--analyze, --keys and --check cannot be combined".into(),
         ));
     }
     if analyze {
@@ -109,6 +115,19 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
     }
     if target_format.is_some() {
         return Err(CliError::Usage("--to only applies to --analyze".into()));
+    }
+    if check {
+        if source_format.is_some() || output.is_some() {
+            return Err(CliError::Usage(
+                "--check takes only an optional workspace root, no --from or --out".into(),
+            ));
+        }
+        if positionals.len() > 1 {
+            return Err(CliError::Usage(
+                "--check takes at most one workspace root".into(),
+            ));
+        }
+        return Ok(Command::Check(positionals.pop()));
     }
     if keys {
         if positionals.len() > 1 {
@@ -328,6 +347,39 @@ mod tests {
     fn test_parse_args_keys_and_analyze_combined_is_usage_error() {
         let err = parse_args(&[s("--keys"), s("--analyze")]).expect_err("should fail");
         assert!(matches!(err, CliError::Usage(_)));
+    }
+
+    #[test]
+    fn test_parse_args_check_with_and_without_a_root() {
+        assert_eq!(
+            parse_args(&[s("--check")]).expect("ok"),
+            Command::Check(None)
+        );
+        assert_eq!(
+            parse_args(&[s("--check"), s("/repo")]).expect("ok"),
+            Command::Check(Some(s("/repo")))
+        );
+        assert_eq!(
+            parse_args(&[s("/repo"), s("--check")]).expect("ok"),
+            Command::Check(Some(s("/repo"))),
+            "the root may come first"
+        );
+    }
+
+    #[test]
+    fn test_parse_args_check_rejects_other_modes_and_options() {
+        for args in [
+            vec![s("--check"), s("--analyze")],
+            vec![s("--keys"), s("--check")],
+            vec![s("--check"), s("a"), s("b")],
+            vec![s("--check"), s("--from"), s("ubl-invoice")],
+            vec![s("--check"), s("--out"), s("x.txt")],
+            vec![s("--check"), s("--to"), s("ubl-invoice")],
+            vec![s("--check"), s("--deny-lossy")],
+        ] {
+            let err = parse_args(&args).expect_err("should fail");
+            assert!(matches!(err, CliError::Usage(_)), "{args:?}: {err:?}");
+        }
     }
 
     #[test]
