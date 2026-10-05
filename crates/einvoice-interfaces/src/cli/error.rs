@@ -21,6 +21,9 @@ pub enum CliError {
     Engine(String),
     /// The mapping produced error-severity diagnostics. Exit code 65 (`EX_DATAERR`).
     Mapping(String),
+    /// `--analyze --deny-lossy` found a transform that is not lossless; carries
+    /// the rendered report. Exit code 65 (`EX_DATAERR`).
+    Lossy(String),
 }
 
 impl std::fmt::Display for CliError {
@@ -32,6 +35,7 @@ impl std::fmt::Display for CliError {
             CliError::Io(m) => write!(f, "io error: {m}"),
             CliError::Engine(m) => write!(f, "engine error: {m}"),
             CliError::Mapping(m) => write!(f, "{m}"),
+            CliError::Lossy(m) => write!(f, "{m}"),
         }
     }
 }
@@ -44,7 +48,7 @@ impl CliError {
         match self {
             CliError::Usage(_) | CliError::UnknownFormat(_) | CliError::AmbiguousSource(_) => 64,
             CliError::Io(_) => 74,
-            CliError::Engine(_) | CliError::Mapping(_) => 65,
+            CliError::Engine(_) | CliError::Mapping(_) | CliError::Lossy(_) => 65,
         }
     }
 }

@@ -12,15 +12,27 @@ pub enum Command {
     Transform(Args),
     /// List the available formats and exit.
     ListFormats,
-    /// Report the loss/error state of every transform, optionally scoped to a
-    /// single source format (`None` means the full source x target matrix).
-    Analyze(Option<String>),
+    /// Report the loss/error state of transforms: the full source x target
+    /// matrix, one source's row, or one pair in full (see [`AnalyzeArgs`]).
+    Analyze(AnalyzeArgs),
     /// Show the canonical main keys, as an authoring aid for writing mappings.
     /// `None` lists the whole hub vocabulary; `Some(format)` shows that spoke's
     /// covered vs. unused keys.
     Keys(Option<String>),
     /// Print usage and exit successfully.
     Help,
+}
+
+/// The inputs of an `--analyze` command.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AnalyzeArgs {
+    /// Scope to transforms from this source format; `None` means every source.
+    pub source: Option<String>,
+    /// With a source, the single target to report in full; `None` means every
+    /// target (a table row per target).
+    pub target: Option<String>,
+    /// Exit non-zero (65) when any reported transform is not lossless.
+    pub deny_lossy: bool,
 }
 
 /// The resolved inputs of a transform command.

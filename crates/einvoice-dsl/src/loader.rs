@@ -1,26 +1,30 @@
-//! Mappings-directory loader: the one way spokes are discovered and their
-//! inheritance chains resolved.
+//! Configuration loader: the one way codecs and spokes are discovered and
+//! each spoke's inheritance chain resolved.
 //!
 //! Both consumers of the compiler — the `einvoice-interfaces` build script and
 //! the `xtask` dev CLI (`cargo run -p einvoice-dsl -- check|report`) — load the
-//! same `mappings/` directory. This module owns that loading so the two can
-//! never diverge: scanning `*.toml`, parsing, resolving each spoke's
-//! `[meta].inherits` chain (ancestor-first), skipping `disabled = true`
-//! inherit-only bases, and deriving each spoke's slug from `[meta].doc_format`.
+//! same `config/` directory: `config/codecs/*.toml` (the shared codecs, loaded
+//! first) and `config/mappings/*.toml` (the spokes). This module owns that
+//! loading so the two can never diverge: scanning `*.toml`, parsing, resolving
+//! each spoke's `[meta].inherits` chain (ancestor-first), skipping
+//! `disabled = true` inherit-only bases, and deriving each spoke's slug from
+//! `[meta].doc_format`.
 //!
 //! # Structure
 //!
 //! - [`LoadedSpoke`] — one emitted spoke: its slug and owned mapping chain.
-//! - [`LoadOutput`] — the loaded spokes plus the scanned file paths (the build
-//!   script registers those for `rerun-if-changed`).
-//! - [`load_dir`] — scan + parse + chain-resolve one directory.
+//! - [`LoadOutput`] — the codec table, the loaded spokes, and the scanned file
+//!   paths (the build script registers those for `rerun-if-changed`).
+//! - [`load_config`] — load a `config/` directory: codecs, then mappings.
+//! - [`load_dir`] — scan + parse + chain-resolve one mappings directory.
 //! - [`slug_of`] — `doc_format` → `snake_case` Rust module id.
 //!
 //! # Behavior
 //!
 //! Spokes are returned in slug order. Errors (unreadable dir/file, TOML parse
-//! failure, duplicate mapping ids or slugs, unknown/cyclic `inherits`) are
-//! fatal [`ConfigError`]s: loading cannot proceed past them.
+//! failure, duplicate codec ids, duplicate mapping ids or slugs, unknown/cyclic
+//! `inherits`) are fatal [`ConfigError`]s: loading cannot proceed past them. A
+//! missing `codecs/` directory simply means no codecs.
 //!
 //! # Testing
 //!
@@ -30,6 +34,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::codec::{CodecTable, parse_codecs};
 use crate::error::ConfigError;
 use crate::parse::{ParsedMapping, parse_mapping};
 
@@ -44,25 +49,60 @@ pub struct LoadedSpoke {
     pub chain: Vec<ParsedMapping>,
 }
 
-/// The result of loading a mappings directory.
+/// The result of loading a configuration (or a bare mappings directory).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadOutput {
+    /// The shared codecs by id (empty for [`load_dir`]).
+    pub codecs: CodecTable,
     /// Emitted spokes in slug order (disabled inherit-only bases excluded).
     pub spokes: Vec<LoadedSpoke>,
     /// Every `*.toml` file scanned, sorted (for build-script change tracking).
     pub files: Vec<PathBuf>,
 }
 
-/// Loads every spoke mapping from `dir`: scans `*.toml`, parses each file,
-/// resolves `inherits` chains, skips `disabled` inherit-only bases, and derives
-/// slugs from `[meta].doc_format`.
+/// Loads a `config/` directory: the codecs from `<dir>/codecs/*.toml` (if the
+/// directory exists), then the spoke mappings from `<dir>/mappings/*.toml` via
+/// [`load_dir`].
 ///
 /// # Errors
 ///
-/// Fails on an unreadable directory or file, a TOML parse error, two mappings
-/// sharing an id or slug, an `inherits` reference to an unknown mapping, or an
-/// inheritance cycle.
-pub fn load_dir(dir: &Path) -> Result<LoadOutput, ConfigError> {
+/// Everything [`load_dir`] fails on, plus an unreadable codecs directory or
+/// file, an invalid codec file, or a codec id declared in more than one file.
+pub fn load_config(dir: &Path) -> Result<LoadOutput, ConfigError> {
+    let codecs_dir = dir.join("codecs");
+    let mut codecs = CodecTable::new();
+    let mut codec_files: Vec<PathBuf> = Vec::new();
+    if codecs_dir.is_dir() {
+        codec_files = toml_files(&codecs_dir)?;
+        for path in &codec_files {
+            let src = std::fs::read_to_string(path)
+                .map_err(|e| ConfigError::msg(format!("cannot read `{}`: {e}", path.display())))?;
+            let parsed = parse_codecs(&src)
+                .map_err(|e| ConfigError::msg(format!("{}: {}", path.display(), e.message)))?;
+            for codec in parsed {
+                if codecs.contains_key(&codec.id) {
+                    return Err(ConfigError::msg(format!(
+                        "{}: codec `{}` is already declared in another file",
+                        path.display(),
+                        codec.id
+                    )));
+                }
+                codecs.insert(codec.id.clone(), codec);
+            }
+        }
+    }
+    let mappings = load_dir(&dir.join("mappings"))?;
+    let mut files = codec_files;
+    files.extend(mappings.files);
+    Ok(LoadOutput {
+        codecs,
+        spokes: mappings.spokes,
+        files,
+    })
+}
+
+/// The sorted `*.toml` files directly inside `dir`.
+fn toml_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| ConfigError::msg(format!("cannot read `{}`: {e}", dir.display())))?
         .map(|entry| entry.map(|e| e.path()))
@@ -72,6 +112,20 @@ pub fn load_dir(dir: &Path) -> Result<LoadOutput, ConfigError> {
         .filter(|p| p.extension().is_some_and(|ext| ext == "toml"))
         .collect();
     files.sort();
+    Ok(files)
+}
+
+/// Loads every spoke mapping from `dir`: scans `*.toml`, parses each file,
+/// resolves `inherits` chains, skips `disabled` inherit-only bases, and derives
+/// slugs from `[meta].doc_format`. The returned codec table is empty.
+///
+/// # Errors
+///
+/// Fails on an unreadable directory or file, a TOML parse error, two mappings
+/// sharing an id or slug, an `inherits` reference to an unknown mapping, or an
+/// inheritance cycle.
+pub fn load_dir(dir: &Path) -> Result<LoadOutput, ConfigError> {
+    let files = toml_files(dir)?;
 
     // Parse every mapping first, keyed by its mapping id, so a spoke's
     // `inherits` can resolve to an ancestor regardless of file order.
@@ -117,7 +171,11 @@ pub fn load_dir(dir: &Path) -> Result<LoadOutput, ConfigError> {
     }
     spokes.sort_by(|a, b| a.slug.cmp(&b.slug));
 
-    Ok(LoadOutput { spokes, files })
+    Ok(LoadOutput {
+        codecs: CodecTable::new(),
+        spokes,
+        files,
+    })
 }
 
 /// A mapping's identity, mirroring `build_ir`'s `source_model` fallback: the
@@ -293,6 +351,68 @@ mod tests {
             .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
             .collect();
         assert_eq!(names, ["a.toml", "b.toml"]);
+    }
+
+    /// A `config/` layout: `codecs/*.toml` and `mappings/*.toml` under one root.
+    fn config_with(codecs: &[(&str, &str)], mappings: &[(&str, &str)]) -> PathBuf {
+        let dir = dir_with(&[]);
+        std::fs::create_dir_all(dir.join("codecs")).unwrap();
+        std::fs::create_dir_all(dir.join("mappings")).unwrap();
+        for (name, body) in codecs {
+            std::fs::write(dir.join("codecs").join(format!("{name}.toml")), body).unwrap();
+        }
+        for (name, body) in mappings {
+            std::fs::write(dir.join("mappings").join(format!("{name}.toml")), body).unwrap();
+        }
+        dir
+    }
+
+    const DATE_CODEC: &str = "[codec.cii-date-102]\nfor_type = \"date\"\nlexical = \"YYYYMMDD\"\nwire = { \"@format\" = \"102\" }\n";
+
+    #[test]
+    fn test_load_config_loads_codecs_then_mappings() {
+        let dir = config_with(&[("dates", DATE_CODEC)], &[("base", &meta("base-fmt", ""))]);
+        let out = load_config(&dir).expect("loads");
+        assert_eq!(out.codecs.len(), 1);
+        assert_eq!(out.codecs["cii-date-102"].wire["format"], "102");
+        assert_eq!(out.spokes.len(), 1);
+        let names: Vec<_> = out
+            .files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["dates.toml", "base.toml"], "codec files first");
+    }
+
+    #[test]
+    fn test_load_config_without_codecs_dir_has_no_codecs() {
+        let dir = dir_with(&[]);
+        std::fs::create_dir_all(dir.join("mappings")).unwrap();
+        std::fs::write(dir.join("mappings/base.toml"), meta("base-fmt", "")).unwrap();
+        let out = load_config(&dir).expect("loads");
+        assert!(out.codecs.is_empty());
+        assert_eq!(out.spokes.len(), 1);
+    }
+
+    #[test]
+    fn test_load_config_duplicate_codec_id_across_files_is_error() {
+        let dir = config_with(
+            &[("a", DATE_CODEC), ("b", DATE_CODEC)],
+            &[("base", &meta("base-fmt", ""))],
+        );
+        let err = load_config(&dir).unwrap_err();
+        assert!(err.message.contains("already declared"), "{}", err.message);
+    }
+
+    #[test]
+    fn test_load_config_invalid_codec_names_the_file() {
+        let dir = config_with(
+            &[("bad", "[codec.x]\nfor_type = \"date\"\nlexical = \"YYYY\"")],
+            &[("base", &meta("base-fmt", ""))],
+        );
+        let err = load_config(&dir).unwrap_err();
+        assert!(err.message.contains("bad.toml"), "{}", err.message);
+        assert!(err.message.contains("`MM` is required"), "{}", err.message);
     }
 
     #[test]

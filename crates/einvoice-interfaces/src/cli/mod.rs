@@ -36,9 +36,12 @@
 //! Mapping diagnostics are rendered to stderr; an error-severity diagnostic makes
 //! the process exit non-zero without emitting partial output.
 //!
-//! `krab-cli --analyze [SOURCE-FORMAT]` instead emits a static table of every
-//! transform's loss/error state (no input document needed); with a source format
-//! it is scoped to "from that format to everything else". See [`crate::analysis`].
+//! `krab-cli --analyze [SOURCE-FORMAT [TARGET-FORMAT]] [--deny-lossy]` instead
+//! emits a static report of transforms' loss/error state (no input document
+//! needed): the full matrix, one source's row, or — with both formats — one
+//! pair in full (every missing required route, dropped key, pin, recode and
+//! declared collapse). `--deny-lossy` exits 65 when any reported transform is
+//! not lossless, for CI gates. See [`crate::analysis`].
 //!
 //! `krab-cli --keys [FORMAT]` is an authoring aid for writing the mapping
 //! TOMLs: with no format it lists the whole canonical "main key" vocabulary and
@@ -60,9 +63,9 @@ mod parse;
 mod render;
 mod run;
 
-pub use command::{Args, Command};
+pub use command::{AnalyzeArgs, Args, Command};
 pub use detect::{detect_source, resolve_spoke};
 pub use error::CliError;
 pub use parse::parse_args;
 pub use render::{format_list, render_diagnostics, usage};
-pub use run::{analyze_table, run, write_output_file};
+pub use run::{analyze_output, run, write_output_file};

@@ -33,7 +33,7 @@ fn invoke(args: &[&str], stdin: &[u8]) -> (i32, String, String) {
 fn test_transform_explicit_source_writes_xml_to_stdout() {
     let (code, out, err) = invoke(&["-", "ubl-invoice", "--from", "ubl-invoice"], UBL);
     assert_eq!(code, 0, "stderr: {err}");
-    assert!(out.contains("<ID>INV-42</ID>"), "got: {out}");
+    assert!(out.contains("<cbc:ID>INV-42</cbc:ID>"), "got: {out}");
     assert!(out.ends_with('\n'));
 }
 
@@ -41,7 +41,10 @@ fn test_transform_explicit_source_writes_xml_to_stdout() {
 fn test_transform_auto_detect_source_from_stdin() {
     let (code, out, _err) = invoke(&["-", "ubl-invoice"], UBL);
     assert_eq!(code, 0);
-    assert!(out.contains("<DocumentCurrencyCode>EUR</DocumentCurrencyCode>"));
+    assert!(
+        out.contains("<cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -122,7 +125,7 @@ fn test_out_flag_writes_to_file() {
     assert!(out.is_empty(), "output went to file, not stdout");
 
     let written = std::fs::read_to_string(&path).expect("output file exists");
-    assert!(written.contains("<ID>INV-42</ID>"));
+    assert!(written.contains("<cbc:ID>INV-42</cbc:ID>"), "{written}");
     let _ = std::fs::remove_file(&path);
 }
 
@@ -149,6 +152,54 @@ fn test_analyze_scoped_to_one_source_exits_zero() {
     assert_eq!(code, 0, "stderr: {err}");
     assert!(out.contains("ubl-invoice"), "got: {out}");
     assert!(out.contains("legend:"));
+}
+
+#[test]
+fn test_analyze_pair_reports_in_full_and_exits_zero() {
+    let (code, out, err) = invoke(&["--analyze", "ubl-invoice", "facturx-invoice"], b"");
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(
+        out.starts_with("ubl-invoice:2.1 -> facturx-invoice:1.0: ~ lossful\n"),
+        "got: {out}"
+    );
+    assert!(
+        out.contains("dropped (no slot in the target)"),
+        "got: {out}"
+    );
+    assert!(out.contains("recoded"), "got: {out}");
+    assert!(!out.contains("legend:"), "a pair is not the table: {out}");
+}
+
+#[test]
+fn test_analyze_deny_lossy_exits_65_with_the_report_on_stderr() {
+    let (code, out, err) = invoke(
+        &[
+            "--analyze",
+            "fatturapa",
+            "xrechnung-invoice",
+            "--deny-lossy",
+        ],
+        b"",
+    );
+    assert_eq!(code, 65);
+    assert!(out.is_empty(), "nothing on stdout when the gate fails");
+    assert!(err.contains("! partial"), "stderr: {err}");
+    assert!(err.contains("SpecificationId"), "stderr: {err}");
+    assert!(err.contains("not lossless (--deny-lossy)"), "stderr: {err}");
+
+    let (code, out, err) = invoke(
+        &[
+            "--analyze",
+            "--from",
+            "ubl-invoice",
+            "--to",
+            "ubl-invoice",
+            "--deny-lossy",
+        ],
+        b"",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(out.contains("= lossless"), "got: {out}");
 }
 
 #[test]

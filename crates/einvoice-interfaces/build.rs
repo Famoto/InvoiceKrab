@@ -1,18 +1,19 @@
 //! Build-time codegen of the typed hub + native spoke mappers.
 //!
-//! Every `*.toml` in the workspace `mappings/` directory is a spoke. Nothing is
-//! hardcoded here: the directory is scanned, and each spoke's identity — its
+//! Every `*.toml` in the workspace `config/mappings/` directory is a spoke, and
+//! every `*.toml` in `config/codecs/` a set of shared lexical codecs. Nothing is
+//! hardcoded here: the directories are scanned, and each spoke's identity — its
 //! generated module name, its public `Spoke` enum variant, and its display name —
 //! is derived from the file's reserved `[meta]` table, specifically
 //! `meta.doc_format`. Adding a new format is therefore *only* a
-//! matter of dropping a new TOML into `mappings/`.
+//! matter of dropping a new TOML into `config/mappings/`.
 //!
 //! Every spoke is loaded and compiled through the *single* `einvoice-dsl`
-//! pipeline — `einvoice_dsl::load_dir` (scan, parse, `inherits` chains,
-//! disabled bases, slugs) then `einvoice_dsl::compile` — the same path
+//! pipeline — `einvoice_dsl::load_config` (codecs, then scan, parse, `inherits`
+//! chains, disabled bases, slugs) then `einvoice_dsl::compile` — the same path
 //! `cargo run -p einvoice-dsl -- check` uses. The build fails on any
 //! error-severity diagnostic from *any* stage, including `validate` (e.g.
-//! unknown adapters, bad source paths), so "fail at build time" is enforced by
+//! unknown codecs, bad source paths), so "fail at build time" is enforced by
 //! the whole compiler, not a partial reimplementation of it. The result is
 //! emitted, into `OUT_DIR`, as:
 //!
@@ -23,7 +24,8 @@
 //!   share one `shared_<n>.rs` structs module instead; a spoke whose whole
 //!   module is byte-identical to an earlier one emits no file (aliased module).
 //! - `spokes.rs` — the generated glue: a `mod <slug>` per spoke (include or
-//!   alias), the shared structs modules, the public `Spoke` enum, and the
+//!   alias), the shared structs modules, the public `Spoke` enum with each
+//!   spoke's embedded transformation contract (`Spoke::contract`), and the
 //!   `read`/`write` dispatch over it.
 //!
 //! `compile` synthesizes each spoke's typed source model from its nodes (the ids
@@ -37,8 +39,8 @@ use std::path::{Path, PathBuf};
 use einvoice_dsl::compile::{CompileOutput, SpokeInput};
 use einvoice_dsl::ir::MappingIr;
 use einvoice_dsl::{
-    Severity, SourceModelMeta, SpokeDedupPlan, SpokeModule, compile, covered_canonical_fields,
-    generate_hub, known_adapters, load_dir, plan_spoke_dedup, required_canonical_fields,
+    Severity, SourceModelMeta, SpokeContract, SpokeDedupPlan, SpokeModule, compile, generate_hub,
+    load_config, plan_spoke_dedup, render_contract, spoke_contract,
 };
 
 /// One discovered spoke: its meta-derived names plus its compiled artifacts.
@@ -59,20 +61,26 @@ struct Spoke {
     ir: MappingIr,
     /// The synthesized typed source model (input to codegen).
     source: SourceModelMeta,
+    /// The spoke's transformation contract (embedded in the registry).
+    contract: SpokeContract,
 }
 
 fn main() {
-    let mappings_dir = workspace_mappings_dir();
+    let config_dir = workspace_config_dir();
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
     println!("cargo:rerun-if-changed=build.rs");
-    // Re-run when spokes are added or removed, not only when one is edited.
-    println!("cargo:rerun-if-changed={}", mappings_dir.display());
+    // Re-run when codecs or spokes are added or removed, not only when one is
+    // edited.
+    for dir in ["mappings", "codecs"] {
+        println!("cargo:rerun-if-changed={}", config_dir.join(dir).display());
+    }
 
-    // Load + compile every spoke through the one shared DSL pipeline — the same
-    // `load_dir` + `compile` path `cargo run -p einvoice-dsl -- check` uses.
-    let loaded = load_dir(&mappings_dir)
-        .unwrap_or_else(|e| panic!("loading {}: {e}", mappings_dir.display()));
+    // Load + compile every codec and spoke through the one shared DSL pipeline
+    // — the same `load_config` + `compile` path `cargo run -p einvoice-dsl --
+    // check` uses.
+    let loaded = load_config(&config_dir)
+        .unwrap_or_else(|e| panic!("loading {}: {e}", config_dir.display()));
     for path in &loaded.files {
         println!("cargo:rerun-if-changed={}", path.display());
     }
@@ -84,7 +92,7 @@ fn main() {
             chain: &s.chain,
         })
         .collect();
-    let out = compile(&inputs, &known_adapters());
+    let out = compile(&inputs, &loaded.codecs);
     assert_clean(&out);
 
     let spokes = collect_spokes(&out);
@@ -99,7 +107,7 @@ fn main() {
         .iter()
         .map(|s| (s.slug.as_str(), &s.ir, &s.source))
         .collect();
-    let plan = plan_spoke_dedup(&triples, "super::hub");
+    let plan = plan_spoke_dedup(&triples, &loaded.codecs, "super::hub");
 
     for (name, text) in &plan.shared_modules {
         let file = format!("{name}.rs");
@@ -118,14 +126,14 @@ fn main() {
         .expect("write spokes.rs");
 }
 
-/// Locates the workspace `mappings/` directory (two levels up from the crate).
-fn workspace_mappings_dir() -> PathBuf {
+/// Locates the workspace `config/` directory (two levels up from the crate).
+fn workspace_config_dir() -> PathBuf {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     manifest
         .parent()
         .and_then(Path::parent)
         .expect("crate is two levels under the workspace root")
-        .join("mappings")
+        .join("config")
 }
 
 /// Builds the per-spoke codegen descriptors from a clean [`CompileOutput`]. Every
@@ -145,6 +153,7 @@ fn collect_spokes(out: &CompileOutput) -> Vec<Spoke> {
                 .get(slug)
                 .unwrap_or_else(|| panic!("compile output missing source for `{slug}`"))
                 .clone();
+            let contract = spoke_contract(&name, ir, &source);
             Spoke {
                 slug: slug.clone(),
                 variant: pascal_of(&meta.doc_format),
@@ -153,6 +162,7 @@ fn collect_spokes(out: &CompileOutput) -> Vec<Spoke> {
                 root: source.root.clone(),
                 ir: ir.clone(),
                 source,
+                contract,
             }
         })
         .collect()
@@ -165,7 +175,9 @@ fn collect_spokes(out: &CompileOutput) -> Vec<Spoke> {
 fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
     let mut out = String::new();
     out.push_str("// Generated spoke registry + dispatch. Do not edit by hand.\n");
-    out.push_str("// One entry per `mappings/*.toml`; names derive from `[meta].doc_format`.\n\n");
+    out.push_str(
+        "// One entry per `config/mappings/*.toml`; names derive from `[meta].doc_format`.\n\n",
+    );
 
     out.push_str("use einvoice_transformator::result::MappingResult;\n");
     out.push_str("use hub::MainKey;\n\n");
@@ -202,7 +214,9 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
     // The public Spoke enum, with a variant per discovered spoke.
     out.push_str("/// A source/target format handled by a generated mapper.\n");
     out.push_str("///\n");
-    out.push_str("/// Variants are generated from each `mappings/*.toml`'s `[meta].doc_format`.\n");
+    out.push_str(
+        "/// Variants are generated from each `config/mappings/*.toml`'s `[meta].doc_format`.\n",
+    );
     out.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n");
     out.push_str("pub enum Spoke {\n");
     for spoke in spokes {
@@ -260,25 +274,38 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
         |spoke| &spoke.root,
     );
 
-    // The spoke's footprint in the shared hub vocabulary: every canonical field
-    // it maps, and the subset it marks required. The Mapping Comparison Tool
-    // classifies a transform by comparing these sets across two spokes.
-    emit_key_accessor(
-        &mut out,
-        spokes,
-        "covered_keys",
-        "Every canonical hub field this spoke maps, as scope-qualified labels.",
-        |spoke| covered_canonical_fields(&spoke.ir),
+    // The spoke's transformation contract: what it maps, what it requires on
+    // write, what it declares it may lose. Transform analysis compares two.
+    out.push_str(
+        "    /// The spoke's transformation contract: the canonical keys it maps, the\n\
+         \x20\x20\x20\x20/// write routes of its `required` nodes, and the loss it declares.\n",
     );
-    emit_key_accessor(
-        &mut out,
-        spokes,
-        "required_keys",
-        "The canonical hub fields this spoke marks `required`, as labels.",
-        |spoke| required_canonical_fields(&spoke.ir),
+    out.push_str(
+        "    pub fn contract(self) -> &'static crate::contract::TransformationContract {\n",
     );
+    out.push_str("        match self {\n");
+    for spoke in spokes {
+        let _ = writeln!(
+            out,
+            "            Spoke::{} => &{},",
+            spoke.variant,
+            contract_static(spoke)
+        );
+    }
+    out.push_str("        }\n");
+    out.push_str("    }\n");
 
     out.push_str("}\n\n");
+
+    for spoke in spokes {
+        let _ = writeln!(
+            out,
+            "/// The embedded transformation contract of `{}`.\nstatic {}: crate::contract::TransformationContract = {};\n",
+            spoke.name,
+            contract_static(spoke),
+            render_contract(&spoke.contract, "crate::contract")
+        );
+    }
 
     // read dispatch: source bytes -> MainKey.
     out.push_str("/// Deserializes `bytes` for `spoke` and runs its generated reader.\n");
@@ -318,32 +345,10 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
     out
 }
 
-/// Emits a `pub fn <method>(self) -> &'static [&'static str]` accessor on `Spoke`
-/// whose arms are `keys(spoke)` rendered as a sorted string-slice literal. Used
-/// for `covered_keys` / `required_keys` so the two share one shape.
-fn emit_key_accessor(
-    out: &mut String,
-    spokes: &[Spoke],
-    method: &str,
-    doc: &str,
-    keys: impl Fn(&Spoke) -> std::collections::BTreeSet<String>,
-) {
-    let _ = writeln!(out, "    /// {doc}");
-    let _ = writeln!(
-        out,
-        "    pub fn {method}(self) -> &'static [&'static str] {{"
-    );
-    out.push_str("        match self {\n");
-    for spoke in spokes {
-        let items = keys(spoke)
-            .iter()
-            .map(|k| format!("{k:?}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let _ = writeln!(out, "            Spoke::{} => &[{items}],", spoke.variant);
-    }
-    out.push_str("        }\n");
-    out.push_str("    }\n");
+/// The name of the `static` holding a spoke's embedded contract
+/// (`UBL_INVOICE_CONTRACT`).
+fn contract_static(spoke: &Spoke) -> String {
+    format!("{}_CONTRACT", spoke.slug.to_uppercase())
 }
 
 /// Emits a `pub fn <method>(self) -> &'static str` accessor on `Spoke` whose arms

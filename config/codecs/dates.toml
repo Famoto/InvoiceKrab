@@ -1,0 +1,19 @@
+# Shared date codecs: how a canonical ISO date (`YYYY-MM-DD` in the hub) is
+# written and read in each format's lexical form. A mapping node names one with
+# `codec = "<id>"`; the compiler emits the decode on read and the encode — plus
+# the `wire` attributes — on write. Ids are global and stable: changing a
+# codec's behaviour means adding a new id, never editing an existing one.
+#
+# Pattern tokens: YYYY MM DD, with `-` `.` `/` as separators.
+
+# ISO 8601 calendar date, the hub's own form (UBL `cbc:IssueDate`).
+[codec.date-iso]
+for_type = "date"
+lexical = "YYYY-MM-DD"
+
+# UN/CEFACT date format 102 (CCYYMMDD) as used by CII / Factur-X / ZUGFeRD:
+# `<udt:DateTimeString format="102">20260718</udt:DateTimeString>`.
+[codec.cii-date-102]
+for_type = "date"
+lexical = "YYYYMMDD"
+wire = { "@format" = "102" }

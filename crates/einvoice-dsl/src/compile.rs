@@ -2,34 +2,24 @@
 //!
 //! [`compile`] runs the whole pipeline over a set of spokes: build each spoke's
 //! normalized [`MappingIr`], derive the shared canonical hub from the union of
-//! their canonical keys, then validate every spoke against the source metadata
-//! and the hub. All diagnostics from every stage are aggregated into one
+//! their canonical keys, validate every spoke against the source metadata and
+//! the hub, then check the spokes' `required` write routes against each other
+//! (`W095`: a required key no other spoke supplies). All diagnostics from every stage are aggregated into one
 //! [`CompileOutput`] (R9: never first-error-only), in deterministic order.
 //!
 //! The IRs and hub it returns are the inputs to the static-analysis comparison
 //! tool ([`crate::report`]) and to codegen.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
+use crate::codec::CodecTable;
+use crate::contract::{check_required_routes, spoke_contract};
 use crate::error::{Diagnostic, Severity};
 use crate::hub::{CanonicalModel, derive_hub};
-use crate::ir::{MappingIr, build_ir};
+use crate::ir::{MappingIr, build_ir_with};
 use crate::parse::ParsedMapping;
 use crate::source_model::SourceModelMeta;
 use crate::validate::{ValidationInput, validate};
-
-/// The adapter names the compiler accepts in a node's `adapter` field.
-///
-/// Every name listed here must exist as a free function in
-/// `einvoice_transformator::adapter` — generated code calls `adapter::<name>`
-/// directly, so a missing implementation fails the consuming crate's build
-/// loudly. Callers pass [`known_adapters`] to [`compile`].
-pub const KNOWN_ADAPTERS: &[&str] = &["uppercase_currency"];
-
-/// [`KNOWN_ADAPTERS`] as the set shape [`compile`] takes.
-pub fn known_adapters() -> BTreeSet<String> {
-    KNOWN_ADAPTERS.iter().map(|s| s.to_string()).collect()
-}
 
 /// One spoke to compile: its id and its inheritance chain (ancestor-first). The
 /// typed source model is synthesized from the chain's nodes by [`build_ir`].
@@ -65,14 +55,16 @@ impl CompileOutput {
 }
 
 /// Compiles a set of spokes into IRs + the derived hub + aggregated diagnostics.
-pub fn compile(spokes: &[SpokeInput], adapters: &BTreeSet<String>) -> CompileOutput {
+/// `codecs` is the shared codec table (loaded from `config/codecs/`) that nodes
+/// may name with `codec`.
+pub fn compile(spokes: &[SpokeInput], codecs: &CodecTable) -> CompileOutput {
     let mut irs = BTreeMap::new();
     let mut sources: BTreeMap<String, SourceModelMeta> = BTreeMap::new();
     let mut diagnostics = Vec::new();
 
     // Stage 1–6 per spoke: build the normalized IR + synthesize its source model.
     for spoke in spokes {
-        let (ir, source, ir_diags) = build_ir(spoke.chain);
+        let (ir, source, ir_diags) = build_ir_with(spoke.chain, codecs);
         diagnostics.extend(prefix_spoke(&spoke.id, ir_diags));
         irs.insert(spoke.id.clone(), ir);
         sources.insert(spoke.id.clone(), source);
@@ -83,16 +75,30 @@ pub fn compile(spokes: &[SpokeInput], adapters: &BTreeSet<String>) -> CompileOut
     let (hub, hub_diags) = derive_hub(irs.values());
     diagnostics.extend(hub_diags);
 
-    // Stage 8–20 per spoke: validate against the synthesized source + adapters.
+    // Stage 8–20 per spoke: validate against the synthesized source + codecs.
     for spoke in spokes {
         let ir = &irs[&spoke.id];
         let diags = validate(&ValidationInput {
             ir,
             source: &sources[&spoke.id],
-            adapters,
+            codecs,
         });
         diagnostics.extend(prefix_spoke(&spoke.id, diags));
     }
+
+    // Stage: the `required` contract across spokes — a key a spoke requires
+    // from the hub must be mapped by some other spoke, else no transform can
+    // supply it (W095).
+    let contracts = spokes
+        .iter()
+        .map(|s| {
+            (
+                s.id.clone(),
+                spoke_contract(&s.id, &irs[&s.id], &sources[&s.id]),
+            )
+        })
+        .collect();
+    diagnostics.extend(check_required_routes(&contracts));
 
     CompileOutput {
         irs,
@@ -162,7 +168,7 @@ mod tests {
                 chain: std::slice::from_ref(&b),
             },
         ];
-        let out = compile(&spokes, &BTreeSet::new());
+        let out = compile(&spokes, &CodecTable::new());
         assert!(!out.has_errors(), "{:?}", out.diagnostics);
         assert_eq!(out.irs.len(), 2);
         assert_eq!(out.hub.len(), 1, "shared canonical key merges");
@@ -170,14 +176,14 @@ mod tests {
 
     #[test]
     fn test_compile_aggregates_errors_from_multiple_stages() {
-        // A per-spoke validate error (E050 unknown adapter) AND a cross-spoke hub
+        // A per-spoke validate error (E084 unknown codec) AND a cross-spoke hub
         // conflict (E010) must both surface (R9 — never first-error-only).
         let a = mapping(
             "a:1",
             r#"[Doc.Total]
             type = "decimal"
             canonical_key = "Amount"
-            adapter = "nope""#,
+            codec = "nope""#,
         );
         let b = mapping(
             "b:1",
@@ -195,11 +201,11 @@ mod tests {
                 chain: std::slice::from_ref(&b),
             },
         ];
-        let out = compile(&spokes, &BTreeSet::new());
+        let out = compile(&spokes, &CodecTable::new());
         assert!(out.has_errors());
         let codes: Vec<&str> = out.diagnostics.iter().map(|d| d.code.as_str()).collect();
         assert!(codes.contains(&"E010"), "cross-spoke conflict: {codes:?}");
-        assert!(codes.contains(&"E050"), "unknown adapter: {codes:?}");
+        assert!(codes.contains(&"E084"), "unknown codec: {codes:?}");
     }
 
     #[test]
@@ -217,29 +223,10 @@ mod tests {
             id: "a".into(),
             chain: std::slice::from_ref(&a),
         }];
-        let out = compile(&spokes, &BTreeSet::new());
+        let out = compile(&spokes, &CodecTable::new());
         let source = out.sources.get("a").expect("source for spoke `a`");
         assert_eq!(source.root, "Doc");
         assert!(source.structs.contains_key("Doc"));
-    }
-
-    #[test]
-    fn test_compile_accepts_known_adapter() {
-        // `uppercase_currency` is a compiler-known adapter; a mapping using it
-        // must compile clean when the caller passes `known_adapters()`.
-        let a = mapping(
-            "a:1",
-            r#"[Doc.Currency]
-            type = "currency"
-            canonical_key = "DocumentCurrency"
-            adapter = "uppercase_currency""#,
-        );
-        let spokes = [SpokeInput {
-            id: "a".into(),
-            chain: std::slice::from_ref(&a),
-        }];
-        let out = compile(&spokes, &known_adapters());
-        assert!(!out.has_errors(), "{:?}", out.diagnostics);
     }
 
     #[test]
@@ -254,8 +241,8 @@ mod tests {
             id: "a".into(),
             chain: std::slice::from_ref(&a),
         }];
-        let first = compile(&spokes, &BTreeSet::new());
-        let second = compile(&spokes, &BTreeSet::new());
+        let first = compile(&spokes, &CodecTable::new());
+        let second = compile(&spokes, &CodecTable::new());
         assert_eq!(first.irs, second.irs);
         assert_eq!(first.hub, second.hub);
         assert_eq!(first.diagnostics, second.diagnostics);

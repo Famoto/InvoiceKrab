@@ -40,7 +40,7 @@ the CPU-bound transforms, so it bounds transform parallelism.
 |--------------------------------------------|-----------------------------------------------|
 | `POST /transform?to=<f>[&from=<f>]`        | transformed XML (see denials below)           |
 | `GET /formats`                             | JSON array of accepted format names           |
-| `GET /analyze[?from=<f>]`                  | text loss/error matrix (the CLI's `--analyze`)|
+| `GET /analyze[?from=<f>[&to=<f>]][&deny_lossy=1]` | text loss/error matrix, row or pair report (the CLI's `--analyze`); `422` + report when `deny_lossy` and not lossless |
 | `GET /health`                              | `200 ok` — the engine is stateless, alive = healthy |
 
 `krab-server --healthcheck` probes `GET /health` on loopback and exits 0/1 —

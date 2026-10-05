@@ -1,0 +1,12 @@
+# Shared boolean codecs: the hub holds a native boolean; the pattern is the two
+# lexical literals as `yes|no`.
+
+# XML Schema booleans, the default a node without a codec reads and writes.
+[codec.boolean-true-false]
+for_type = "boolean"
+lexical = "true|false"
+
+# Numeric booleans, as some national formats write indicators.
+[codec.boolean-1-0]
+for_type = "boolean"
+lexical = "1|0"

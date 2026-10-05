@@ -17,28 +17,35 @@
 //! - `E032` fallback target is not in the same scope as the referring node.
 //! - `E033` fallback reference cycle.
 //! - `E040` `multiple = "join"` without `join_with`, or `join_with` without join.
-//! - `E041` `min_items` on a non-collection node.
 //! - `E043` `multiple` combined with `fallbacks`.
-//! - `E050` unknown adapter name (against the known-adapter set).
 //! - `E060` `constant` on a collection node.
 //! - `E061` `constant` literal does not parse under the node's `type`.
-//! - `E062` `constant` combined with `fallbacks`, `multiple`, `adapter`, or
-//!   `normalize` (the constant is emitted verbatim on write; none of these
-//!   apply to it).
+//! - `E062` `constant` combined with `fallbacks`, `multiple` or `codec` (the
+//!   constant is emitted verbatim on write; none of these apply to it —
+//!   `normalize` is read-side and may accompany it).
 //! - `E070` `clone_of` on a collection node, or combined with `canonical_key`,
-//!   `constant`, `fallbacks`, `multiple`, or `adapter`.
-//! - `E071` `clone_of` target key not declared by a primary node in the same
-//!   scope.
+//!   `constant`, `fallbacks` or `multiple`.
+//! - `E071` `clone_of` target key not declared by a primary node in the
+//!   referenced scope (the node's own, `$parent`, or `$root`).
 //! - `E072` `clone_of` node's `type` differs from its target's.
+//! - `E093` `clone_of` derivation path is malformed (`$sibling.Key`,
+//!   `$root.Lines.LineId`), or `$parent` is used at root scope.
+//! - `E084` unknown codec id.
+//! - `E085` codec on a collection, or codec `for_type` differs from the node's
+//!   `type`.
 //!
 //! Unknown TOML fields (`E001`), missing `path`/`type` (`E002`), and cross-spoke
-//! hub conflicts (`E010`/`E011`) are caught earlier (parse / resolve / hub).
+//! hub conflicts (`E010`/`E011`) are caught earlier (parse / resolve / hub), as
+//! are the source-model shape checks — namespaces (`E080`–`E083`), codec wire
+//! attributes (`E087`) and `match` selectors (`E090`–`E092`) — which synthesis
+//! reports while it builds the struct tree.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::codec::CodecTable;
 use crate::error::{Diagnostic, Severity};
 use crate::ir::MappingIr;
-use crate::node::{NodeId, Scope, SourceNode};
+use crate::node::{DerivationScope, NodeId, Scope, SourceNode};
 use crate::source_model::{PathError, SourceModelMeta, resolve_path_from};
 use crate::types::MappingType;
 
@@ -48,8 +55,8 @@ pub struct ValidationInput<'a> {
     pub ir: &'a MappingIr,
     /// Typed source-model metadata to resolve `path`s against.
     pub source: &'a SourceModelMeta,
-    /// Known adapter names. Empty means none are known.
-    pub adapters: &'a BTreeSet<String>,
+    /// The shared codec table a node's `codec` must name.
+    pub codecs: &'a CodecTable,
 }
 
 /// Validates one mapping, returning every diagnostic in deterministic order.
@@ -61,7 +68,7 @@ pub fn validate(input: &ValidationInput) -> Vec<Diagnostic> {
         check_path(node, input, &mut diags);
         check_structural(node, &mut diags);
         check_fallbacks(node, input.ir, &mut diags);
-        check_adapter(node, input.adapters, &mut diags);
+        check_codec(node, input.codecs, &mut diags);
         check_constant(node, &mut diags);
         check_clone_of(node, input.ir, &mut diags);
     }
@@ -194,15 +201,6 @@ fn check_structural(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
         _ => {}
     }
 
-    // min_items only applies to collections.
-    if node.min_items.is_some() && !node.is_collection() {
-        diags.push(err(
-            "E041",
-            &node.id,
-            "`min_items` is only valid on a collection node".to_string(),
-        ));
-    }
-
     // A multi-valued node collapses its own values; a fallback chain on top of
     // that has no defined order of application, so the combination is rejected.
     if node.multiple.is_some() && !node.fallbacks.is_empty() {
@@ -290,11 +288,12 @@ fn check_constant(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
         ));
     }
 
+    // `normalize` is read-side and may accompany a constant; the read collapse
+    // and transform features below have no meaning for a pinned write value.
     for (set, field) in [
         (!node.fallbacks.is_empty(), "fallbacks"),
         (node.multiple.is_some(), "multiple"),
-        (node.adapter.is_some(), "adapter"),
-        (!node.normalize.is_empty(), "normalize"),
+        (node.codec.is_some(), "codec"),
     ] {
         if set {
             diags.push(err(
@@ -352,12 +351,13 @@ fn constant_literal_error(ty: MappingType, value: &str) -> Option<String> {
     }
 }
 
-/// Validates a node's `clone_of`: role exclusions (E070), target key existence
-/// in the node's scope (E071), and type agreement with the target node (E072).
+/// Validates a node's `clone_of`: role exclusions (E070), a well-formed
+/// derivation path that resolves to a scope (E093), target key existence in
+/// that scope (E071), and type agreement with the target node (E072).
 ///
 /// A clone is a write-only mirror plus a read-side consistency check, so it
 /// cannot also be a primary (`canonical_key`), a `constant`, or carry read
-/// collapse/transform features (`fallbacks`, `multiple`, `adapter`) — and a
+/// collapse features (`fallbacks`, `multiple`) — and a
 /// collection has no single value to mirror. Clone chains are impossible by
 /// construction: the target is a canonical *key*, and clones declare none.
 fn check_clone_of(node: &SourceNode, ir: &MappingIr, diags: &mut Vec<Diagnostic>) {
@@ -378,7 +378,6 @@ fn check_clone_of(node: &SourceNode, ir: &MappingIr, diags: &mut Vec<Diagnostic>
         (node.constant.is_some(), "constant"),
         (!node.fallbacks.is_empty(), "fallbacks"),
         (node.multiple.is_some(), "multiple"),
-        (node.adapter.is_some(), "adapter"),
     ] {
         if set {
             diags.push(err(
@@ -392,19 +391,47 @@ fn check_clone_of(node: &SourceNode, ir: &MappingIr, diags: &mut Vec<Diagnostic>
         }
     }
 
-    // The target key must be declared by a primary node in the same scope.
+    // Resolve the derivation to the scope the key must be declared in.
+    let derivation = match crate::node::parse_derivation(target_key) {
+        Ok(d) => d,
+        Err(reason) => {
+            diags.push(err("E093", &node.id, format!("invalid clone_of: {reason}")));
+            return;
+        }
+    };
+    let target_scope = match derivation.scope {
+        DerivationScope::Own => node.scope.clone(),
+        DerivationScope::Root => Scope::Root,
+        DerivationScope::Parent => match &node.scope {
+            Scope::Collection(coll) => match ir.nodes.get(coll) {
+                Some(coll_node) => coll_node.scope.clone(),
+                None => return,
+            },
+            Scope::Root => {
+                diags.push(err(
+                    "E093",
+                    &node.id,
+                    format!("invalid clone_of `{target_key}`: a root-scope node has no `$parent`"),
+                ));
+                return;
+            }
+        },
+    };
+    let key = derivation.key;
     let Some(target) = ir
         .nodes
         .values()
-        .find(|n| n.canonical_key.as_deref() == Some(target_key) && n.scope == node.scope)
+        .find(|n| n.canonical_key.as_deref() == Some(key) && n.scope == target_scope)
     else {
+        let where_ = match derivation.scope {
+            DerivationScope::Own => "in this scope",
+            DerivationScope::Parent => "in the parent scope",
+            DerivationScope::Root => "at the root",
+        };
         diags.push(err(
             "E071",
             &node.id,
-            format!(
-                "clone_of target `{target_key}` is not a canonical key declared \
-                 in this scope"
-            ),
+            format!("clone_of target `{key}` is not a canonical key declared {where_}"),
         ));
         return;
     };
@@ -413,7 +440,7 @@ fn check_clone_of(node: &SourceNode, ir: &MappingIr, diags: &mut Vec<Diagnostic>
             "E072",
             &node.id,
             format!(
-                "clone of `{target_key}` is declared `{}` but the target is `{}`; \
+                "clone of `{key}` is declared `{}` but the target is `{}`; \
                  the types must match",
                 node.source_type, target.source_type
             ),
@@ -421,11 +448,31 @@ fn check_clone_of(node: &SourceNode, ir: &MappingIr, diags: &mut Vec<Diagnostic>
     }
 }
 
-fn check_adapter(node: &SourceNode, adapters: &BTreeSet<String>, diags: &mut Vec<Diagnostic>) {
-    if let Some(name) = &node.adapter
-        && !adapters.contains(name)
-    {
-        diags.push(err("E050", &node.id, format!("unknown adapter `{name}`")));
+/// `E084`/`E085`: a node's `codec` must name a known codec whose `for_type` is
+/// the node's own scalar type.
+fn check_codec(node: &SourceNode, codecs: &CodecTable, diags: &mut Vec<Diagnostic>) {
+    let Some(id) = &node.codec else {
+        return;
+    };
+    if node.is_collection() {
+        diags.push(err(
+            "E085",
+            &node.id,
+            "`codec` is only valid on a scalar node".to_string(),
+        ));
+        return;
+    }
+    match codecs.get(id) {
+        None => diags.push(err("E084", &node.id, format!("unknown codec `{id}`"))),
+        Some(codec) if codec.for_type != node.source_type => diags.push(err(
+            "E085",
+            &node.id,
+            format!(
+                "codec `{id}` is for `{}` values but the node's type is `{}`",
+                codec.for_type, node.source_type
+            ),
+        )),
+        Some(_) => {}
     }
 }
 
@@ -502,16 +549,148 @@ mod tests {
     }
 
     fn run(body: &str) -> Vec<Diagnostic> {
-        run_with_adapters(body, &BTreeSet::new())
+        run_with(body, &CodecTable::new())
     }
 
-    fn run_with_adapters(body: &str, adapters: &BTreeSet<String>) -> Vec<Diagnostic> {
+    fn run_with(body: &str, codecs: &CodecTable) -> Vec<Diagnostic> {
         let (ir, source) = compiled(body);
         validate(&ValidationInput {
             ir: &ir,
             source: &source,
-            adapters,
+            codecs,
         })
+    }
+
+    fn date_codecs() -> CodecTable {
+        crate::codec::parse_codecs(
+            "[codec.cii-date-102]\nfor_type = \"date\"\nlexical = \"YYYYMMDD\"\nwire = { \"@format\" = \"102\" }",
+        )
+        .expect("codecs parse")
+        .into_iter()
+        .map(|c| (c.id.clone(), c))
+        .collect()
+    }
+
+    const ROOT_CURRENCY_LINES: &str = r#"[Invoice.DocumentCurrencyCode]
+            type = "currency"
+            canonical_key = "DocumentCurrency"
+
+            [InvoiceLine]
+            type = "collection"
+            canonical_key = "Lines"
+
+            [InvoiceLine.ID]
+            type = "identifier"
+            canonical_key = "LineId"
+
+            [InvoiceLine.AllowanceCharge]
+            type = "collection"
+            canonical_key = "LineCharges"
+
+            [InvoiceLine.AllowanceCharge.Amount]
+            type = "decimal"
+            canonical_key = "ChargeAmount""#;
+
+    #[test]
+    fn test_root_and_parent_derivations_resolve() {
+        let diags = run(&format!(
+            "{ROOT_CURRENCY_LINES}\n\n[InvoiceLine.AllowanceCharge.Amount.currencyID]\nxml = \"@currencyID\"\ntype = \"currency\"\nclone_of = \"$root.DocumentCurrency\"\n\n[InvoiceLine.AllowanceCharge.Ref]\ntype = \"identifier\"\nclone_of = \"$parent.LineId\""
+        ));
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn test_parent_derivation_at_root_is_e093() {
+        let diags = run(&format!(
+            "{ROOT_CURRENCY_LINES}\n\n[Invoice.Ref]\ntype = \"currency\"\nclone_of = \"$parent.DocumentCurrency\""
+        ));
+        assert_eq!(codes(&diags), ["E093"], "{diags:?}");
+    }
+
+    #[test]
+    fn test_malformed_derivation_is_e093() {
+        for bad in ["$sibling.DocumentCurrency", "$root.Lines.LineId", "$root"] {
+            let diags = run(&format!(
+                "{ROOT_CURRENCY_LINES}\n\n[InvoiceLine.Ref]\ntype = \"identifier\"\nclone_of = \"{bad}\""
+            ));
+            assert_eq!(codes(&diags), ["E093"], "{bad}: {diags:?}");
+        }
+    }
+
+    #[test]
+    fn test_root_derivation_of_a_line_key_is_e071() {
+        // `LineId` lives in the line scope, not at the root.
+        let diags = run(&format!(
+            "{ROOT_CURRENCY_LINES}\n\n[InvoiceLine.AllowanceCharge.Ref]\ntype = \"identifier\"\nclone_of = \"$root.LineId\""
+        ));
+        assert_eq!(codes(&diags), ["E071"], "{diags:?}");
+        assert!(diags[0].message.contains("at the root"));
+    }
+
+    #[test]
+    fn test_root_derivation_type_mismatch_is_e072() {
+        let diags = run(&format!(
+            "{ROOT_CURRENCY_LINES}\n\n[InvoiceLine.Ref]\ntype = \"string\"\nclone_of = \"$root.DocumentCurrency\""
+        ));
+        assert_eq!(codes(&diags), ["E072"], "{diags:?}");
+    }
+
+    #[test]
+    fn test_known_codec_of_matching_type_is_clean() {
+        let diags = run_with(
+            r#"[Invoice.IssueDate]
+            type = "date"
+            canonical_key = "IssueDate"
+            codec = "cii-date-102""#,
+            &date_codecs(),
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn test_unknown_codec_is_e084() {
+        let diags = run_with(
+            r#"[Invoice.IssueDate]
+            type = "date"
+            codec = "nope""#,
+            &date_codecs(),
+        );
+        assert_eq!(codes(&diags), ["E084"]);
+    }
+
+    #[test]
+    fn test_codec_type_mismatch_is_e085() {
+        let diags = run_with(
+            r#"[Invoice.Note]
+            type = "string"
+            codec = "cii-date-102""#,
+            &date_codecs(),
+        );
+        assert_eq!(codes(&diags), ["E085"]);
+        assert!(diags[0].message.contains("`date`") && diags[0].message.contains("`string`"));
+    }
+
+    #[test]
+    fn test_codec_on_collection_is_e085() {
+        let diags = run_with(
+            r#"[Lines]
+            type = "collection"
+            codec = "cii-date-102""#,
+            &date_codecs(),
+        );
+        assert!(codes(&diags).contains(&"E085"), "{diags:?}");
+    }
+
+    #[test]
+    fn test_constant_with_codec_is_e062() {
+        let diags = run_with(
+            r#"[Invoice.IssueDate]
+            type = "date"
+            constant = "2026-01-01"
+            codec = "cii-date-102""#,
+            &date_codecs(),
+        );
+        assert!(codes(&diags).contains(&"E062"), "{diags:?}");
     }
 
     fn codes(diags: &[Diagnostic]) -> Vec<&str> {
@@ -667,34 +846,6 @@ mod tests {
     }
 
     #[test]
-    fn test_min_items_on_scalar_is_e041() {
-        let diags = run(r#"[Invoice.ID]
-            type = "identifier"
-            min_items = 1"#);
-        assert!(codes(&diags).contains(&"E041"));
-    }
-
-    #[test]
-    fn test_unknown_adapter_is_e050() {
-        let diags = run(r#"[Invoice.ID]
-            type = "identifier"
-            adapter = "nope""#);
-        assert_eq!(codes(&diags), ["E050"]);
-    }
-
-    #[test]
-    fn test_known_adapter_ok() {
-        let adapters: BTreeSet<String> = ["known".to_string()].into_iter().collect();
-        let diags = run_with_adapters(
-            r#"[Invoice.ID]
-            type = "identifier"
-            adapter = "known""#,
-            &adapters,
-        );
-        assert!(diags.is_empty());
-    }
-
-    #[test]
     fn test_constant_only_node_is_clean() {
         let diags = run(r#"[Invoice.UBLVersionID]
             type = "identifier"
@@ -762,15 +913,20 @@ mod tests {
     #[rstest]
     #[case::fallbacks("fallbacks = [\"Invoice.Alt\"]\n\n[Invoice.Alt]\ntype = \"identifier\"")]
     #[case::multiple("multiple = \"first\"")]
-    #[case::adapter("adapter = \"known\"")]
-    #[case::normalize("normalize = [\"trim\"]")]
-    fn test_constant_combined_with_read_features_is_e062(#[case] extra: &str) {
-        let adapters: BTreeSet<String> = ["known".to_string()].into_iter().collect();
-        let diags = run_with_adapters(
-            &format!("[Invoice.X]\ntype = \"identifier\"\nconstant = \"v\"\n{extra}"),
-            &adapters,
-        );
+    fn test_constant_combined_with_read_collapse_is_e062(#[case] extra: &str) {
+        let diags = run(&format!(
+            "[Invoice.X]\ntype = \"identifier\"\nconstant = \"v\"\n{extra}"
+        ));
         assert!(codes(&diags).contains(&"E062"), "{extra}: {diags:?}");
+    }
+
+    #[test]
+    fn test_constant_with_normalize_is_clean() {
+        // `normalize` shapes what is read; the constant is what is written.
+        let diags = run(
+            "[Invoice.X]\ntype = \"identifier\"\ncanonical_key = \"X\"\nconstant = \"v\"\nnormalize = [\"trim\"]",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
@@ -790,16 +946,11 @@ mod tests {
     #[case::constant("constant = \"v\"")]
     #[case::fallbacks("fallbacks = [\"Invoice.Alt\"]\n\n[Invoice.Alt]\ntype = \"identifier\"")]
     #[case::multiple("multiple = \"first\"")]
-    #[case::adapter("adapter = \"known\"")]
     fn test_clone_of_combined_with_other_roles_is_e070(#[case] extra: &str) {
-        let adapters: BTreeSet<String> = ["known".to_string()].into_iter().collect();
-        let diags = run_with_adapters(
-            &format!(
-                "[Invoice.ID]\ntype = \"identifier\"\ncanonical_key = \"InvoiceNumber\"\n\n\
-                 [Invoice.Copy]\ntype = \"identifier\"\nclone_of = \"InvoiceNumber\"\n{extra}"
-            ),
-            &adapters,
-        );
+        let diags = run(&format!(
+            "[Invoice.ID]\ntype = \"identifier\"\ncanonical_key = \"InvoiceNumber\"\n\n\
+             [Invoice.Copy]\ntype = \"identifier\"\nclone_of = \"InvoiceNumber\"\n{extra}"
+        ));
         assert!(codes(&diags).contains(&"E070"), "{extra}: {diags:?}");
     }
 
@@ -859,9 +1010,12 @@ mod tests {
         let diags = run(r#"[Invoice.Note]
             type = "string"
             multiple = "join"
-            min_items = 1"#);
+            fallbacks = ["Invoice.Alt"]
+
+            [Invoice.Alt]
+            type = "string""#);
         let c = codes(&diags);
         assert!(c.contains(&"E040"), "{c:?}");
-        assert!(c.contains(&"E041"), "{c:?}");
+        assert!(c.contains(&"E043"), "{c:?}");
     }
 }

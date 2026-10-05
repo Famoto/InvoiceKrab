@@ -1,7 +1,7 @@
 //! `einvoice-interfaces` — the public engine API (N–1–N transformation).
 //!
 //! Everything downstream of the spoke TOML is generated at build time: `build.rs`
-//! scans the workspace `mappings/` directory and runs the `einvoice-dsl` compiler
+//! loads the workspace `config/` directory (codecs, then mappings) and runs the `einvoice-dsl` compiler
 //! over every `*.toml` it finds — no spoke is named here in code. It emits the
 //! typed canonical hub (`MainKey`), one mapper module per spoke, and a generated
 //! registry (`spokes.rs`) holding the [`Spoke`] enum and the read/write dispatch.
@@ -15,7 +15,8 @@
 //! - [`Engine`] — [`Engine::to_hub`] (source bytes → [`MainKey`]),
 //!   [`Engine::from_hub`] ([`MainKey`] → target bytes), and [`Engine::transform`]
 //!   (source bytes → target bytes through the hub — the N–1–N path).
-//! - [`Spoke`] — selects which generated mapper to use.
+//! - [`Spoke`] — selects which generated mapper to use; [`Spoke::contract`] is
+//!   its embedded [`contract::TransformationContract`].
 //! - [`MainKey`] — the generated typed canonical hub.
 //! - [`EngineError`] — XML (de)serialization failures at the crate boundary.
 //!
@@ -39,6 +40,7 @@ use einvoice_transformator::result::MappingResult;
 
 pub mod analysis;
 pub mod cli;
+pub mod contract;
 pub mod keys;
 pub mod server;
 mod table;
@@ -52,7 +54,7 @@ mod generated {
     pub mod hub {
         include!(concat!(env!("OUT_DIR"), "/hub.rs"));
     }
-    /// The spoke registry: one `mod <slug>` per `mappings/*.toml`, the `Spoke`
+    /// The spoke registry: one `mod <slug>` per `config/mappings/*.toml`, the `Spoke`
     /// enum, and the `read`/`write` dispatch — all derived from the spokes'
     /// `[meta]` tables. Names nothing by hand.
     include!(concat!(env!("OUT_DIR"), "/spokes.rs"));
@@ -207,9 +209,35 @@ mod tests {
         assert!(!out.has_errors(), "{:?}", out.diagnostics);
         let xml = out.value.expect("writer yields a document");
 
-        assert!(xml.contains("<ID>INV-42</ID>"));
-        assert!(!xml.contains("<AccountingSupplierParty>"), "{xml}");
-        assert!(!xml.contains("<TaxAmount/>"), "{xml}");
+        assert!(xml.contains("<cbc:ID>INV-42</cbc:ID>"), "{xml}");
+        assert!(!xml.contains("<cac:AccountingSupplierParty>"), "{xml}");
+        assert!(!xml.contains("<cbc:TaxAmount/>"), "{xml}");
+    }
+
+    #[test]
+    fn test_writer_emits_children_in_mapping_declaration_order() {
+        // The UBL mapping declares ID, IssueDate, DocumentCurrencyCode,
+        // LegalMonetaryTotal, InvoiceLine in schema order; the emitted document
+        // must follow it, not the alphabetical order of the generated fields.
+        let engine = Engine::new();
+        let out = engine
+            .transform(Spoke::UblInvoice, Spoke::UblInvoice, UBL)
+            .expect("well-formed");
+        assert!(!out.has_errors(), "{:?}", out.diagnostics);
+        let xml = out.value.expect("writer yields a document");
+        let at = |needle: &str| {
+            xml.find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {xml}"))
+        };
+        let id = at("<cbc:ID>INV-42</cbc:ID>");
+        let issue = at("<cbc:IssueDate>");
+        let currency = at("<cbc:DocumentCurrencyCode>");
+        let totals = at("<cac:LegalMonetaryTotal>");
+        let line = at("<cac:InvoiceLine>");
+        assert!(
+            id < issue && issue < currency && currency < totals && totals < line,
+            "{xml}"
+        );
     }
 
     #[test]
@@ -272,7 +300,7 @@ mod tests {
 
         let out = engine.from_hub(Spoke::UblInvoice, hub).expect("renderable");
         let xml = out.value.expect("document");
-        assert_eq!(xml.matches("<Note>").count(), 1, "{xml}");
+        assert_eq!(xml.matches("<cbc:Note>").count(), 1, "{xml}");
     }
 
     #[test]

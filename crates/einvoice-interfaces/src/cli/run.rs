@@ -11,6 +11,7 @@ use super::{
     Args, CliError, Command, detect_source, format_list, parse_args, render_diagnostics,
     resolve_spoke, usage,
 };
+use crate::analysis::TransformState;
 use crate::{Engine, Spoke};
 use einvoice_transformator::result::{MappingDiagnostic, MappingResult};
 
@@ -63,8 +64,16 @@ fn dispatch(
             write_all(stdout, b"\n")?;
             Ok(Vec::new())
         }
-        Command::Analyze(source) => {
-            write_all(stdout, analyze_table(source.as_deref())?.as_bytes())?;
+        Command::Analyze(args) => {
+            write_all(
+                stdout,
+                analyze_output(
+                    args.source.as_deref(),
+                    args.target.as_deref(),
+                    args.deny_lossy,
+                )?
+                .as_bytes(),
+            )?;
             Ok(Vec::new())
         }
         Command::Keys(format) => {
@@ -75,20 +84,43 @@ fn dispatch(
     }
 }
 
-/// Builds the `--analyze` table: every transform's loss/error state, scoped to a
-/// single source when `source` is given (else the full source x target matrix).
-/// Also served verbatim by `krab-server` as `GET /analyze`.
+/// Builds the `--analyze` output: the full source x target matrix, one
+/// source's row, or — with `target` — one pair reported in full. Also served
+/// verbatim by `krab-server` as `GET /analyze`.
 ///
 /// # Errors
 ///
-/// Returns [`CliError::UnknownFormat`] when `source` names no spoke.
-pub fn analyze_table(source: Option<&str>) -> Result<String, CliError> {
+/// Returns [`CliError::UnknownFormat`] when `source` or `target` names no
+/// spoke, and — with `deny_lossy` — [`CliError::Lossy`] carrying the rendered
+/// report when any reported transform is not lossless.
+pub fn analyze_output(
+    source: Option<&str>,
+    target: Option<&str>,
+    deny_lossy: bool,
+) -> Result<String, CliError> {
     let sources: Vec<Spoke> = match source {
         Some(name) => vec![resolve_spoke(name)?],
         None => Spoke::ALL.to_vec(),
     };
-    let reports = crate::analysis::analyze_all(&sources, Spoke::ALL);
-    Ok(crate::analysis::render_table(&reports))
+    let targets: Vec<Spoke> = match target {
+        Some(name) => vec![resolve_spoke(name)?],
+        None => Spoke::ALL.to_vec(),
+    };
+    let reports = crate::analysis::analyze_all(&sources, &targets);
+    let rendered = match (source, target) {
+        (Some(_), Some(_)) => crate::analysis::render_pair(&reports[0]),
+        _ => crate::analysis::render_table(&reports),
+    };
+    let lossy = reports
+        .iter()
+        .filter(|r| r.state != TransformState::Lossless)
+        .count();
+    if deny_lossy && lossy > 0 {
+        return Err(CliError::Lossy(format!(
+            "{rendered}\n{lossy} transform(s) are not lossless (--deny-lossy)"
+        )));
+    }
+    Ok(rendered)
 }
 
 /// Builds the `--keys` output: the whole hub vocabulary when `format` is `None`,
@@ -200,14 +232,38 @@ mod tests {
     }
 
     #[test]
-    fn test_analyze_table_unknown_source_is_unknown_format() {
-        let err = analyze_table(Some("totally-made-up")).expect_err("unknown");
+    fn test_analyze_output_unknown_source_or_target_is_unknown_format() {
+        let err = analyze_output(Some("totally-made-up"), None, false).expect_err("unknown");
+        assert!(matches!(err, CliError::UnknownFormat(_)));
+        let err = analyze_output(Some("ubl-invoice"), Some("totally-made-up"), false)
+            .expect_err("unknown");
         assert!(matches!(err, CliError::UnknownFormat(_)));
     }
 
     #[test]
+    fn test_analyze_output_pair_is_a_full_report() {
+        let text = analyze_output(Some("ubl-invoice"), Some("ubl-invoice"), false).expect("known");
+        assert!(text.contains("-> ubl-invoice:2.1: = lossless"), "{text}");
+        assert!(!text.contains("legend:"), "a pair is not a table: {text}");
+    }
+
+    #[test]
+    fn test_analyze_output_deny_lossy_fails_only_when_something_is_lost() {
+        // Identity is lossless: the gate passes.
+        assert!(analyze_output(Some("ubl-invoice"), Some("ubl-invoice"), true).is_ok());
+        // The full matrix has lossful pairs: the gate fails with the report.
+        let err = analyze_output(None, None, true).expect_err("matrix has loss");
+        let CliError::Lossy(text) = &err else {
+            panic!("expected Lossy, got {err:?}");
+        };
+        assert!(text.contains("legend:"), "{text}");
+        assert!(text.contains("not lossless (--deny-lossy)"), "{text}");
+        assert_eq!(err.exit_code(), 65);
+    }
+
+    #[test]
     fn test_analyze_table_scoped_lists_only_that_source() {
-        let table = analyze_table(Some("ubl-invoice")).expect("known");
+        let table = analyze_output(Some("ubl-invoice"), None, false).expect("known");
         assert!(table.contains("legend:"));
         // No spoke other than the scoped one appears in the SOURCE column (every
         // data row starts with the source name).

@@ -13,7 +13,9 @@ UBL / PEPPOL / XRechnung ─┐                  ┌─► UBL / PEPPOL / XRechn
 CII / Factur-X / FatturaPA┘      (MainKey)   └─► CII / Factur-X / FatturaPA
 ```
 
-Adding a new format is just dropping a new `*.toml` into [mappings/](mappings/).
+Adding a new format is just dropping a new `*.toml` into [config/mappings/](config/mappings/);
+the lexical codecs formats share (CII's `format="102"` dates, …) live beside
+them in [config/codecs/](config/codecs/).
 No Rust code names any format by hand. A CIUS (a national/sector profile of a
 base syntax) can *inherit* another mapping's whole tree and restate only its
 deltas — XRechnung and Peppol are a handful of lines on top of UBL.
@@ -79,18 +81,18 @@ krab-cli --keys
 
 ## Bundled mappings
 
-The exact list is generated from [mappings/](mappings/) at build time and can be
+The exact list is generated from [config/mappings/](config/mappings/) at build time and can be
 checked with `krab-cli --list`. This workspace currently ships:
 
 | Display name | Mapping file | Inherits | Notes |
 |--------------|--------------|----------|-------|
-| `ubl-invoice:2.1` | [mappings/ubl.toml](mappings/ubl.toml) | — | Base UBL Invoice tree, full EN 16931 model |
-| `xrechnung-invoice:3.0.2` | [mappings/xrechnung.toml](mappings/xrechnung.toml) | `ubl-invoice:2.1` | XRechnung CIUS, detected by `CustomizationID` marker |
-| `peppol-bis-billing:3.0` | [mappings/peppol.toml](mappings/peppol.toml) | `ubl-invoice:2.1` | Peppol BIS Billing CIUS, detected by `CustomizationID` marker |
-| `facturx-invoice:1.0` | [mappings/facturx.toml](mappings/facturx.toml) | `cii-invoice:en16931` | Factur-X / ZUGFeRD, detected by guideline-id marker |
-| `fatturapa:1.2.2` | [mappings/fatturapa.toml](mappings/fatturapa.toml) | — | Italian FatturaPA (`FatturaElettronica` tree) |
+| `ubl-invoice:2.1` | [config/mappings/ubl.toml](config/mappings/ubl.toml) | — | Base UBL Invoice tree, full EN 16931 model |
+| `xrechnung-invoice:3.0.2` | [config/mappings/xrechnung.toml](config/mappings/xrechnung.toml) | `ubl-invoice:2.1` | XRechnung CIUS, detected by `CustomizationID` marker |
+| `peppol-bis-billing:3.0` | [config/mappings/peppol.toml](config/mappings/peppol.toml) | `ubl-invoice:2.1` | Peppol BIS Billing CIUS, detected by `CustomizationID` marker |
+| `facturx-invoice:1.0` | [config/mappings/facturx.toml](config/mappings/facturx.toml) | `cii-invoice:en16931` | Factur-X / ZUGFeRD, detected by guideline-id marker |
+| `fatturapa:1.2.2` | [config/mappings/fatturapa.toml](config/mappings/fatturapa.toml) | — | Italian FatturaPA (`FatturaElettronica` tree) |
 
-[mappings/cii.toml](mappings/cii.toml) carries the full UN/CEFACT CII tree but is
+[config/mappings/cii.toml](config/mappings/cii.toml) carries the full UN/CEFACT CII tree but is
 an **inherit-only base** (`[meta].disabled = true`): it exists to be inherited by
 Factur-X/ZUGFeRD and emits no spoke of its own, so it does not appear in
 `--list`.
@@ -102,7 +104,7 @@ Factur-X/ZUGFeRD and emits no spoke of its own, so it does not appear in
 ```
 USAGE:
     krab-cli <INPUT> <TARGET-FORMAT> [--from <SOURCE-FORMAT>] [--out <FILE>]
-    krab-cli --analyze [SOURCE-FORMAT]
+    krab-cli --analyze [SOURCE-FORMAT [TARGET-FORMAT]] [--deny-lossy]
     krab-cli --keys [FORMAT]
     krab-cli --list
     krab-cli --help
@@ -114,7 +116,11 @@ ARGS:
 OPTIONS:
     --from <FORMAT>    Source format; auto-detected when omitted
     --out <FILE>       Write to FILE instead of stdout
-    --analyze          Report each transform's loss/error state
+    --analyze          Report transforms' loss/error state: the whole matrix,
+                       one source's row, or one SOURCE TARGET pair in full
+    --to <FORMAT>      With --analyze: the target format of the pair
+    --deny-lossy       With --analyze: exit 65 unless every reported
+                       transform is lossless (a CI gate)
     --keys [FORMAT]    Show canonical main keys; with FORMAT, show that
                        spoke's covered and unused keys
     --list             List available formats
@@ -148,13 +154,15 @@ partial output is emitted and the process exits non-zero.
 krab-cli --list
 ```
 
-Prints every format compiled into this build (one per `mappings/*.toml`).
+Prints every format compiled into this build (one per `config/mappings/*.toml`).
 
 ### Analyze conversions (no input needed)
 
-`--analyze` statically reports the loss/error state of every conversion — which
-target formats can represent everything a source carries, and which would drop
-fields — *without* needing an actual document.
+`--analyze` statically reports the loss/error state of conversions — which
+target formats can represent everything a source carries, which would drop
+fields, and which cannot be fed a value they require — *without* needing an
+actual document. It compares the two formats' transformation contracts (what
+each maps, what each requires on write, what each declares it may lose).
 
 ```bash
 # Full source x target matrix
@@ -162,6 +170,13 @@ krab-cli --analyze
 
 # Scope to "from UBL to everything else"
 krab-cli --analyze ubl-invoice
+
+# One pair in full: missing required routes, dropped keys, pins, recodes,
+# and what the source collapses on read
+krab-cli --analyze ubl-invoice facturx-invoice
+
+# A CI gate: exit 65 unless the pair is lossless
+krab-cli --analyze ubl-invoice xrechnung-invoice --deny-lossy
 ```
 
 ### Inspect canonical keys (authoring aid)
@@ -213,8 +228,9 @@ parameters/XML, `422` mapping errors (rendered diagnostics in the body),
 memory budget.
 
 Capability and health endpoints: `GET /formats` (JSON array of accepted
-format names), `GET /analyze[?from=<format>]` (the CLI's `--analyze` table),
-`GET /health` (`200 ok`; `krab-server --healthcheck` self-probes it for the
+format names), `GET /analyze[?from=<format>[&to=<format>]][&deny_lossy=1]`
+(the CLI's `--analyze` report; `deny_lossy` answers `422` with the report when
+the result is not lossless), `GET /health` (`200 ok`; `krab-server --healthcheck` self-probes it for the
 Docker `HEALTHCHECK`).
 
 Configuration is environment variables; defaults derive from the actual
@@ -282,9 +298,14 @@ an `EngineError` only means the XML could not be parsed or rendered at all.
 - **N → 1 → N transformation.** Every format maps to and from one shared
   canonical model, so adding a format makes it interoperable with *all* the
   others — no per-pair conversion code.
+- **Shared lexical codecs.** Date, date-time and boolean wire forms are
+  declared once in `config/codecs/` with a tiny compiler-checked pattern
+  language (`YYYYMMDD` plus `format="102"`) and reused by every mapping.
 - **Declarative TOML mappings.** A format is described by data, not code. The
   node ids mirror the XML element tree, so you describe *what* maps where, never
-  *how* to walk the document.
+  *how* to walk the document. One element reused for several business terms
+  (CII's `AdditionalReferencedDocument` by `TypeCode`) is split with a `match`
+  selector, read by partition and written back with its discriminators.
 - **Mapping inheritance.** A CIUS spoke inherits its base syntax's whole tree
   and restates only its deltas. A base can be inherit-only
   (`[meta].disabled = true`) so it never emits a spoke itself.
@@ -293,19 +314,25 @@ an `EngineError` only means the XML could not be parsed or rendered at all.
   the mappers are type-checked Rust.
 - **No runtime interpretation.** TOML is compiled to native Rust mappers at
   build time; at run time the engine only executes generated code.
-- **Generated format registry.** The build scans `mappings/*.toml` and derives
+- **Generated format registry.** The build scans `config/mappings/*.toml` and derives
   the public `Spoke` enum, module names, display names, and detection markers.
 - **Source auto-detection.** Omit `--from` and KrabInvoice identifies the source
   format, disambiguating specifications/CIUS by the document's `CustomizationID`.
 - **Diagnostics, not silent loss.** Missing required fields, type errors, and
   taken fallbacks are reported as structured diagnostics with severity and a
   source-node reference — they don't vanish.
-- **Static conversion analysis.** `--analyze` shows what each conversion would
-  lose before you run it.
+- **Static conversion analysis.** Every format carries a transformation
+  contract; `--analyze` compares two to show what a conversion would lose or
+  fail to fill before you run it, and `--deny-lossy` gates CI on it.
 - **Canonical key authoring aid.** `--keys` shows the hub vocabulary and, for one
   format, which existing keys are still unmapped.
-- **Namespace-agnostic XML.** Mappings bind XML *local* names, so the same
-  mapping reads real namespaced (`cbc:`/`cac:`) UBL and bare-name fixtures.
+- **Namespace-agnostic reading, namespaced writing.** Mappings bind XML *local*
+  names, so the same mapping reads real namespaced (`cbc:`/`cac:`) UBL and
+  bare-name fixtures; on write the declared namespaces are emitted on the root
+  and every element is qualified (`cbc:`/`cac:`, `rsm:`/`ram:`/`udt:`, …).
+- **Schema-ordered output.** A mapping's declaration order is its schema order:
+  the writer emits sibling elements in the sequence the mapping declares them,
+  so the bundled mappings follow their XSDs and the output validates in order.
 - **Library API.** `einvoice-interfaces::Engine` exposes `to_hub`, `from_hub`,
   and `transform` for callers that want the generated mappers without the CLI.
 
@@ -332,19 +359,19 @@ normalize = ["trim", "empty_as_missing"]
 The full authoring reference — `[meta]`, node fields, types, normalization,
 collections, fallbacks, constants, clones, inheritance, auto-detection, and
 every diagnostic code — lives in
-**[mappings/README.md](mappings/README.md)**. See
-[mappings/ubl.toml](mappings/ubl.toml) and
-[mappings/xrechnung.toml](mappings/xrechnung.toml) for the reference spokes.
+**[config/mappings/README.md](config/mappings/README.md)**. See
+[config/mappings/ubl.toml](config/mappings/ubl.toml) and
+[config/mappings/xrechnung.toml](config/mappings/xrechnung.toml) for the reference spokes.
 
 ---
 
 ## Adding a new format
 
-1. Write a new `mappings/<your-format>.toml` with a `[meta]` table and your
-   nodes — the DSL reference is [mappings/README.md](mappings/README.md), and
+1. Write a new `config/mappings/<your-format>.toml` with a `[meta]` table and your
+   nodes — the DSL reference is [config/mappings/README.md](config/mappings/README.md), and
    the reference spokes make good templates. If your format is a profile
    of an existing syntax, `inherits` its mapping and declare only the deltas —
-   see [mappings/peppol.toml](mappings/peppol.toml) for the minimal case.
+   see [config/mappings/peppol.toml](config/mappings/peppol.toml) for the minimal case.
 2. Give it the same `canonical_key`s (with matching types) as the existing
    spokes for everything you want to round-trip; add new keys for fields unique
    to your format.
@@ -354,7 +381,7 @@ every diagnostic code — lives in
    cargo build --release -p einvoice-interfaces
    ```
 
-The build scans `mappings/`, compiles your file through the DSL pipeline,
+The build scans `config/mappings/`, compiles your file through the DSL pipeline,
 derives the shared hub, and generates the mapper. Your format then appears in
 `--list` and is usable as a source or target — no Rust changes required.
 
@@ -372,12 +399,18 @@ the **build fails** with a diagnostic pointing at the offending node.
 | [crates/einvoice-interfaces](crates/einvoice-interfaces/src/README.md) | Public `Engine` API, the generated registry, and the `krab-cli` CLI |
 
 The TOML never reaches the runtime: `einvoice-interfaces`'s `build.rs` compiles
-[mappings/](mappings/) through `einvoice-dsl` into native Rust, and the engine
+[config/mappings/](config/mappings/) through `einvoice-dsl` into native Rust, and the engine
 executes only that generated code.
 
 ---
 
 ## Developer commands
+
+Emitted documents are validated against the vendored XSDs in
+[testfiles/xsd/](testfiles/xsd/) by `crates/einvoice-interfaces/tests/xsd_validation.rs`
+(it needs `xmllint` from libxml2 on `PATH`; CI installs it). Remaining schema
+errors are listed per target in `tests/xsd_allowlist/`, and the test fails both
+on a new error and on a stale allowlist line, so the lists only shrink.
 
 Install the local pre-commit hooks once per checkout:
 
@@ -397,10 +430,10 @@ mappings through the exact same loader and compiler the build uses, so what
 
 ```bash
 # Compile every mapping and print all diagnostics
-cargo run -p einvoice-dsl -- check mappings
+cargo run -p einvoice-dsl -- check config
 
 # Print a canonical coverage matrix and gap report
-cargo run -p einvoice-dsl -- report mappings
+cargo run -p einvoice-dsl -- report config
 ```
 
 `check` exits non-zero when any error-severity diagnostic is produced. `report`

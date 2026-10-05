@@ -2,11 +2,12 @@
 #
 # XRechnung shares the entire UBL Invoice element tree, so this spoke *inherits*
 # `ubl.toml` (`inherits = "ubl-invoice:2.1"`) and only restates what the CIUS
-# changes. The base's ~150 nodes are folded in ancestor-first at build time; the
-# tables below fully replace the matching base nodes (inheritance overrides are
-# whole-node replacements, not field merges).
+# changes. The base's ~150 nodes are folded in ancestor-first at build time; a
+# table below merges over the matching base node (`replace = true` would swap
+# it out whole instead).
 #
-# CIUS deltas over the UBL base:
+# CIUS deltas over the UBL base (inherited nodes merge field-wise, so each
+# override states only what changes):
 #   * `[meta]` identity: its own doc_format/format_version/source_model, plus the
 #     `detect` marker (matched case-insensitively against CustomizationID, BT-24,
 #     which for the CIUS carries `...:xrechnung_3.0`).
@@ -17,7 +18,7 @@
 [meta]
 doc_format = "xrechnung-invoice"
 format_version = "3.0.2"
-mapping_version = "2.0"
+mapping_version = "2.1"
 source_model = "xrechnung-invoice:3.0.2"
 canonical_model = "canonical-invoice:1.0"
 root = "Invoice"
@@ -26,10 +27,8 @@ inherits = "ubl-invoice:2.1"
 # which for the CIUS carries `...:xrechnung_3.0`.
 detect = ["xrechnung"]
 
-# Overrides the base UBL node: the CIUS makes CustomizationID mandatory. A
-# whole-node replacement, so every field is restated, not just `required`.
+# Overrides the base UBL node: the CIUS makes CustomizationID mandatory. An
+# override merges over the inherited node, so only the delta is stated here;
+# type, canonical key and normalization come from ubl.toml.
 [Invoice.CustomizationID]
-type = "identifier"
-canonical_key = "SpecificationId"
 required = true
-normalize = ["trim"]

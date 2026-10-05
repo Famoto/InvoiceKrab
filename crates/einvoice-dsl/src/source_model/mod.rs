@@ -26,7 +26,7 @@
 //! - `Option<T>` → contributes `optional` (a `None` is missing at runtime).
 //! - `Vec<T>` → contributes `repeated` (a collection or multiple values).
 //! - A scalar leaf cannot be descended into.
-//! - Enum/choice fields are unsupported except through an adapter, so they are
+//! - Enum/choice fields are unsupported, so they are
 //!   not represented here as descendable structs.
 //!
 //! # Testing
@@ -40,6 +40,9 @@ mod meta;
 mod resolve;
 mod synth;
 
-pub use meta::{FieldMeta, FieldType, PathError, ResolvedField, SourceModelMeta, StructMeta};
+pub use meta::{
+    AliasBinding, FieldMeta, FieldType, NamespaceMeta, PathError, ResolvedField, SourceModelMeta,
+    StructMeta, qualify,
+};
 pub use resolve::{resolve_path, resolve_path_from};
-pub use synth::synthesize_source_model;
+pub use synth::{NamespaceConfig, synthesize_source_model, synthesize_source_model_with};

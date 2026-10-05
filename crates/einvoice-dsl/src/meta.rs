@@ -12,8 +12,39 @@
 //! (the auto-detection markers) defaults to empty, and `disabled` (inherit-only
 //! base, emits no spoke) defaults to `false`. Unknown keys are rejected
 //! (E001), so unsupported metadata never enters the compiler pipeline.
+//!
+//! # Namespaces
+//!
+//! Reading is namespace-agnostic (the deserializer matches local names), but a
+//! written document must declare its namespaces and qualify its elements to be
+//! schema-valid. Three optional `[meta]` entries describe that, and all three
+//! are **inherited** from the parent mapping when a child omits them:
+//!
+//! - `root_ns` — the prefix of the root element (`""`, the default, means the
+//!   default namespace / no prefix).
+//! - `[meta.namespaces]` — `prefix = "URI"` pairs, every one declared on the
+//!   root element as `xmlns:prefix` (`""` declares the default `xmlns`).
+//! - `[meta.ns_defaults]` — `leaf` and `aggregate`: the prefix every scalar /
+//!   valued element and every interior / collection element gets unless its
+//!   node says `ns = "…"` itself.
+
+use std::collections::BTreeMap;
 
 use serde::Deserialize;
+
+/// The `[meta.ns_defaults]` table: the prefixes elements get when their node
+/// declares no `ns` of its own.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NsDefaults {
+    /// Prefix for scalar and valued elements (UBL: `cbc`). Default: none.
+    #[serde(default)]
+    pub leaf: Option<String>,
+    /// Prefix for inferred interior elements and collection elements (UBL:
+    /// `cac`). Default: none.
+    #[serde(default)]
+    pub aggregate: Option<String>,
+}
 
 /// The parsed `[meta]` table of a spoke mapping file.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -57,6 +88,62 @@ pub struct MappingMeta {
     /// Optional human description (reports only).
     #[serde(default)]
     pub description: Option<String>,
+    /// Prefix of the root element (`""` = default namespace / unprefixed).
+    /// Inherited from the parent mapping when omitted.
+    #[serde(default)]
+    pub root_ns: Option<String>,
+    /// Namespace declarations emitted on the root element: prefix → URI, with
+    /// `""` for the default namespace. Inherited from the parent when omitted.
+    #[serde(default)]
+    pub namespaces: Option<BTreeMap<String, String>>,
+    /// Default prefixes for leaf and aggregate elements. Inherited from the
+    /// parent when omitted.
+    #[serde(default)]
+    pub ns_defaults: Option<NsDefaults>,
+}
+
+impl MappingMeta {
+    /// Fills in the namespace entries (`root_ns`, `namespaces`, `ns_defaults`)
+    /// this meta omits from `parent`, so a CIUS declares them once in its base.
+    /// Each entry is inherited whole: a child's `[meta.namespaces]` replaces,
+    /// never merges with, the parent's.
+    pub fn inherit_namespaces(&mut self, parent: &MappingMeta) {
+        if self.root_ns.is_none() {
+            self.root_ns = parent.root_ns.clone();
+        }
+        if self.namespaces.is_none() {
+            self.namespaces = parent.namespaces.clone();
+        }
+        if self.ns_defaults.is_none() {
+            self.ns_defaults = parent.ns_defaults.clone();
+        }
+    }
+
+    /// The effective root prefix (`""` when unset).
+    pub fn root_prefix(&self) -> &str {
+        self.root_ns.as_deref().unwrap_or("")
+    }
+
+    /// The effective default prefix for leaf elements (`""` when unset).
+    pub fn leaf_prefix(&self) -> &str {
+        self.ns_defaults
+            .as_ref()
+            .and_then(|d| d.leaf.as_deref())
+            .unwrap_or("")
+    }
+
+    /// The effective default prefix for aggregate elements (`""` when unset).
+    pub fn aggregate_prefix(&self) -> &str {
+        self.ns_defaults
+            .as_ref()
+            .and_then(|d| d.aggregate.as_deref())
+            .unwrap_or("")
+    }
+
+    /// The declared namespaces (empty when none are declared).
+    pub fn declared_namespaces(&self) -> BTreeMap<String, String> {
+        self.namespaces.clone().unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -105,6 +192,53 @@ mod tests {
         let meta: MappingMeta = toml::from_str(&src).unwrap();
         assert_eq!(meta.inherits.as_deref(), Some("ubl-invoice:2.0"));
         assert_eq!(meta.description.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn test_namespace_entries_default_to_none_and_parse() {
+        let meta: MappingMeta = toml::from_str(required_only()).unwrap();
+        assert_eq!(meta.root_ns, None);
+        assert_eq!(meta.namespaces, None);
+        assert_eq!(meta.ns_defaults, None);
+        assert_eq!(meta.root_prefix(), "");
+        assert_eq!(meta.leaf_prefix(), "");
+        assert_eq!(meta.aggregate_prefix(), "");
+        assert!(meta.declared_namespaces().is_empty());
+
+        let src = format!(
+            "{}\nroot_ns = \"rsm\"\n[namespaces]\n\"\" = \"urn:default\"\nrsm = \"urn:rsm\"\n[ns_defaults]\nleaf = \"ram\"\naggregate = \"ram\"",
+            required_only()
+        );
+        let meta: MappingMeta = toml::from_str(&src).unwrap();
+        assert_eq!(meta.root_prefix(), "rsm");
+        assert_eq!(meta.leaf_prefix(), "ram");
+        assert_eq!(meta.aggregate_prefix(), "ram");
+        let ns = meta.declared_namespaces();
+        assert_eq!(ns[""], "urn:default");
+        assert_eq!(ns["rsm"], "urn:rsm");
+    }
+
+    #[test]
+    fn test_unknown_ns_defaults_key_is_rejected() {
+        let src = format!("{}\n[ns_defaults]\nbogus = \"x\"", required_only());
+        assert!(toml::from_str::<MappingMeta>(&src).is_err());
+    }
+
+    #[test]
+    fn test_inherit_namespaces_fills_only_omitted_entries() {
+        let parent_src = format!(
+            "{}\nroot_ns = \"p\"\n[namespaces]\np = \"urn:p\"\n[ns_defaults]\nleaf = \"cbc\"",
+            required_only()
+        );
+        let parent: MappingMeta = toml::from_str(&parent_src).unwrap();
+        let child_src = format!("{}\n[namespaces]\nq = \"urn:q\"", required_only());
+        let mut child: MappingMeta = toml::from_str(&child_src).unwrap();
+        child.inherit_namespaces(&parent);
+        assert_eq!(child.root_prefix(), "p", "omitted: inherited");
+        assert_eq!(child.leaf_prefix(), "cbc", "omitted: inherited");
+        let ns = child.declared_namespaces();
+        assert_eq!(ns.len(), 1, "declared: replaces the parent's table whole");
+        assert_eq!(ns["q"], "urn:q");
     }
 
     #[test]

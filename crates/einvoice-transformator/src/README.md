@@ -21,14 +21,12 @@ references the exact type and function names exported here.
   `empty_as_missing`) emitted as direct function calls.
 - `validate.rs` — lexical shape checks (`is_currency`, `is_date`, `is_datetime`,
   `is_unit_code`) the generated reader calls before building a field.
-- `adapter.rs` — the string-based `Adapter` contract (`&str -> Result<String, _>`)
-  for named, deterministic, pure conversions invoked by generated code.
 
 ## Behavior
 
 Everything here is pure data and pure functions. Generated code normalizes and
-validates `&str` inputs, optionally calls adapter functions, and returns a
-`MappingResult` carrying diagnostics. Mapping-level problems (missing required
+validates `&str` inputs, runs codecs, and returns a `MappingResult` carrying
+diagnostics. Mapping-level problems (missing required
 fields, type errors) are *diagnostics*, not Rust errors.
 
 ## Testing

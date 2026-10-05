@@ -15,8 +15,15 @@
 //! - The full dotted table name is the node id (`[Invoice.ID]` → `Invoice.ID`).
 //! - A table may be *both* a node and a container (a collection node with child
 //!   nodes). Own scalar/array fields define the node; sub-tables recurse.
+//! - A table's `match` key is its selector (an inline table), never a child
+//!   element: `match` is a reserved node field.
 //! - Unknown fields inside a node are rejected (E001).
 //! - Stray top-level scalar keys (outside `[meta]` and any table) are rejected.
+//! - Every node records its declaration [`RawNode::position`]: nodes are
+//!   numbered in document order, walking each table's sub-tables in the order
+//!   they first appear (the `toml` crate is built with `preserve_order`). A
+//!   mapping's declaration order is its schema order — this is what the
+//!   synthesized source structs, and so the emitted XML, follow.
 
 use std::collections::BTreeMap;
 
@@ -26,6 +33,10 @@ use toml::Value;
 use crate::error::ConfigError;
 use crate::meta::MappingMeta;
 use crate::node::{NodeId, RawNode};
+
+/// The one node field whose value is a table: the `match` selector. A table
+/// under this key is the node's own field, not a child element.
+const MATCH_FIELD: &str = "match";
 
 /// A parsed mapping document: its `[meta]` and its raw nodes (pre-resolution).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +48,18 @@ pub struct ParsedMapping {
 }
 
 /// Parses a spoke mapping document.
+///
+/// Returns its metadata and raw nodes keyed by dotted id. Node positions are
+/// zero-based and assigned parent-first, visiting each table's children in
+/// first-appearance order, so a table's descendants stay grouped together.
+/// Tables containing only sub-tables do not become nodes; a metadata-only
+/// document produces an empty node map.
+///
+/// # Errors
+///
+/// Returns a `ConfigError` for invalid TOML (including duplicate tables),
+/// missing or invalid `[meta]`, invalid or unknown node fields, or a non-table
+/// top-level value outside `meta`.
 pub fn parse_mapping(src: &str) -> Result<ParsedMapping, ConfigError> {
     // Step 1: parse TOML. A whole-document parse surfaces syntax errors and
     // duplicate-table errors (node uniqueness) with spans.
@@ -48,15 +71,22 @@ pub fn parse_mapping(src: &str) -> Result<ParsedMapping, ConfigError> {
         .ok_or_else(|| ConfigError::msg("missing required [meta] table"))?;
     let meta = MappingMeta::deserialize(meta_value.clone())?;
 
-    // Step 3: flatten dotted tables into node ids.
+    // Step 3: flatten dotted tables into node ids, numbering nodes in document
+    // order as they are met.
     let mut nodes = BTreeMap::new();
+    let mut next_position = 0usize;
     for (key, value) in &root {
         if key == "meta" {
             continue;
         }
         match value {
             Value::Table(table) => {
-                flatten(NodeId::new(key.as_str()), table, &mut nodes)?;
+                flatten(
+                    NodeId::new(key.as_str()),
+                    table,
+                    &mut nodes,
+                    &mut next_position,
+                )?;
             }
             _ => {
                 return Err(ConfigError::msg(format!(
@@ -70,18 +100,29 @@ pub fn parse_mapping(src: &str) -> Result<ParsedMapping, ConfigError> {
 }
 
 /// Recursively flattens `table` (named `id`) into source nodes. Own fields make
-/// `id` a node; sub-tables recurse with extended ids.
+/// `id` a node; sub-tables recurse with extended ids. `next_position` is the
+/// running document-order counter stamped onto each node as it is created, so a
+/// node's position reflects where its table (or, for sub-tables, the first
+/// appearance of its parent) stands in the document.
+///
+/// Returns a `ConfigError` identifying the node if its own fields or a
+/// descendant's fields cannot be deserialized as a `RawNode`. Nodes already
+/// inserted and increments to `next_position` are retained on error.
 fn flatten(
     id: NodeId,
     table: &toml::Table,
     nodes: &mut BTreeMap<NodeId, RawNode>,
+    next_position: &mut usize,
 ) -> Result<(), ConfigError> {
     let mut own = toml::Table::new();
     let mut children: Vec<(NodeId, &toml::Table)> = Vec::new();
 
     for (key, value) in table {
         match value {
-            Value::Table(child) => {
+            // A `match` selector is written as an inline table, which TOML
+            // does not distinguish from a sub-table: the key is reserved for
+            // the node field, never a child element.
+            Value::Table(child) if key != MATCH_FIELD => {
                 children.push((NodeId::new(format!("{id}.{key}")), child));
             }
             other => {
@@ -91,13 +132,15 @@ fn flatten(
     }
 
     if !own.is_empty() {
-        let node = RawNode::deserialize(Value::Table(own))
+        let mut node = RawNode::deserialize(Value::Table(own))
             .map_err(|e| ConfigError::msg(format!("in node `{id}`: {e}")))?;
+        node.position = *next_position;
+        *next_position += 1;
         nodes.insert(id, node);
     }
 
     for (child_id, child_table) in children {
-        flatten(child_id, child_table, nodes)?;
+        flatten(child_id, child_table, nodes, next_position)?;
     }
     Ok(())
 }
@@ -118,6 +161,36 @@ mod tests {
 
     fn parse(extra: &str) -> ParsedMapping {
         parse_mapping(&format!("{META}\n{extra}")).expect("parses")
+    }
+
+    #[test]
+    fn test_match_inline_table_is_a_node_field_not_a_child() {
+        let parsed = parse_mapping(
+            r#"
+            [meta]
+            doc_format = "f"
+            format_version = "1"
+            mapping_version = "1"
+            canonical_model = "c:1"
+
+            [Invoice.Ref]
+            xml = "AdditionalDocumentReference"
+            match = { "DocumentTypeCode" = "130", "ID.@schemeID" = "ABZ" }
+
+            [Invoice.Ref.ID]
+            type = "identifier"
+            "#,
+        )
+        .expect("parses");
+        let node = &parsed.nodes[&NodeId::new("Invoice.Ref")];
+        let selector = node.match_.as_ref().expect("match is a node field");
+        assert_eq!(selector["DocumentTypeCode"], "130");
+        assert_eq!(selector["ID.@schemeID"], "ABZ");
+        assert!(
+            !parsed.nodes.contains_key(&NodeId::new("Invoice.Ref.match")),
+            "the selector table is not a child node"
+        );
+        assert!(parsed.nodes.contains_key(&NodeId::new("Invoice.Ref.ID")));
     }
 
     #[test]
@@ -250,5 +323,59 @@ mod tests {
         );
         let ids: Vec<&str> = m.nodes.keys().map(NodeId::as_str).collect();
         assert_eq!(ids, ["Alpha", "Zeta"]);
+    }
+
+    #[test]
+    fn test_positions_follow_document_order_not_id_order() {
+        // The map is keyed by id (Alpha < Zeta), but the declaration position
+        // remembers that Zeta came first in the document.
+        let m = parse(
+            r#"
+            [Invoice.Zeta]
+            type = "string"
+            [Invoice.Alpha]
+            type = "string"
+        "#,
+        );
+        assert_eq!(m.nodes[&NodeId::new("Invoice.Zeta")].position, 0);
+        assert_eq!(m.nodes[&NodeId::new("Invoice.Alpha")].position, 1);
+    }
+
+    #[test]
+    fn test_positions_group_a_table_at_its_first_appearance() {
+        // `Totals` first appears before `A`, so every `Totals.*` node (even
+        // one declared later) is numbered before `A`: a parent element's
+        // children are contiguous in XML, so the parent's position is where
+        // it is first declared.
+        let m = parse(
+            r#"
+            [Invoice.Totals.X]
+            type = "string"
+            [Invoice.A]
+            type = "string"
+            [Invoice.Totals.Y]
+            type = "string"
+        "#,
+        );
+        assert_eq!(m.nodes[&NodeId::new("Invoice.Totals.X")].position, 0);
+        assert_eq!(m.nodes[&NodeId::new("Invoice.Totals.Y")].position, 1);
+        assert_eq!(m.nodes[&NodeId::new("Invoice.A")].position, 2);
+    }
+
+    #[test]
+    fn test_positions_are_unique_and_dense() {
+        let m = parse(
+            r#"
+            [Lines]
+            type = "collection"
+            [Lines.ID]
+            type = "identifier"
+            [Invoice.ID]
+            type = "identifier"
+        "#,
+        );
+        let mut positions: Vec<usize> = m.nodes.values().map(|n| n.position).collect();
+        positions.sort_unstable();
+        assert_eq!(positions, [0, 1, 2]);
     }
 }

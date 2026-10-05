@@ -71,7 +71,7 @@ struct AppState {
 }
 
 /// The usage text served on unknown routes.
-const USAGE: &str = "POST /transform?to=<format>[&from=<format>] | GET /formats | GET /analyze[?from=<format>] | GET /health";
+const USAGE: &str = "POST /transform?to=<format>[&from=<format>] | GET /formats | GET /analyze[?from=<format>[&to=<format>]][&deny_lossy=1] | GET /health";
 
 /// Builds the complete `krab-server` service. `blowup` is the reservation
 /// multiplier (`Content-Length x blowup` bytes are reserved per transform);
@@ -97,11 +97,17 @@ async fn formats() -> Response {
         .into_response()
 }
 
-/// `GET /analyze[?from=<format>]`: the loss/error matrix as plain text.
+/// `GET /analyze[?from=<format>[&to=<format>]][&deny_lossy=1]`: the
+/// loss/error matrix, row or pair report as plain text; `deny_lossy` turns a
+/// non-lossless result into a 422 carrying the report.
 async fn analyze(RawQuery(query): RawQuery) -> Response {
     match handle::analyze(query.as_deref().unwrap_or("")) {
         Ok(table) => table.into_response(),
-        Err(problem) => (StatusCode::BAD_REQUEST, problem).into_response(),
+        Err((status, problem)) => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST),
+            problem,
+        )
+            .into_response(),
     }
 }
 
@@ -383,6 +389,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_analyze_deny_lossy_returns_422_with_the_report() {
+        let response = app(BIG_BUDGET)
+            .oneshot(
+                HttpRequest::get("/analyze?from=fatturapa&to=xrechnung-invoice&deny_lossy=1")
+                    .body(Body::empty())
+                    .expect("ok"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let text = body_text(response).await;
+        assert!(text.contains("SpecificationId"), "{text}");
+    }
+
+    #[tokio::test]
     async fn test_unknown_route_returns_404_usage() {
         let response = app(BIG_BUDGET)
             .oneshot(HttpRequest::get("/nope").body(Body::empty()).expect("ok"))
@@ -416,7 +437,7 @@ mod tests {
             "explicit Content-Length must match the body (the timeout \
              wrapper hides the size hint, so hyper cannot derive it)"
         );
-        assert!(body.contains("<ID>INV-42</ID>"));
+        assert!(body.contains("<cbc:ID>INV-42</cbc:ID>"), "{body}");
     }
 
     #[tokio::test]

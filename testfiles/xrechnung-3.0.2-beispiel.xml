@@ -105,8 +105,8 @@
     <cbc:InvoicedQuantity unitCode="HUR">10</cbc:InvoicedQuantity>
     <cbc:LineExtensionAmount currencyID="EUR">800.00</cbc:LineExtensionAmount>
     <cac:Item>
-      <cbc:Name>Beratungsleistung — Senior Consultant</cbc:Name>
       <cbc:Description>April 2026, Projekt #PRJ-2026-014</cbc:Description>
+      <cbc:Name>Beratungsleistung — Senior Consultant</cbc:Name>
       <cac:ClassifiedTaxCategory>
         <cbc:ID>S</cbc:ID>
         <cbc:Percent>19</cbc:Percent>
@@ -123,8 +123,8 @@
     <cbc:InvoicedQuantity unitCode="C62">1</cbc:InvoicedQuantity>
     <cbc:LineExtensionAmount currencyID="EUR">200.00</cbc:LineExtensionAmount>
     <cac:Item>
-      <cbc:Name>Schulungs-Workshop (Pauschale)</cbc:Name>
       <cbc:Description>1 Tag, on-site, max. 12 Teilnehmer</cbc:Description>
+      <cbc:Name>Schulungs-Workshop (Pauschale)</cbc:Name>
       <cac:ClassifiedTaxCategory>
         <cbc:ID>S</cbc:ID>
         <cbc:Percent>19</cbc:Percent>

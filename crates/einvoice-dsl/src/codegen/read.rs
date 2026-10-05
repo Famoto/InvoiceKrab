@@ -1,12 +1,22 @@
 //! Reader generation: `read(mut source: Root) -> MappingResult<MainKey>`.
 //!
 //! Per node: reads the source field, applies the normalize chain, falls back
-//! through `fallbacks`, decodes/validates by `type`, applies an optional
-//! `adapter`, enforces `required`/`min_items`, and assigns into the typed hub.
+//! through `fallbacks`, decodes/validates by `type` (through the node's `codec`
+//! when it has one: the lexical form becomes the canonical form, a mismatch is
+//! `CODEC_INVALID`, and a wire attribute that disagrees with the codec's is
+//! `CODEC_WIRE_MISMATCH`), enforces `required`, and assigns into the typed hub.
+//! A required collection with no items is `REQUIRED_MISSING` like a scalar.
 //!
 //! A `clone_of` node never fills the hub: after every primary assign in its
 //! scope, its path is read and decoded only to check the copy against the
-//! canonical value (`CLONE_MISMATCH` warning on disagreement).
+//! canonical value (`CLONE_MISMATCH` warning on disagreement). A `$parent.Key`
+//! / `$root.Key` clone compares against the enclosing scope's / the root's
+//! value, which is final by then (outer scalars are assigned before the loops).
+//!
+//! When the mapping aliases physical elements (`match` selectors), the source
+//! is `demux`ed first: each physical element's items are sorted into the
+//! logical fields the nodes read, and a single-valued logical node that matched
+//! several items warns `MATCH_MULTIPLE` and keeps the first.
 //!
 //! The reader **consumes** the source struct: paths read exactly once move
 //! their `String`s into the hub (`take`), so a large document's text is not
@@ -18,8 +28,9 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+use crate::codec::{Codec, Pattern};
 use crate::multiple::MultiplePolicy;
-use crate::node::SourceNode;
+use crate::node::{DerivationScope, SourceNode};
 use crate::normalize::NormalizeOp;
 use crate::source_model::SourceModelMeta;
 use crate::types::MappingType;
@@ -92,6 +103,19 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
     );
     out.push_str("    let mut diagnostics: Vec<MappingDiagnostic> = Vec::new();\n");
     out.push_str("    let mut main = MainKey::default();\n");
+    if super::source::root_has_alias_io(ctx.source) {
+        // Aliased elements: sort every physical element's items into the
+        // logical fields the mapping reads, warning when a single-valued
+        // logical node matched more than one item.
+        out.push_str("    source.demux(&mut |node, extra| {\n");
+        out.push_str("        diagnostics.push(MappingDiagnostic::new(\n");
+        out.push_str("            Severity::Warning,\n");
+        out.push_str("            \"MATCH_MULTIPLE\",\n");
+        out.push_str("            node,\n");
+        out.push_str("            format!(\"{extra} more item(s) match the node's selector; only the first is read\"),\n");
+        out.push_str("        ));\n");
+        out.push_str("    });\n");
+    }
 
     let shared = shared_read_paths(
         ctx,
@@ -114,7 +138,16 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
     // compare against is final.
     for clone in &ctx.plan.root_clones {
         out.push('\n');
-        read_clone_check_block(out, ctx, clone, &ctx.source.root, 1, &root_target, &shared);
+        read_clone_check_block(
+            out,
+            ctx,
+            clone,
+            &ctx.source.root,
+            1,
+            &root_target,
+            None,
+            &shared,
+        );
     }
 
     for coll in &ctx.plan.root_collections {
@@ -175,6 +208,9 @@ fn read_scalar_block(
         );
     } else {
         let _ = writeln!(out, "{pad}// {} -> {key}", node.id);
+        if let Some(codec) = ctx.codec_of(node) {
+            read_wire_checks(out, ctx, node, codec, key, start_struct, indent, target);
+        }
         let binding = if node.fallbacks.is_empty() {
             "value"
         } else {
@@ -234,7 +270,7 @@ fn read_scalar_block(
     // Decode + assign; only a required field gets the missing-value branch,
     // so optional fields emit no dead diagnostic code.
     let _ = writeln!(out, "{pad}if let Some(raw) = value {{");
-    decode_and_assign(out, node, key, indent + 1, target);
+    decode_and_assign(out, node, ctx.codec_of(node), key, indent + 1, target);
     if node.required {
         let _ = writeln!(out, "{pad}}} else {{");
         DiagSpec::new(
@@ -251,11 +287,57 @@ fn read_scalar_block(
     let _ = writeln!(out, "{pad}}}");
 }
 
+/// Emits, for each wire attribute of the node's codec, a warning when the
+/// document carries the attribute with a different value than the codec
+/// writes (`<DateTimeString format="610">` under a `102` codec). The attribute
+/// lives on the node's element struct, next to the `$text` value the node's
+/// path ends in.
+#[allow(clippy::too_many_arguments)]
+fn read_wire_checks(
+    out: &mut String,
+    ctx: &GenCtx,
+    node: &SourceNode,
+    codec: &Codec,
+    key: &str,
+    start_struct: &str,
+    indent: usize,
+    target: &Target,
+) {
+    let Some(element_path) = node.source_path.strip_suffix(".value") else {
+        return;
+    };
+    let pad = "    ".repeat(indent);
+    for (attr, expected) in &codec.wire {
+        let attr_path = format!("{element_path}.{}", snake_case(attr));
+        let access = access_expr(ctx.source, start_struct, &attr_path, target.base_var);
+        let _ = writeln!(out, "{pad}if let Some(found) = {access} {{");
+        let _ = writeln!(out, "{pad}    if found != {expected:?} {{");
+        let msg = format!(
+            "format!(\"attribute `{attr}` is `{{found}}`, codec `{}` writes `{expected}`\")",
+            codec.id
+        );
+        DiagSpec::new(
+            "Severity::Warning",
+            "CODEC_WIRE_MISMATCH",
+            node.id.as_str(),
+            &msg,
+        )
+        .key(key)
+        .path(&attr_path)
+        .index(target.index_var)
+        .emit(out, &format!("{pad}        "));
+        let _ = writeln!(out, "{pad}    }}");
+        let _ = writeln!(out, "{pad}}}");
+    }
+}
+
 /// Emits the consistency check for one `clone_of` node: read + normalize the
 /// copy's path, decode it under the target key's type, and warn
 /// (`CLONE_MISMATCH`) when the decoded copy disagrees with the canonical value
 /// already assigned by the primary node. The copy never fills the hub; an
-/// absent copy is fine (the writer will emit it on the way out).
+/// absent copy is fine (the writer will emit it on the way out). `parent_hub`
+/// is the enclosing scope's hub variable (`None` at root) for `$parent` clones.
+#[allow(clippy::too_many_arguments)]
 fn read_clone_check_block(
     out: &mut String,
     ctx: &GenCtx,
@@ -263,12 +345,24 @@ fn read_clone_check_block(
     start_struct: &str,
     indent: usize,
     target: &Target,
+    parent_hub: Option<&str>,
     shared: &BTreeSet<String>,
 ) {
     let pad = "    ".repeat(indent);
     let body = "    ".repeat(indent + 1);
-    let key = node.clone_of.as_deref().expect("clone node");
-    let canonical = format!("{}.{}", target.struct_var, snake_case(key));
+    let derivation = node
+        .derivation()
+        .expect("clone node")
+        .expect("E093 rejects malformed derivations before codegen");
+    let key = derivation.key;
+    let hub_var = match derivation.scope {
+        DerivationScope::Own => target.struct_var,
+        DerivationScope::Root => "main",
+        DerivationScope::Parent => {
+            parent_hub.expect("E093 rejects `$parent` at root scope before codegen")
+        }
+    };
+    let canonical = format!("{hub_var}.{}", snake_case(key));
     let take = target.owned && !shared.contains(&node.source_path);
 
     let _ = writeln!(out, "{pad}// {}: copy of {key}, consistency check", node.id);
@@ -290,6 +384,7 @@ fn read_clone_check_block(
     decode_body(
         out,
         node,
+        ctx.codec_of(node),
         key,
         &"    ".repeat(indent + 2),
         "clone_value",
@@ -520,6 +615,7 @@ fn read_collection_block(
             &src_item_struct,
             indent + 1,
             &target,
+            Some(parent_hub),
             &child_shared,
         );
     }
@@ -544,17 +640,19 @@ fn read_collection_block(
     let _ = writeln!(out, "{body}{parent_hub}.{hub_field}.push({item});");
     let _ = writeln!(out, "{pad}}}");
 
-    // min_items / required underflow.
-    let min = coll.effective_min_items();
-    if min > 0 {
-        let _ = writeln!(out, "{pad}if {count} < {min} {{");
-        let msg = format!(
-            "format!(\"collection `{coll_key}` has {{{count}}} items, expected at least {min}\")"
-        );
-        DiagSpec::new("Severity::Error", "MIN_ITEMS", coll.id.as_str(), &msg)
-            .key(coll_key)
-            .path(&coll.source_path)
-            .emit(out, &body);
+    // A required collection must have at least one item.
+    if coll.required {
+        let _ = writeln!(out, "{pad}if {count} == 0 {{");
+        let msg = format!("\"required collection `{coll_key}` has no items\"");
+        DiagSpec::new(
+            "Severity::Error",
+            "REQUIRED_MISSING",
+            coll.id.as_str(),
+            &msg,
+        )
+        .key(coll_key)
+        .path(&coll.source_path)
+        .emit(out, &body);
         let _ = writeln!(out, "{pad}}}");
     }
 }
@@ -577,11 +675,12 @@ fn read_one_value(
     normalize_chain(&access, normalize, take)
 }
 
-/// Emits the decode + adapter + assign snippet, given `raw: String` is in scope
-/// inside `if let Some(raw) = value`.
+/// Emits the decode + assign snippet, given `raw: String` is in scope inside
+/// `if let Some(raw) = value`.
 fn decode_and_assign(
     out: &mut String,
     node: &SourceNode,
+    codec: Option<&Codec>,
     key: &str,
     indent: usize,
     target: &Target,
@@ -590,45 +689,60 @@ fn decode_and_assign(
     let field = snake_case(key);
     let lhs = format!("{}.{field}", target.struct_var);
 
-    // Optional adapter: transform the raw string first (String -> String).
-    let (decode_pad, has_adapter_wrap) = if let Some(adapter) = &node.adapter {
-        let _ = writeln!(out, "{pad}let adapted = match adapter::{adapter}(&raw) {{");
-        let _ = writeln!(out, "{pad}    Ok(s) => Some(CompactString::from(s)),");
-        let _ = writeln!(out, "{pad}    Err(err) => {{");
-        DiagSpec::new(
-            "Severity::Error",
-            "ADAPTER_FAILED",
-            node.id.as_str(),
-            "err.to_string()",
-        )
-        .key(key)
-        .index(target.index_var)
-        .emit(out, &format!("{pad}        "));
-        let _ = writeln!(out, "{pad}        None");
-        let _ = writeln!(out, "{pad}    }}");
-        let _ = writeln!(out, "{pad}}};");
-        let _ = writeln!(out, "{pad}if let Some(raw) = adapted {{");
-        ("    ".repeat(indent + 1), true)
-    } else {
-        (pad.clone(), false)
-    };
-
-    decode_body(out, node, key, &decode_pad, &lhs, target);
-
-    if has_adapter_wrap {
-        let _ = writeln!(out, "{pad}}}");
-    }
+    decode_body(out, node, codec, key, &pad, &lhs, target);
 }
 
 /// Emits the type-specific decode of `raw: String` into the typed `lhs` field.
+/// With a `codec`, the raw lexical form is decoded into the canonical form
+/// first (`CODEC_INVALID` when it does not match the codec's pattern).
+#[allow(clippy::too_many_arguments)]
 fn decode_body(
     out: &mut String,
     node: &SourceNode,
+    codec: Option<&Codec>,
     key: &str,
     pad: &str,
     lhs: &str,
     target: &Target,
 ) {
+    if let Some(codec) = codec {
+        let (call, ok) = match (&codec.pattern, node.source_type) {
+            (Pattern::Temporal(_), MappingType::Date) => (
+                format!("codec::decode_date(raw.trim(), {:?})", codec.lexical),
+                format!("Some(iso) => {lhs} = Some(iso),"),
+            ),
+            (Pattern::Temporal(_), MappingType::Datetime) => (
+                format!("codec::decode_datetime(raw.trim(), {:?})", codec.lexical),
+                format!("Some(iso) => {lhs} = Some(iso),"),
+            ),
+            (Pattern::Boolean { yes, no }, MappingType::Boolean) => (
+                format!("codec::decode_bool(raw.trim(), {yes:?}, {no:?})"),
+                format!("Some(b) => {lhs} = Some(b),"),
+            ),
+            // Type / codec disagreement is validation's E085; nothing sane to emit.
+            _ => (
+                format!(
+                    "compile_error!(\"codec `{}` does not fit a `{}` node\")",
+                    codec.id, node.source_type
+                ),
+                String::new(),
+            ),
+        };
+        let _ = writeln!(out, "{pad}match {call} {{");
+        let _ = writeln!(out, "{pad}    {ok}");
+        let _ = writeln!(out, "{pad}    None => {{");
+        let msg = format!(
+            "format!(\"`{{raw}}` does not match codec `{}` ({})\")",
+            codec.id, codec.lexical
+        );
+        DiagSpec::new("Severity::Error", "CODEC_INVALID", node.id.as_str(), &msg)
+            .key(key)
+            .index(target.index_var)
+            .emit(out, &format!("{pad}        "));
+        let _ = writeln!(out, "{pad}    }}");
+        let _ = writeln!(out, "{pad}}}");
+        return;
+    }
     match node.source_type {
         MappingType::Decimal => {
             let _ = writeln!(out, "{pad}match Decimal::from_str(raw.trim()) {{");

@@ -29,14 +29,17 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Check mappings
-        run: cargo run --locked -p einvoice-dsl -- check mappings
+      - name: Check mappings and codecs
+        run: cargo run --locked -p einvoice-dsl -- check config
 
       - name: Check workspace
         run: cargo check --workspace --all-targets --locked
 
       - name: Lint workspace
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Install xmllint (XSD validation of emitted documents)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libxml2-utils
 
       - name: Test workspace
         run: cargo test --workspace --locked

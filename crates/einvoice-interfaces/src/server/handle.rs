@@ -25,7 +25,8 @@
 //!
 //! Besides [`handle`] (the `/transform` core), [`formats`] and [`analyze`]
 //! back the body-less capability routes `GET /formats` (JSON format list)
-//! and `GET /analyze` (the CLI's `--analyze` table, reused verbatim).
+//! and `GET /analyze` (the CLI's `--analyze` report, reused verbatim:
+//! `from`, `to` and `deny_lossy` query parameters).
 //!
 //! # Testing
 //!
@@ -142,15 +143,23 @@ pub fn formats() -> String {
     serde_json::to_string(&names).unwrap_or_default()
 }
 
-/// The `GET /analyze[?from=<format>]` body: the static loss/error table of
-/// every transform, scoped to one source when `from` is given (the CLI's
-/// `--analyze`, verbatim).
+/// The `GET /analyze[?from=<format>[&to=<format>]][&deny_lossy=1]` body: the
+/// static loss/error report of every transform, one source's row, or one pair
+/// in full (the CLI's `--analyze`, verbatim).
 ///
 /// # Errors
 ///
-/// A 400-worthy problem text when `from` names no known format.
-pub fn analyze(query: &str) -> Result<String, String> {
-    crate::cli::analyze_table(param(query, "from")).map_err(|e| e.to_string())
+/// `(400, problem)` when `from` or `to` names no known format; `(422, report)`
+/// when `deny_lossy` is set and a reported transform is not lossless.
+pub fn analyze(query: &str) -> Result<String, (u16, String)> {
+    let deny_lossy = matches!(param(query, "deny_lossy"), Some("1" | "true" | "yes"));
+    crate::cli::analyze_output(param(query, "from"), param(query, "to"), deny_lossy).map_err(|e| {
+        let status = match e {
+            crate::cli::CliError::Lossy(_) => 422,
+            _ => 400,
+        };
+        (status, e.to_string())
+    })
 }
 
 #[cfg(test)]
@@ -171,7 +180,11 @@ mod tests {
     fn test_handle_valid_transform_returns_200_xml() {
         let reply = handle("to=ubl-invoice&from=ubl-invoice", UBL.to_vec());
         assert_eq!(reply.status, 200, "{}", reply.body);
-        assert!(reply.body.contains("<ID>INV-42</ID>"), "{}", reply.body);
+        assert!(
+            reply.body.contains("<cbc:ID>INV-42</cbc:ID>"),
+            "{}",
+            reply.body
+        );
         assert!(reply.warnings.is_empty(), "{}", reply.warnings);
     }
 
@@ -179,7 +192,11 @@ mod tests {
     fn test_handle_detects_source_when_from_absent() {
         let reply = handle("to=ubl-invoice", UBL.to_vec());
         assert_eq!(reply.status, 200, "{}", reply.body);
-        assert!(reply.body.contains("<ID>INV-42</ID>"), "{}", reply.body);
+        assert!(
+            reply.body.contains("<cbc:ID>INV-42</cbc:ID>"),
+            "{}",
+            reply.body
+        );
     }
 
     #[test]
@@ -255,7 +272,25 @@ mod tests {
 
     #[test]
     fn test_analyze_unknown_source_is_problem_text() {
-        let problem = analyze("from=not-a-format").expect_err("unknown format");
+        let (status, problem) = analyze("from=not-a-format").expect_err("unknown format");
+        assert_eq!(status, 400);
         assert!(problem.contains("not-a-format"), "{problem}");
+    }
+
+    #[test]
+    fn test_analyze_pair_and_deny_lossy() {
+        let text = analyze("from=ubl-invoice&to=xrechnung-invoice").expect("known pair");
+        assert!(
+            text.contains("ubl-invoice:2.1 -> xrechnung-invoice:3.0.2:"),
+            "{text}"
+        );
+        assert!(
+            analyze("from=ubl-invoice&to=xrechnung-invoice&deny_lossy=1").is_ok(),
+            "lossless pair passes the gate"
+        );
+        let (status, report) =
+            analyze("from=ubl-invoice&to=fatturapa&deny_lossy=1").expect_err("lossful pair");
+        assert_eq!(status, 422);
+        assert!(report.contains("not lossless"), "{report}");
     }
 }
