@@ -15,8 +15,9 @@ measured; the test setup is described [at the end](#how-this-was-measured).
 - **Large invoices.** There is no fixed size limit; the only bound is
   available memory ([details](#overload-behavior)). Invoices with 100,000 lines
   (89 MB) were converted in about 2 seconds.
-- **Predictable memory.** An invoice needs roughly **4–5× its file size** in
-  memory while it is converted. The service is 3 MB at idle.
+- **Predictable memory.** An invoice needs roughly **3–6× its file size** in
+  memory while it is converted, and up to about **11×** for the very compact
+  FatturaPA format. The service is 3 MB at idle.
 - **Safe under overload.** The service never runs out of memory because of
   traffic. When memory is fully booked, new invoices wait their turn instead
   of failing.
@@ -105,9 +106,24 @@ invoice takes about 1 ms.
 | 10,000 lines | 8.9 MB | 26–57 MB |
 | 100,000 lines | 89 MB | 220–420 MB |
 
-Rule of thumb: an invoice needs **4–5× its file size** while it is
-converted (Factur-X output is the most memory-hungry, FatturaPA the least).
-The invoice is held in memory in full during conversion.
+The invoice is held in memory in full during conversion. How much memory
+that takes per byte depends mostly on the **input format**:
+
+![Memory needed depends on the input format](perf/format-memory.svg)
+
+| Input format | Peak memory per request (Docker image) | Linux build |
+|---|---:|---:|
+| FatturaPA | up to 9.0× file size | up to 11.5× |
+| UBL, XRechnung, Peppol | up to 4.5× | up to 5.9× |
+| Factur-X | up to 3.1× | up to 3.8× |
+
+Worst output format for each input, invoices of 1 MB and up, single request.
+FatturaPA stores the same invoice in far fewer bytes (13 MB where UBL needs
+89 MB), so the converted result is many times larger than the upload.
+Writing Factur-X needs the most memory of the output formats. The Docker image
+(musl) uses noticeably less memory than the standard Linux (glibc) build.
+Invoices under 1 MB show higher multiples, but only by a few MB in absolute
+terms.
 
 ![Memory stays bounded under load](perf/concurrency-memory.svg)
 
@@ -118,8 +134,9 @@ once used 174 MB, against 136 MB for four.
 
 ### Overload behavior
 
-Before it reads an invoice, the service books memory for it: **7× the
-invoice's file size**, taken from a fixed memory budget (by default, half of
+Before it reads an invoice, the service books memory for it: **12× the
+invoice's file size**, the worst measured case above rounded up, taken from
+a fixed memory budget (by default, half of
 the server's or container's memory). If the budget is fully booked, the
 invoice waits until earlier ones finish. Nothing is rejected, and memory
 can't be exhausted by traffic.
@@ -129,9 +146,9 @@ sent at once, all invoices were converted successfully; they took longer
 because they queued.
 
 The only invoices rejected are those that could never fit: **larger than
-1/7 of the memory budget**. These receive HTTP `413`. With the default
-budget, that means invoices larger than 1/14 of the container's memory
-(about 140 MB for a 2 GB container).
+1/12 of the memory budget**. These receive HTTP `413`. With the default
+budget, that means invoices larger than 1/24 of the container's memory
+(about 85 MB for a 2 GB container, 420 MB for 10 GB).
 
 ## Sizing a deployment
 
@@ -140,16 +157,18 @@ and how many large invoices run at once).
 
 - **CPU:** divide your peak invoice rate by the per-core capacity above, and
   add headroom.
-- **Memory:** with the default budget, plan **14 × the largest invoice size
-  × the number of workers** so all workers can take large invoices at once.
-  Less is fine: large invoices then queue instead of running in parallel.
-  The container must have at least 14 × the largest invoice size.
+- **Memory:** with the default settings, plan **24 × the largest invoice
+  size × the number of workers** so all workers can take large invoices at
+  once. Less is fine: large invoices then queue instead of running in
+  parallel. The container must have at least 24 × the largest invoice size.
+  If you never receive FatturaPA invoices, set `KRAB_MEM_BLOWUP=9` and use
+  18× instead of 24×.
 
 | Scenario | Largest invoice | Suggested container | Expected capacity |
 |---|---|---|---|
 | Standard e-invoicing | up to 1 MB | 1–2 cores, 256 MB | thousands of typical invoices per second |
-| Mixed, occasional large invoices | up to 20 MB | 4 cores, 1–2 GB | ~12,000 typical invoices/s; large ones partly queued |
-| Bulk / very large documents | up to 100 MB | 4 cores, 6 GB | four 100 MB invoices in parallel, ~2–3 s each |
+| Mixed, occasional large invoices | up to 20 MB | 4 cores, 2 GB | ~12,000 typical invoices/s; four 20 MB invoices in parallel |
+| Bulk / very large documents | up to 100 MB | 4 cores, 10 GB (8 GB with `KRAB_MEM_BLOWUP=9`) | four 100 MB invoices in parallel, ~2–3 s each |
 
 Defaults adapt to the container's CPU and memory limits automatically. To
 override them, set the environment variables below; see the
@@ -159,7 +178,7 @@ override them, set the environment variables below; see the
 |---|---|---|
 | `KRAB_WORKERS` | number of CPU cores | you want to reserve CPU for other processes |
 | `KRAB_MEM_BUDGET_BYTES` | half of the available memory | the container runs other processes, or you want a fixed limit |
-| `KRAB_MEM_BLOWUP` | `7` (memory booked per byte of invoice) | your invoices are consistently small or simple and you want more parallelism per GB; measured peaks reach 4.7×, so stay at 5 or above |
+| `KRAB_MEM_BLOWUP` | `12` (memory booked per byte of invoice) | you never receive FatturaPA input: `9` covers every other measured format and allows a third more large invoices per GB. Don't go below 9. |
 
 ### Command line or HTTP service?
 
@@ -192,10 +211,10 @@ time-sensitive small ones, route the large ones to a separate instance.
 | | |
 |---|---|
 | Hardware | 4 vCPU, 15 GB RAM, Linux container |
-| Build | optimized release build |
+| Build | optimized release build; memory per format also measured on the musl build used by the Docker image |
 | Service settings | defaults (4 workers, memory budget half of RAM) unless stated |
 | Test tool | [`oha`](https://github.com/hatoo/oha) HTTP load generator, 8–32 parallel connections, on the same machine (results are conservative) |
-| Invoices | the bundled UBL sample ([testfiles/UBL-Invoice-2.1.xml](../testfiles/UBL-Invoice-2.1.xml)) and copies with 100 to 100,000 invoice lines; the XRechnung sample gave the same picture |
+| Invoices | the bundled UBL sample ([testfiles/UBL-Invoice-2.1.xml](../testfiles/UBL-Invoice-2.1.xml)) and copies with 100 to 100,000 invoice lines; the XRechnung sample gave the same picture. For memory per format, those invoices were converted into every supported format and each was sent back through every route |
 
 Results depend on hardware and on how many fields your invoices use;
 measure with your own invoices before final sizing:

@@ -54,6 +54,15 @@ ONE_MB = {
 # 4 workers. Idle: 3 MB.
 CONCURRENT = [(1, 47), (2, 72), (4, 136), (8, 174)]
 
+# Server peak memory per request as a multiple of the invoice's file size,
+# worst output format, invoices of 1 MB and up, one request on a fresh
+# server (idle memory excluded). glibc = Linux build, musl = Docker image.
+FORMAT_BLOWUP = {
+    "glibc (Linux build)": {"FatturaPA": 11.5, "UBL, XRechnung, Peppol": 5.9, "Factur-X": 3.8},
+    "musl (Docker image)": {"FatturaPA": 9.0, "UBL, XRechnung, Peppol": 4.5, "Factur-X": 3.1},
+}
+BLOWUP_DEFAULT = 12
+
 # Typical invoice latency (ms), alone vs. while large invoices are processed.
 HOL = {
     "Typical invoices only": {"Median": 0.70, "Slowest 1%": 2.17},
@@ -273,6 +282,45 @@ def concurrency_memory():
     )
 
 
+def format_memory():
+    L, R, T, h = 250, 40, 116, 350
+    vmax = 14
+    sx = lambda v: L + v / vmax * (W - L - R)
+    formats = list(next(iter(FORMAT_BLOWUP.values())).keys())
+    b = []
+    for t in range(0, vmax + 1, 2):
+        b.append(f'<line class="grid" x1="{sx(t):.1f}" x2="{sx(t):.1f}" y1="{T - 6}" y2="{h - 56}"/>')
+        b.append(f'<text class="tick" x="{sx(t):.1f}" y="{h - 40}" text-anchor="middle">{t}×</text>')
+    b.append(f'<text class="axlab" x="{(L + W - R) / 2}" y="{h - 18}" text-anchor="middle">Peak memory per request ÷ invoice file size</text>')
+    y, bh = T + 4, 18
+    for fmt in formats:
+        b.append(f'<text class="lab" x="{L - 12}" y="{y + bh + 5}" text-anchor="end">{fmt} input</text>')
+        for (name, vals), color in zip(FORMAT_BLOWUP.items(), SLOTS):
+            v = vals[fmt]
+            b.append(
+                f'<path d="{bar_path(sx(0), y, sx(v), bh)}" fill="{color}">'
+                f"<title>{fmt} input, {name}: {v:g}×</title></path>"
+            )
+            # Surface-colored halo keeps the label legible over the reference line.
+            b.append(
+                f'<text class="val" x="{sx(v) + 6:.1f}" y="{y + 13}" stroke="var(--surface)" '
+                f'stroke-width="4" paint-order="stroke">{v:g}×</text>'
+            )
+            y += bh + 2
+        y += 18
+    x = sx(BLOWUP_DEFAULT)
+    b.append(f'<line class="ref" x1="{x:.1f}" x2="{x:.1f}" y1="{T - 6}" y2="{h - 56}"/>')
+    b.append(f'<text class="val" x="{x:.1f}" y="{T - 12}" text-anchor="middle">default booking {BLOWUP_DEFAULT}×</text>')
+    b.append(f'<line class="base" x1="{sx(0):.1f}" x2="{sx(0):.1f}" y1="{T - 6}" y2="{h - 56}"/>')
+    b.append(legend(list(zip(FORMAT_BLOWUP.keys(), SLOTS)), 24, 78))
+    (OUT / "format-memory.svg").write_text(
+        svg("\n".join(b) + "\n",
+            "Memory needed depends on the input format",
+            "Worst output format, invoices of 1 MB and up. Compact FatturaPA expands the most.",
+            h)
+    )
+
+
 def mixed_workload():
     L, R, T, h = 150, 40, 96, 300
     vmin, vmax = 0.1, 1000
@@ -310,4 +358,5 @@ if __name__ == "__main__":
     single_invoice_time()
     single_invoice_memory()
     concurrency_memory()
+    format_memory()
     mixed_workload()

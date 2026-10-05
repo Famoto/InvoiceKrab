@@ -240,7 +240,7 @@ processed concurrently across a worker pool:
 
 ```bash
 cargo run --release -p einvoice-interfaces --bin krab-server
-# krab-server listening on 0.0.0.0:8080 — 16 workers, ... bytes memory budget, x5 reservation
+# krab-server listening on 0.0.0.0:8080 — 16 workers, ... bytes memory budget, x12 reservation, 30s body timeout
 
 curl -sS --data-binary @invoice.xml \
     'localhost:8080/transform?to=xrechnung-invoice&from=ubl-invoice'
@@ -267,13 +267,19 @@ hardware (cgroup-aware, so container limits are respected):
 | `KRAB_ADDR`             | `0.0.0.0:8080`                                |
 | `KRAB_WORKERS`          | available parallelism                         |
 | `KRAB_MEM_BUDGET_BYTES` | detected memory x 1/2 (cgroup v2 limit first) |
-| `KRAB_MEM_BLOWUP`       | `5` — reservation = Content-Length x blowup   |
+| `KRAB_MEM_BLOWUP`       | `12` — reservation = Content-Length x blowup  |
 
 There is no per-document size limit. Instead, each request reserves
 `Content-Length x KRAB_MEM_BLOWUP` bytes from a global budget before its
 body is read; requests run in parallel while budget remains and queue when
 it is exhausted, so request traffic can never drive the process out of
-memory. See [crates/einvoice-interfaces/src/server/README.md](crates/einvoice-interfaces/src/server/README.md).
+memory. The default blowup of 12 is the worst measured peak (a FatturaPA
+source written as Factur-X) rounded up; `KRAB_MEM_BLOWUP=9` is safe when
+FatturaPA is never an input. A request larger than budget / blowup is
+refused with `413` — with the defaults, about 1/24 of the memory limit (e.g.
+~85 MB for a 2 GB container). See
+[crates/einvoice-interfaces/src/server/README.md](crates/einvoice-interfaces/src/server/README.md)
+and the measurements in [docs/PERFORMANCE.md](docs/PERFORMANCE.md#memory).
 
 The Dockerfile ships both programs: `docker build --target server` for the
 HTTP service (default), `--target cli` for the CLI image. All knobs are
@@ -286,11 +292,11 @@ docker build --target server -t krab-server .
 # memory budget = half of --memory (cgroup v2).
 docker run --rm -p 8080:8080 --cpus 4 --memory 2g krab-server
 
-# Explicit overrides win over detection.
+# Explicit overrides win over detection (blowup 9: no FatturaPA input).
 docker run --rm -p 8080:8080 \
     -e KRAB_WORKERS=8 \
     -e KRAB_MEM_BUDGET_BYTES=1000000000 \
-    -e KRAB_MEM_BLOWUP=4 \
+    -e KRAB_MEM_BLOWUP=9 \
     krab-server
 ```
 

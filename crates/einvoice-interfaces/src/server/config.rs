@@ -9,7 +9,7 @@
 //! | `KRAB_ADDR`              | `0.0.0.0:8080`                                 |
 //! | `KRAB_WORKERS`           | available parallelism (cgroup-aware)           |
 //! | `KRAB_MEM_BUDGET_BYTES`  | detected memory x 1/2 (cgroup v2 limit first)  |
-//! | `KRAB_MEM_BLOWUP`        | `7` (measured peak-memory multiplier)          |
+//! | `KRAB_MEM_BLOWUP`        | `12` (measured peak-memory multiplier)         |
 //! | `KRAB_BODY_TIMEOUT_SECS` | `30` (per-frame body read/write timeout)       |
 //!
 //! # Structure
@@ -96,12 +96,17 @@ impl Config {
         };
         let mem_blowup = match lookup("KRAB_MEM_BLOWUP") {
             Some(v) => parse_nonzero("KRAB_MEM_BLOWUP", &v)?,
-            // Measured peak RSS over the transform path (inline strings +
-            // boxed interior containers): worst ~6.1x the body for small
-            // line-dense documents, ~5.3x marginal at scale; 7 adds headroom.
-            // Ratios measured with glibc — re-measure in the musl container
-            // before tightening further.
-            None => 7,
+            // Measured per-request peak RSS over every source x target route
+            // (see docs/PERFORMANCE.md). The worst is a dense FatturaPA
+            // source written as Factur-X: the output alone is ~3x the body.
+            // For bodies >= 1 MB that peaks at 11.5x (glibc) / 9.0x (musl,
+            // the Docker image); 12 covers it on both allocators. Every other
+            // source stays <= 8.8x at any measured size (<= 5.9x from 1 MB),
+            // hence the documented `9` for FatturaPA-free deployments.
+            // FatturaPA bodies under 1 MB run higher ratios, but only a few
+            // MB in absolute terms, which the budget's half-of-memory default
+            // absorbs.
+            None => 12,
         };
         let body_timeout_secs = match lookup("KRAB_BODY_TIMEOUT_SECS") {
             Some(v) => parse_nonzero("KRAB_BODY_TIMEOUT_SECS", &v)?,
@@ -199,7 +204,7 @@ mod tests {
                 addr: "0.0.0.0:8080".into(),
                 workers: 16,
                 mem_budget_bytes: 32 * GIB, // half of detected
-                mem_blowup: 7,
+                mem_blowup: 12,
                 body_timeout_secs: 30,
             }
         );
