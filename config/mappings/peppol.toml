@@ -21,6 +21,14 @@ inherits = "ubl-invoice:2.1"
 # Peppol BIS Billing carries `...:peppol.eu:2017:poacc:billing:3.0`.
 detect = ["peppol"]
 
+# Peppol documents are UBL 2.1 Invoices. The table restates the inherited
+# schema whole (a child's `[meta.schema]` replaces its parent's) to document a
+# refusal: the XRechnung example addresses its parties by e-mail (scheme `EM`),
+# which is no Peppol address scheme, so Peppol cannot carry it.
+[meta.schema]
+xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
+refuses = ["testfiles/xrechnung-3.0.2-beispiel.xml"]
+
 # BT-32 seller tax registration: Peppol BIS Billing discriminates the second
 # `PartyTaxScheme` with `TaxScheme/ID` = `TAX`. Only the selector is restated;
 # the inherited node keeps its `xml` alias and children.
@@ -34,3 +42,20 @@ constant = "urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billi
 
 [Invoice.ProfileID]
 constant = "urn:fdc:peppol.eu:2017:poacc:billing:01:1.0"
+
+# Peppol routes every document by the parties' electronic addresses, so both
+# are mandatory with their scheme (PEPPOL-EN16931-R010 / R020), and the scheme
+# must be one Peppol accepts (CL008, `peppol-eas` in config/codecs/peppol.toml).
+[Invoice.AccountingSupplierParty.Party.EndpointID]
+required = true
+
+[Invoice.AccountingSupplierParty.Party.EndpointID.schemeID]
+required = true
+codec = "peppol-eas"
+
+[Invoice.AccountingCustomerParty.Party.EndpointID]
+required = true
+
+[Invoice.AccountingCustomerParty.Party.EndpointID.schemeID]
+required = true
+codec = "peppol-eas"

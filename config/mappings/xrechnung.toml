@@ -44,3 +44,47 @@ constant = "urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.
 # leaves its value to the parties, so it must come from the source.
 [Invoice.ProfileID]
 required = true
+
+# The terms XRechnung 3.0 makes mandatory beyond EN 16931: the parties'
+# electronic addresses (BT-34 / BT-49, with scheme), the buyer reference
+# (BR-DE-15), the seller contact (BR-DE-2/5/6/7), seller and buyer city and
+# post code (BR-DE-3/4/8/9) and the payment means (BR-DE-1). A source lacking
+# one fails with REQUIRED_MISSING instead of yielding an invalid XRechnung.
+[Invoice.AccountingSupplierParty.Party.EndpointID]
+required = true
+
+[Invoice.AccountingSupplierParty.Party.EndpointID.schemeID]
+required = true
+
+[Invoice.AccountingCustomerParty.Party.EndpointID]
+required = true
+
+[Invoice.AccountingCustomerParty.Party.EndpointID.schemeID]
+required = true
+
+[Invoice.BuyerReference]
+required = true
+
+[Invoice.AccountingSupplierParty.Party.Contact.Name]
+required = true
+
+[Invoice.AccountingSupplierParty.Party.Contact.Telephone]
+required = true
+
+[Invoice.AccountingSupplierParty.Party.Contact.ElectronicMail]
+required = true
+
+[Invoice.AccountingSupplierParty.Party.PostalAddress.CityName]
+required = true
+
+[Invoice.AccountingSupplierParty.Party.PostalAddress.PostalZone]
+required = true
+
+[Invoice.AccountingCustomerParty.Party.PostalAddress.CityName]
+required = true
+
+[Invoice.AccountingCustomerParty.Party.PostalAddress.PostalZone]
+required = true
+
+[Invoice.PaymentMeans.PaymentMeansCode]
+required = true

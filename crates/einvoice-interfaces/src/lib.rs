@@ -38,7 +38,7 @@
 //! assert!(!result.has_errors());
 //! ```
 
-use einvoice_transformator::result::MappingResult;
+use einvoice_transformator::result::{MappingDiagnostic, MappingResult, Severity};
 
 pub mod analysis;
 pub mod cli;
@@ -107,7 +107,10 @@ impl Engine {
     }
 
     /// Runs `spoke`'s generated writer over `hub` and serializes the result to
-    /// XML, carrying through the writer's diagnostics.
+    /// XML, carrying through the writer's diagnostics. EN 16931 totals the hub
+    /// lacks are first derived by their calculation rules
+    /// ([`MainKey::derive_missing`]), each reported as a `VALUE_DERIVED` info
+    /// diagnostic; values the hub carries are never replaced.
     ///
     /// Consumes the hub: the writer moves its values into the target document
     /// instead of cloning them, so the hub's memory is released as the target
@@ -120,9 +123,29 @@ impl Engine {
     pub fn from_hub(
         &self,
         spoke: Spoke,
-        hub: MainKey,
+        mut hub: MainKey,
     ) -> Result<MappingResult<String>, EngineError> {
-        Ok(generated::write(spoke, hub)?)
+        // EN 16931 totals the hub lacks are computed by their calculation
+        // rules (`config/derivations.toml`) before the writer runs.
+        let derived: Vec<MappingDiagnostic> = hub
+            .derive_missing()
+            .into_iter()
+            .map(|(label, rule)| {
+                let mut d = MappingDiagnostic::new(
+                    Severity::Info,
+                    "VALUE_DERIVED",
+                    rule,
+                    format!("`{label}` was absent and is derived by {rule}"),
+                );
+                d.canonical_key = Some(label.to_string());
+                d
+            })
+            .collect();
+        let mut written = generated::write(spoke, hub)?;
+        if !derived.is_empty() {
+            written.diagnostics.splice(0..0, derived);
+        }
+        Ok(written)
     }
 
     /// Transforms `bytes` from the `from` spoke to the `to` spoke through the
@@ -269,6 +292,63 @@ mod tests {
                 && d.source_node == "Invoice.ProfileID"
                 && d.canonical_key.as_deref() == Some("BusinessProcessType")
         }));
+    }
+
+    #[test]
+    fn test_from_hub_derives_missing_totals_and_reports_them() {
+        // A hub without the sum of line net amounts (BT-106) or the total
+        // without VAT (BT-109), as FatturaPA yields: the engine derives both by
+        // BR-CO-10 / BR-CO-13, leaves the present total with VAT alone, and
+        // says so.
+        let engine = Engine::new();
+        let mut hub = engine
+            .to_hub(Spoke::UblInvoice, UBL)
+            .unwrap()
+            .value
+            .unwrap();
+        hub.sum_of_invoice_line_net_amount = None;
+        hub.invoice_total_without_vat = None;
+        hub.invoice_lines[0].line_net_amount = Some(Decimal::from_str("40.00").unwrap());
+        hub.invoice_lines[1].line_net_amount = Some(Decimal::from_str("60").unwrap());
+        let out = engine.from_hub(Spoke::UblInvoice, hub).unwrap();
+        assert!(!out.has_errors(), "{:?}", out.diagnostics);
+        let xml = out.value.unwrap();
+        assert!(
+            xml.contains(
+                r#"<cbc:LineExtensionAmount currencyID="EUR">100.00</cbc:LineExtensionAmount>"#
+            ),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(
+                r#"<cbc:TaxExclusiveAmount currencyID="EUR">100.00</cbc:TaxExclusiveAmount>"#
+            ),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(
+                r#"<cbc:TaxInclusiveAmount currencyID="EUR">119.00</cbc:TaxInclusiveAmount>"#
+            ),
+            "{xml}"
+        );
+        let derived: Vec<_> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "VALUE_DERIVED")
+            .map(|d| {
+                (
+                    d.canonical_key.as_deref().unwrap_or(""),
+                    d.source_node.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            derived,
+            [
+                ("SumOfInvoiceLineNetAmount", "BR-CO-10"),
+                ("InvoiceTotalWithoutVat", "BR-CO-13")
+            ]
+        );
     }
 
     #[test]

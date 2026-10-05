@@ -47,6 +47,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use crate::codec::{CodecTable, parse_codecs};
+use crate::derive::{Derivation, parse_derivations};
 use crate::error::ConfigError;
 use crate::parse::{ParsedMapping, parse_mapping};
 
@@ -81,6 +82,9 @@ pub struct LoadOutput {
     pub declared_files: Vec<PathBuf>,
     /// The workspace root the declared paths are relative to.
     pub root: PathBuf,
+    /// The derivation rules of `<dir>/derivations.toml`, in file order
+    /// (empty without the file, and for [`load_dir`]).
+    pub derivations: Vec<Derivation>,
 }
 
 /// Loads a `config/` directory: the codecs from `<dir>/codecs/*.toml` (if the
@@ -129,9 +133,21 @@ pub fn load_config(dir: &Path) -> Result<LoadOutput, ConfigError> {
     let mappings = load_dir(&dir.join("mappings"), &root)?;
     let mut files = codec_files;
     files.extend(mappings.files);
+    let derivations_file = dir.join("derivations.toml");
+    let mut derivations = Vec::new();
+    if derivations_file.is_file() {
+        let src = std::fs::read_to_string(&derivations_file).map_err(|e| {
+            ConfigError::msg(format!("cannot read `{}`: {e}", derivations_file.display()))
+        })?;
+        derivations = parse_derivations(&src).map_err(|e| {
+            ConfigError::msg(format!("{}: {}", derivations_file.display(), e.message))
+        })?;
+        files.push(derivations_file);
+    }
     Ok(LoadOutput {
         codecs,
         files,
+        derivations,
         ..mappings
     })
 }
@@ -226,6 +242,9 @@ pub fn load_dir(dir: &Path, root: &Path) -> Result<LoadOutput, ConfigError> {
             if let Some(catalog) = &schema.catalog {
                 declared.push(("[meta.schema].catalog", catalog));
             }
+            for refused in &schema.refuses {
+                declared.push(("[meta.schema].refuses", refused));
+            }
         }
         for sample in &meta.samples {
             declared.push(("[[meta.samples]].file", &sample.file));
@@ -277,6 +296,7 @@ pub fn load_dir(dir: &Path, root: &Path) -> Result<LoadOutput, ConfigError> {
         files,
         declared_files,
         root: root.to_path_buf(),
+        derivations: Vec::new(),
     })
 }
 

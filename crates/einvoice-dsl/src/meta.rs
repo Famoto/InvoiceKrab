@@ -79,6 +79,13 @@ pub struct SchemaMeta {
     /// and every pattern must still match some error, so the list only shrinks.
     #[serde(default)]
     pub known_gaps: Vec<String>,
+    /// Sample documents (workspace-relative, as `[[meta.samples]]` declares
+    /// them) this spoke is documented to refuse: their data cannot be
+    /// represented in its format, so the transform ends in error diagnostics
+    /// instead of a document. A listed sample that writes cleanly is a stale
+    /// entry and fails the check, so the list only shrinks.
+    #[serde(default)]
+    pub refuses: Vec<String>,
 }
 
 /// One `[[meta.samples]]` entry: a document that must be schema-valid itself and

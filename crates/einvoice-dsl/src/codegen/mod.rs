@@ -57,7 +57,7 @@ mod read;
 mod source;
 mod write;
 
-pub use hub::generate_hub;
+pub use hub::{generate_hub, generate_hub_with};
 
 use crate::codec::CodecTable;
 use crate::ir::MappingIr;
@@ -286,7 +286,7 @@ fn mapper_section(out: &mut String, ir: &MappingIr, source: &SourceModelMeta, co
 mod tests {
     use super::naming::snake_case;
     use super::source::serde_attr;
-    use super::{generate_hub, generate_spoke};
+    use super::{generate_hub, generate_hub_with, generate_spoke};
     use crate::codec::CodecTable;
     use crate::hub::{CanonicalModel, derive_hub};
     use crate::ir::{MappingIr, build_ir, build_ir_with};
@@ -1852,6 +1852,71 @@ mod tests {
             write.contains("REQUIRED_MISSING"),
             "required split node: {write}"
         );
+    }
+
+    #[test]
+    fn test_generate_hub_with_derivations_emits_the_rules() {
+        let (_, hub, _) = compiled();
+        let rules = crate::derive::parse_derivations(
+            r#"
+            [[derive]]
+            key = "PayableAmount"
+            rule = "BR-CO-16"
+            add = ["PayableAmount"]
+            "#,
+        )
+        .unwrap();
+        let out = generate_hub_with(&hub, &rules);
+        assert!(out.contains("pub fn derive_missing(&mut self)"), "{out}");
+        assert!(
+            out.contains(r#"("PayableAmount", "BR-CO-16", &["PayableAmount"]),"#),
+            "{out}"
+        );
+        assert!(
+            out.contains("if self.payable_amount.is_none() && self.payable_amount.is_some() {"),
+            "{out}"
+        );
+        // No rules: the table is empty and nothing is derived.
+        let plain = generate_hub(&hub);
+        assert!(plain.contains("pub const DERIVATIONS"), "{plain}");
+        assert!(!plain.contains("derived.push"), "{plain}");
+        syn::parse_file(&out).expect("valid Rust");
+    }
+
+    #[test]
+    fn test_generate_hub_value_rule_fills_nested_items_and_compiles() {
+        let (_, hub, _) = compiled();
+        let rules = crate::derive::parse_derivations(
+            r#"
+            [[derive]]
+            key = "InvoiceLines/Quantity"
+            rule = "TEST"
+            value = "1"
+
+            [[derive]]
+            key = "PayableAmount"
+            rule = "BR-CO-16"
+            add = ["PayableAmount"]
+            requires = ["PayableAmount"]
+            skip_zero = true
+            "#,
+        )
+        .unwrap();
+        // The second rule needs itself (E113), but both targets are valid.
+        assert!(
+            crate::derive::check_derivations(&hub, &rules)
+                .iter()
+                .all(|d| d.code != "E110" && d.code != "E114")
+        );
+        let out = generate_hub_with(&hub, &rules);
+        assert!(out.contains("for i0 in &mut self.invoice_lines {"), "{out}");
+        assert!(out.contains("if i0.quantity.is_none() {"), "{out}");
+        assert!(
+            out.contains("i0.quantity = Some(<Decimal as std::str::FromStr>::from_str(\"1\")"),
+            "{out}"
+        );
+        assert!(out.contains("if !value.is_zero() {"), "{out}");
+        syn::parse_file(&out).expect("valid Rust");
     }
 
     #[test]

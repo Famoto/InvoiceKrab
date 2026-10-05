@@ -52,8 +52,8 @@
 
 use std::collections::BTreeSet;
 
-use crate::Spoke;
 use crate::contract::{Route, TransformationContract};
+use crate::{MainKey, Spoke};
 
 /// The four-way verdict for a single `source → target` transform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +118,18 @@ pub enum Finding {
         node: String,
         /// The hub label the route needs.
         label: String,
+    },
+    /// A `required` target route whose hub key the source does not map, but
+    /// which an EN 16931 calculation rule derives from keys it does
+    /// (`config/derivations.toml`): the engine computes it before writing.
+    /// Informational.
+    Derived {
+        /// The target node id.
+        node: String,
+        /// The hub label the route needs.
+        label: String,
+        /// The rule deriving it (`BR-CO-10`).
+        rule: String,
     },
     /// A key both spokes map under different semantic types. Blocking.
     TypeMismatch {
@@ -258,9 +270,14 @@ pub fn analyze_contracts(
 ) -> PairAnalysis {
     let s: BTreeSet<String> = source.labels().map(str::to_string).collect();
     let t: BTreeSet<String> = target.labels().map(str::to_string).collect();
+    // The required labels that bind this source: a route inside a collection
+    // the source does not map never runs, and a label a calculation rule
+    // derives from the source's keys is fed by the engine.
     let r: BTreeSet<String> = target
         .required_labels()
         .into_iter()
+        .filter(|label| in_mapped_scope(label, source))
+        .filter(|label| source.covers(label) || derivation_for(label, source).is_none())
         .map(str::to_string)
         .collect();
 
@@ -273,12 +290,22 @@ pub fn analyze_contracts(
             Route::Clone(label) => (label, true),
             Route::Constant(_) => continue,
         };
+        if !in_mapped_scope(label, source) {
+            continue;
+        }
         if !source.covers(label) {
-            blocking.push(Finding::MissingRequired {
-                node: route.node.to_string(),
-                label: label.to_string(),
-                via_clone,
-            });
+            match derivation_for(label, source) {
+                Some(rule) => notes.push(Finding::Derived {
+                    node: route.node.to_string(),
+                    label: label.to_string(),
+                    rule: rule.to_string(),
+                }),
+                None => blocking.push(Finding::MissingRequired {
+                    node: route.node.to_string(),
+                    label: label.to_string(),
+                    via_clone,
+                }),
+            }
         } else if !source_required.contains(label) {
             notes.push(Finding::OptionalFeed {
                 node: route.node.to_string(),
@@ -352,6 +379,39 @@ pub fn analyze_contracts(
         dropped,
         findings,
     }
+}
+
+/// Whether `label` lives at root or inside a collection `source` maps. A route
+/// inside a collection only runs per item: when the source maps no such
+/// collection there are no items, and nothing to require.
+fn in_mapped_scope(label: &str, source: &TransformationContract) -> bool {
+    label
+        .rsplit_once('/')
+        .is_none_or(|(collection, _)| source.covers(collection))
+}
+
+/// The calculation rule that derives `label` from the keys `source` maps,
+/// following rules that need other derived keys (`MainKey::DERIVATIONS`).
+fn derivation_for(label: &str, source: &TransformationContract) -> Option<&'static str> {
+    fn derivable(
+        label: &str,
+        source: &TransformationContract,
+        depth: usize,
+    ) -> Option<&'static str> {
+        if depth > MainKey::DERIVATIONS.len() {
+            return None; // a rule cannot need itself through a chain longer than the rules
+        }
+        MainKey::DERIVATIONS
+            .iter()
+            .find(|(target, _, _)| *target == label)
+            .and_then(|(_, rule, needs)| {
+                needs
+                    .iter()
+                    .all(|n| source.covers(n) || derivable(n, source, depth + 1).is_some())
+                    .then_some(*rule)
+            })
+    }
+    derivable(label, source, 0)
 }
 
 /// Classifies one `source → target` transform over the bundled spokes.
@@ -433,6 +493,7 @@ pub fn render_pair(report: &TransformReport) -> String {
     let mut clashes = Vec::new();
     let mut dropped = Vec::new();
     let mut pinned = Vec::new();
+    let mut derived = Vec::new();
     let mut recoded = Vec::new();
     let mut collapsed = Vec::new();
     for finding in &report.findings {
@@ -448,6 +509,9 @@ pub fn render_pair(report: &TransformReport) -> String {
             }),
             Finding::OptionalFeed { node, label } => optional.push(format!(
                 "{label} — required by `{node}`, optional in the source: a document without it fails"
+            )),
+            Finding::Derived { node, label, rule } => derived.push(format!(
+                "{label} — required by `{node}`, derived by {rule}"
             )),
             Finding::TypeMismatch {
                 label,
@@ -498,6 +562,7 @@ pub fn render_pair(report: &TransformReport) -> String {
     );
     section(&mut out, "dropped (no slot in the target)", dropped);
     section(&mut out, "pinned by the target", pinned);
+    section(&mut out, "derived by EN 16931 calculation rules", derived);
     section(&mut out, "recoded", recoded);
     section(&mut out, "collapsed by the source on read", collapsed);
     if report.findings.is_empty() {
@@ -791,6 +856,25 @@ mod tests {
             ),
             "{text}"
         );
+    }
+
+    #[test]
+    fn test_analyze_counts_derivable_totals_as_fed() {
+        // FatturaPA states no BT-106 / BT-109, which UBL requires; both are
+        // derived by EN 16931 calculation rules from keys FatturaPA maps, so
+        // the pair is not blocked — and the report says how they are fed.
+        let report = analyze(Spoke::Fatturapa, Spoke::UblInvoice);
+        assert!(
+            report.missing_required.is_empty(),
+            "{:?}",
+            report.missing_required
+        );
+        assert!(report.findings.iter().any(|f| matches!(
+            f,
+            Finding::Derived { label, rule, .. }
+                if label == "SumOfInvoiceLineNetAmount" && rule == "BR-CO-10"
+        )));
+        assert!(render_pair(&report).contains("derived by EN 16931 calculation rules"));
     }
 
     #[test]

@@ -17,12 +17,13 @@ const UBL: &[u8] = br#"<Invoice>
   <AdditionalDocumentReference><ID>DOC-1</ID><DocumentDescription>Timesheet</DocumentDescription></AdditionalDocumentReference>
   <AdditionalDocumentReference><ID>OBJ-8</ID><DocumentTypeCode>130</DocumentTypeCode></AdditionalDocumentReference>
   <AccountingSupplierParty><Party>
+    <EndpointID schemeID="0088">4000001000012</EndpointID>
     <PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress>
     <PartyTaxScheme><CompanyID>DE123456789</CompanyID><TaxScheme><ID>VAT</ID></TaxScheme></PartyTaxScheme>
     <PartyTaxScheme><CompanyID>201/113/40209</CompanyID><TaxScheme><ID>FC</ID></TaxScheme></PartyTaxScheme>
     <PartyLegalEntity><RegistrationName>Seller</RegistrationName></PartyLegalEntity>
   </Party></AccountingSupplierParty>
-  <AccountingCustomerParty><Party><PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress>
+  <AccountingCustomerParty><Party><EndpointID schemeID="0088">4000001000029</EndpointID><PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress>
     <PartyLegalEntity><RegistrationName>Buyer</RegistrationName></PartyLegalEntity></Party></AccountingCustomerParty>
   <TaxTotal><TaxAmount currencyID="EUR">19.00</TaxAmount><TaxSubtotal><TaxableAmount currencyID="EUR">100.00</TaxableAmount><TaxAmount currencyID="EUR">19.00</TaxAmount>
     <TaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></TaxCategory></TaxSubtotal></TaxTotal>

@@ -64,6 +64,9 @@ pub struct Schema {
     /// Substring patterns of the schema errors the spoke's output is
     /// documented to still produce.
     pub known_gaps: &'static [&'static str],
+    /// The samples the spoke is documented to refuse (it cannot represent
+    /// their data): a refusal there is reported, a clean write fails.
+    pub refuses: &'static [&'static str],
 }
 
 /// The `xmllint` XSD validator (libxml2).
@@ -187,6 +190,9 @@ pub struct PairReport {
     pub round_trip: Option<RoundTrip>,
     /// What else broke: the write, `xmllint` itself, or the read-back.
     pub errors: Vec<String>,
+    /// The write's errors for a sample the target documents it refuses
+    /// (`[meta.schema].refuses`): reported, not failed.
+    pub refused: Vec<String>,
 }
 
 impl SampleReport {
@@ -230,6 +236,9 @@ pub struct RoundTrip {
     /// value (a Latin-1 transliteration, a many-to-one code table), whose
     /// values changed accordingly (reported).
     pub recoded: Vec<Mismatch>,
+    /// Covered labels the sample lacks and the engine derived on write by an
+    /// EN 16931 calculation rule (reported).
+    pub derived: Vec<Mismatch>,
     /// Labels the sample carries that the target does not cover (reported).
     pub dropped: Vec<&'static str>,
 }
@@ -355,6 +364,9 @@ fn render_pair(out: &mut String, pair: &PairReport) {
     if let Some(rt) = &pair.round_trip {
         verdict.push(format!("{} key(s) round-trip", rt.preserved.len()));
     }
+    if !pair.refused.is_empty() {
+        verdict.push("refused, as declared".to_string());
+    }
     let failures = pair.failures();
     let status = if failures.is_empty() { "ok" } else { "FAILED" };
     let _ = write!(out, "  -> {}: {status}", pair.target.name());
@@ -365,6 +377,9 @@ fn render_pair(out: &mut String, pair: &PairReport) {
     for failure in &failures {
         let _ = writeln!(out, "       {failure}");
     }
+    for error in &pair.refused {
+        let _ = writeln!(out, "       refused: {error}");
+    }
     for error in &pair.known_gap_errors {
         let _ = writeln!(out, "       known gap: {error}");
     }
@@ -374,6 +389,13 @@ fn render_pair(out: &mut String, pair: &PairReport) {
                 out,
                 "       pinned: {}: sample {:?}, written as {:?}",
                 pin.label, pin.sample, pin.emitted
+            );
+        }
+        for derived in &rt.derived {
+            let _ = writeln!(
+                out,
+                "       derived: {}: written as {:?}",
+                derived.label, derived.emitted
             );
         }
         for recode in &rt.recoded {
@@ -509,9 +531,9 @@ fn check_sample(
     }
 
     for (&(target, schema), errors) in targets.iter().zip(target_errors.iter_mut()) {
-        report
-            .pairs
-            .push(check_pair(root, xmllint, &hub, target, schema, errors));
+        report.pairs.push(check_pair(
+            root, xmllint, file, &hub, target, schema, errors,
+        ));
     }
     report
 }
@@ -522,6 +544,7 @@ fn check_sample(
 fn check_pair(
     root: &Path,
     xmllint: Option<Xmllint>,
+    file: &str,
     hub: &MainKey,
     target: Spoke,
     schema: &Schema,
@@ -534,13 +557,25 @@ fn check_pair(
         known_gap_errors: Vec::new(),
         round_trip: None,
         errors: Vec::new(),
+        refused: Vec::new(),
     };
+    let declared_refusal = schema.refuses.contains(&file);
     let written = Engine::new()
         .from_hub(target, hub.clone())
         .map_err(|e| vec![e.to_string()])
         .and_then(clean);
     let xml = match written {
+        Ok(_) if declared_refusal => {
+            pair.errors.push(format!(
+                "declared refusal is stale: `{file}` now writes cleanly; remove it from `[meta.schema].refuses`"
+            ));
+            return pair;
+        }
         Ok(xml) => xml,
+        Err(errors) if declared_refusal => {
+            pair.refused = errors;
+            return pair;
+        }
         Err(errors) => {
             pair.errors
                 .extend(errors.into_iter().map(|e| format!("write: {e}")));
@@ -648,8 +683,11 @@ pub fn round_trip(
                     sample: before,
                     emitted: after,
                 };
+                let derivable = MainKey::DERIVATIONS.iter().any(|(t, _, _)| *t == label);
                 if key.pinned.is_some() {
                     rt.pinned.push(mismatch);
+                } else if mismatch.sample.is_empty() && derivable {
+                    rt.derived.push(mismatch);
                 } else if key.codec.is_some() {
                     rt.recoded.push(mismatch);
                 } else {
@@ -836,6 +874,27 @@ mod tests {
     }
 
     #[test]
+    fn test_round_trip_reports_a_derived_total() {
+        let mut keys = TARGET.keys.to_vec();
+        keys.push(KeyContract {
+            label: "SumOfInvoiceLineNetAmount",
+            key: "SumOfInvoiceLineNetAmount",
+            scope: &[],
+            ty: "decimal",
+            codec: None,
+            pinned: None,
+        });
+        let keys: &'static [KeyContract] = Box::leak(keys.into_boxed_slice());
+        let target = TransformationContract { keys, ..TARGET };
+        let sample = hub(&["1"]);
+        let mut emitted = hub(&["1"]);
+        emitted.sum_of_invoice_line_net_amount = Some(Decimal::from_str("100").unwrap());
+        let rt = round_trip(&sample, &emitted, &target);
+        assert!(rt.changed.is_empty(), "{:?}", rt.changed);
+        assert_eq!(rt.derived.len(), 1, "{rt:?}");
+    }
+
+    #[test]
     fn test_split_by_gaps_and_stale_gaps() {
         let errors = vec![
             "Element 'A': Missing child element(s). Expected is ( Header ).".to_string(),
@@ -867,7 +926,12 @@ mod tests {
             assert_eq!(sample.pairs.len(), report.targets.len());
             for pair in &sample.pairs {
                 assert!(!pair.validated);
-                assert!(pair.round_trip.is_some(), "{}", pair.target.name());
+                // Every pair round-trips, except a refusal the target declares.
+                assert!(
+                    pair.round_trip.is_some() || !pair.refused.is_empty(),
+                    "{}",
+                    pair.target.name()
+                );
             }
         }
         assert!(
@@ -905,9 +969,11 @@ mod tests {
                             }],
                             pinned: Vec::new(),
                             recoded: Vec::new(),
+                            derived: Vec::new(),
                             dropped: vec!["PayableAmount"],
                         }),
                         errors: Vec::new(),
+                        refused: Vec::new(),
                     }],
                 },
                 SampleReport {
@@ -956,6 +1022,7 @@ mod tests {
             known_gap_errors: vec!["Expected is ( Header )".into()],
             round_trip: None,
             errors: Vec::new(),
+            refused: Vec::new(),
         };
         let mut out = String::new();
         render_pair(&mut out, &pair);
@@ -964,6 +1031,64 @@ mod tests {
             "{out}"
         );
         assert!(pair.failures().is_empty());
+    }
+
+    #[test]
+    fn test_a_declared_refusal_is_reported_and_a_stale_one_fails() {
+        let schema = Schema {
+            xsd: "unused.xsd",
+            catalog: None,
+            known_gaps: &[],
+            refuses: &["doc.xml"],
+        };
+        let root = Path::new(".");
+        let mut errors = Vec::new();
+        // An empty hub cannot be written as UBL: the declared refusal holds.
+        let refused = check_pair(
+            root,
+            None,
+            "doc.xml",
+            &MainKey::default(),
+            Spoke::UblInvoice,
+            &schema,
+            &mut errors,
+        );
+        assert!(refused.failures().is_empty(), "{:?}", refused.failures());
+        assert!(
+            refused
+                .refused
+                .iter()
+                .any(|e| e.contains("REQUIRED_MISSING")),
+            "{refused:?}"
+        );
+        let mut out = String::new();
+        render_pair(&mut out, &refused);
+        assert!(out.contains("ok (refused, as declared)"), "{out}");
+
+        // A complete hub writes cleanly: the declaration is stale.
+        let sample = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testfiles/xrechnung-3.0.2-beispiel.xml"
+        ))
+        .unwrap();
+        let hub = read_clean(Spoke::XrechnungInvoice, &sample).expect("sample reads cleanly");
+        let stale = check_pair(
+            root,
+            None,
+            "doc.xml",
+            &hub,
+            Spoke::UblInvoice,
+            &schema,
+            &mut errors,
+        );
+        assert!(
+            stale
+                .failures()
+                .iter()
+                .any(|f| f.contains("declared refusal is stale")),
+            "{:?}",
+            stale.failures()
+        );
     }
 
     #[test]
