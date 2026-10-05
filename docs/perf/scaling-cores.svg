@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 420" width="760" height="420" role="img" aria-label="Throughput grows with CPU cores">
+
+<style>
+  svg { --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+        --grid:#e1e0d9; --axis:#c3c2b7;
+        --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; }
+  @media (prefers-color-scheme: dark) {
+    svg { --surface:#1a1a19; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+          --grid:#2c2c2a; --axis:#383835;
+          --s1:#3987e5; --s2:#d95926; --s3:#199e70; }
+  }
+  text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .title { font-size:16px; font-weight:600; fill:var(--ink); }
+  .sub { font-size:12px; fill:var(--ink2); }
+  .tick { font-size:11px; fill:var(--muted); font-variant-numeric:tabular-nums; }
+  .axlab { font-size:11px; fill:var(--ink2); }
+  .lab { font-size:12px; fill:var(--ink); }
+  .val { font-size:11px; fill:var(--ink2); font-variant-numeric:tabular-nums; }
+  .grid { stroke:var(--grid); stroke-width:1; }
+  .base { stroke:var(--axis); stroke-width:1; }
+  .ref { stroke:var(--muted); stroke-width:1; stroke-dasharray:4 4; fill:none; }
+</style>
+<rect width="760" height="420" rx="8" fill="var(--surface)"/>
+<text class="title" x="24" y="32">Throughput grows with CPU cores</text>
+<text class="sub" x="24" y="52">Speed-up vs. one core. Dashed line = perfect scaling. At 4 cores the load generator shared the machine.</text>
+<line class="grid" x1="80" x2="560" y1="360.0" y2="360.0"/>
+<text class="tick" x="72" y="364.0" text-anchor="end">0×</text>
+<line class="grid" x1="80" x2="560" y1="294.0" y2="294.0"/>
+<text class="tick" x="72" y="298.0" text-anchor="end">1×</text>
+<line class="grid" x1="80" x2="560" y1="228.0" y2="228.0"/>
+<text class="tick" x="72" y="232.0" text-anchor="end">2×</text>
+<line class="grid" x1="80" x2="560" y1="162.0" y2="162.0"/>
+<text class="tick" x="72" y="166.0" text-anchor="end">3×</text>
+<line class="grid" x1="80" x2="560" y1="96.0" y2="96.0"/>
+<text class="tick" x="72" y="100.0" text-anchor="end">4×</text>
+<text class="tick" x="80.0" y="378" text-anchor="middle">1 core</text>
+<text class="tick" x="240.0" y="378" text-anchor="middle">2 cores</text>
+<text class="tick" x="400.0" y="378" text-anchor="middle">3 cores</text>
+<text class="tick" x="560.0" y="378" text-anchor="middle">4 cores</text>
+<line class="base" x1="80" x2="560" y1="360" y2="360"/>
+<text class="axlab" x="320.0" y="400" text-anchor="middle">CPU cores (workers)</text>
+<text class="axlab" transform="translate(18 228.0) rotate(-90)" text-anchor="middle">Throughput vs. 1 core</text>
+<polyline class="ref" points="80.0,294.0 560.0,96.0"/>
+<text class="val" x="408.0" y="122.4">perfect scaling</text>
+<polyline points="80.0,294.0 240.0,228.3 400.0,172.1 560.0,185.1" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"/>
+<circle cx="80.0" cy="294.0" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>Typical invoice (9 KB), 1 core: 1×</title></circle>
+<circle cx="240.0" cy="228.3" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>Typical invoice (9 KB), 2 cores: 2.0×</title></circle>
+<circle cx="400.0" cy="172.1" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>Typical invoice (9 KB), 3 cores: 2.8×</title></circle>
+<circle cx="560.0" cy="185.1" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>Typical invoice (9 KB), 4 cores: 2.6×</title></circle>
+<polyline points="80.0,294.0 240.0,224.5 400.0,165.0 560.0,121.9" fill="none" stroke="var(--s2)" stroke-width="2" stroke-linejoin="round"/>
+<circle cx="80.0" cy="294.0" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>100-line invoice (95 KB), 1 core: 1×</title></circle>
+<circle cx="240.0" cy="224.5" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>100-line invoice (95 KB), 2 cores: 2.1×</title></circle>
+<circle cx="400.0" cy="165.0" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>100-line invoice (95 KB), 3 cores: 3.0×</title></circle>
+<circle cx="560.0" cy="121.9" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>100-line invoice (95 KB), 4 cores: 3.6×</title></circle>
+<rect x="572" y="109.9" width="10" height="10" rx="2" fill="var(--s2)"/>
+<text class="lab" x="588" y="118.9">100-line invoice (95 KB)</text>
+<text class="val" x="588" y="132.9">3.6×</text>
+<rect x="572" y="173.1" width="10" height="10" rx="2" fill="var(--s1)"/>
+<text class="lab" x="588" y="182.1">Typical invoice (9 KB)</text>
+<text class="val" x="588" y="196.1">2.6×</text>
+<rect x="24" y="69" width="10" height="10" rx="2" fill="var(--s1)"/>
+<text class="lab" x="40" y="78">Typical invoice (9 KB)</text>
+<rect x="222.4" y="69" width="10" height="10" rx="2" fill="var(--s2)"/>
+<text class="lab" x="238.4" y="78">100-line invoice (95 KB)</text>
+
+</svg>

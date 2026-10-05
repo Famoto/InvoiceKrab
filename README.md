@@ -427,16 +427,15 @@ the **build fails** with a diagnostic pointing at the offending node.
 
 ## Performance
 
-Transforms are CPU-bound and scale linearly with document size. On a 4-vCPU
-release build:
+KrabInvoice converts a typical invoice in about 1 ms. One CPU core handles
+roughly 4,400 typical invoices per second, throughput grows almost linearly
+with CPU cores, and the stateless service scales out across instances.
+There is no fixed invoice size limit (100,000-line, 89 MB invoices convert
+in about 2 s), and memory stays bounded under any load: invoices queue
+instead of failing.
 
-| | Small invoice (9 KB) | Large invoice (89 MB) |
-|---|---|---|
-| `krab-cli` | 3–6 ms (mostly process start-up) | 1.2–2.2 s, peak RSS 2.5–4.7× input |
-| `krab-server` | ~10–12k transforms/s | ~110–190 MB/s total across workers |
-
-See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the full measurements,
-charts, a CPU profile and the open performance issues.
+See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for throughput and scaling
+charts, memory needs per invoice size, and a deployment sizing guide.
 
 ---
 
