@@ -12,6 +12,9 @@
 //! - [`decode_date`] / [`encode_date`] — pattern ⇄ ISO date.
 //! - [`decode_datetime`] / [`encode_datetime`] — pattern ⇄ ISO date-time.
 //! - [`decode_bool`] / [`encode_bool`] — literal pair ⇄ `bool`.
+//! - [`format_fraction`] — a decimal with a fixed range of fraction digits.
+//! - [`to_latin1`] — text restricted to ISO 8859-1.
+//! - [`split_at`] / [`join_parts`] — one value as two elements.
 //!
 //! # Behavior
 //!
@@ -257,9 +260,145 @@ pub fn encode_bool(value: bool, yes: &str, no: &str) -> CompactString {
     CompactString::from(if value { yes } else { no })
 }
 
+/// Formats a plain decimal rendering (`-12.5`, `100`) with between `min` and
+/// `max` fraction digits: short fractions are zero-padded, long ones lose only
+/// trailing zeros. A value that would need rounding to fit `max` — or that is
+/// not a plain decimal — yields `None`: a codec never changes a value.
+///
+/// ```
+/// use einvoice_transformator::codec::format_fraction;
+/// assert_eq!(format_fraction("2", 2, 8).as_deref(), Some("2.00"));
+/// assert_eq!(format_fraction("19.5000", 2, 2).as_deref(), Some("19.50"));
+/// assert_eq!(format_fraction("-0.123", 2, 2), None);
+/// ```
+pub fn format_fraction(value: &str, min: usize, max: usize) -> Option<CompactString> {
+    let (sign, digits) = match value.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", value.strip_prefix('+').unwrap_or(value)),
+    };
+    let (int, frac) = digits.split_once('.').unwrap_or((digits, ""));
+    let all_digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    if int.is_empty() || !all_digits(int) || !all_digits(frac) {
+        return None;
+    }
+    let mut frac = frac.trim_end_matches('0').to_string();
+    if frac.len() > max {
+        return None;
+    }
+    while frac.len() < min {
+        frac.push('0');
+    }
+    let mut out = CompactString::from(sign);
+    out.push_str(int);
+    if !frac.is_empty() {
+        out.push('.');
+        out.push_str(&frac);
+    }
+    Some(out)
+}
+
+/// Renders `value` in ISO 8859-1 (Latin-1), the character set formats such as
+/// FatturaPA admit: typographic punctuation outside it is transliterated
+/// (dashes to `-`, curly quotes to straight ones, `…` to `...`, `€` to `EUR`);
+/// any other character outside Latin-1 yields `None`.
+///
+/// ```
+/// use einvoice_transformator::codec::to_latin1;
+/// assert_eq!(to_latin1("Beratung — Senior").as_deref(), Some("Beratung - Senior"));
+/// assert_eq!(to_latin1("Größe ½").as_deref(), Some("Größe ½"));
+/// assert_eq!(to_latin1("東京"), None);
+/// ```
+pub fn to_latin1(value: &str) -> Option<CompactString> {
+    let mut out = CompactString::default();
+    for c in value.chars() {
+        match c {
+            '\u{2010}'..='\u{2015}' | '\u{2212}' => out.push('-'),
+            '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{2032}' => out.push('\''),
+            '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{2033}' => out.push('"'),
+            '\u{2026}' => out.push_str("..."),
+            '\u{20AC}' => out.push_str("EUR"),
+            c if (c as u32) <= 0xFF => out.push(c),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Splits `value` after its first `at` characters, for a codec that writes
+/// one canonical value as two elements (a VAT id as country prefix + number).
+/// `None` when the value is not longer than `at` characters.
+///
+/// ```
+/// use einvoice_transformator::codec::split_at;
+/// let (head, tail) = split_at("IT01234567890", 2).unwrap();
+/// assert_eq!((head.as_str(), tail.as_str()), ("IT", "01234567890"));
+/// assert_eq!(split_at("IT", 2), None);
+/// ```
+pub fn split_at(value: &str, at: usize) -> Option<(CompactString, CompactString)> {
+    let (index, _) = value.char_indices().nth(at)?;
+    Some((value[..index].into(), value[index..].into()))
+}
+
+/// The inverse of [`split_at`] on read: the two parts joined, or whichever
+/// one is present.
+///
+/// ```
+/// use einvoice_transformator::codec::join_parts;
+/// assert_eq!(join_parts(Some("IT"), Some("0123")).as_deref(), Some("IT0123"));
+/// assert_eq!(join_parts(None, Some("0123")).as_deref(), Some("0123"));
+/// assert_eq!(join_parts(None, None), None);
+/// ```
+pub fn join_parts(head: Option<&str>, tail: Option<&str>) -> Option<CompactString> {
+    match (head, tail) {
+        (None, None) => None,
+        (head, tail) => {
+            let mut out = CompactString::from(head.unwrap_or(""));
+            out.push_str(tail.unwrap_or(""));
+            Some(out)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_format_fraction_pads_and_trims_but_never_rounds() {
+        assert_eq!(format_fraction("100", 2, 2).as_deref(), Some("100.00"));
+        assert_eq!(format_fraction("+1.5", 2, 8).as_deref(), Some("1.50"));
+        assert_eq!(format_fraction("1.123456789", 2, 8), None);
+        assert_eq!(
+            format_fraction("1.12345678", 2, 8).as_deref(),
+            Some("1.12345678")
+        );
+        assert_eq!(format_fraction("3.000", 0, 0).as_deref(), Some("3"));
+        assert_eq!(format_fraction("1e3", 2, 2), None);
+        assert_eq!(format_fraction(".5", 2, 2), None);
+    }
+
+    #[test]
+    fn test_to_latin1_keeps_latin1_and_transliterates_punctuation() {
+        assert_eq!(
+            to_latin1("„Zitat“ – 5 €").as_deref(),
+            Some("\"Zitat\" - 5 EUR")
+        );
+        assert_eq!(to_latin1("àèìòù ÄÖÜß").as_deref(), Some("àèìòù ÄÖÜß"));
+        assert_eq!(to_latin1("emoji 🙂"), None);
+    }
+
+    #[test]
+    fn test_split_and_join_round_trip() {
+        let (h, t) = split_at("DE123456789", 2).unwrap();
+        assert_eq!(
+            join_parts(Some(&h), Some(&t)).as_deref(),
+            Some("DE123456789")
+        );
+        assert_eq!(
+            split_at("ÄB1", 2).map(|(h, t)| (h.to_string(), t.to_string())),
+            Some(("ÄB".into(), "1".into()))
+        );
+    }
 
     #[test]
     fn test_cii_format_102_round_trips() {

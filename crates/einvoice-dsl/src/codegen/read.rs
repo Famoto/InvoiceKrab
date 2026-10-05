@@ -32,7 +32,7 @@ use crate::codec::{Codec, Pattern};
 use crate::multiple::MultiplePolicy;
 use crate::node::{DerivationScope, SourceNode};
 use crate::normalize::NormalizeOp;
-use crate::source_model::SourceModelMeta;
+use crate::source_model::{SourceModelMeta, xml_field_name};
 use crate::types::MappingType;
 
 use super::access::{
@@ -219,14 +219,7 @@ fn read_scalar_block(
         let _ = writeln!(
             out,
             "{pad}let {binding}: Option<CompactString> = {};",
-            read_one_value(
-                ctx.source,
-                start_struct,
-                &node.source_path,
-                &node.normalize,
-                target,
-                take
-            )
+            node_value(ctx, node, start_struct, target, take)
         );
 
         // Fallbacks, in declared order. The fallback chain is the same for every
@@ -245,14 +238,7 @@ fn read_scalar_block(
             let _ = writeln!(
                 out,
                 "{pad}    value = {};",
-                read_one_value(
-                    ctx.source,
-                    start_struct,
-                    &fb.source_path,
-                    &fb.normalize,
-                    target,
-                    fb_take
-                )
+                node_value(ctx, fb, start_struct, target, fb_take)
             );
             let _ = writeln!(out, "{pad}    if value.is_some() {{");
             let msg = format!("format!(\"used fallback `{fb_id}` for `{key}`\")");
@@ -268,10 +254,20 @@ fn read_scalar_block(
     }
 
     // Decode + assign; only a required field gets the missing-value branch,
-    // so optional fields emit no dead diagnostic code.
+    // so optional fields emit no dead diagnostic code. A `default` fills the
+    // key instead, so a defaulted field is never missing.
     let _ = writeln!(out, "{pad}if let Some(raw) = value {{");
     decode_and_assign(out, node, ctx.codec_of(node), key, indent + 1, target);
-    if node.required {
+    if let Some(default) = &node.default {
+        let _ = writeln!(out, "{pad}}} else {{");
+        let _ = writeln!(
+            out,
+            "{pad}    {}.{} = Some({});",
+            target.struct_var,
+            snake_case(key),
+            typed_literal(node.source_type, default)
+        );
+    } else if node.required {
         let _ = writeln!(out, "{pad}}} else {{");
         DiagSpec::new(
             "Severity::Error",
@@ -370,14 +366,7 @@ fn read_clone_check_block(
     let _ = writeln!(
         out,
         "{body}let value: Option<CompactString> = {};",
-        read_one_value(
-            ctx.source,
-            start_struct,
-            &node.source_path,
-            &node.normalize,
-            target,
-            take
-        )
+        node_value(ctx, node, start_struct, target, take)
     );
     let _ = writeln!(out, "{body}if let Some(raw) = value {{");
     let _ = writeln!(out, "{body}    let mut clone_value = None;");
@@ -675,6 +664,40 @@ fn read_one_value(
     normalize_chain(&access, normalize, take)
 }
 
+/// The expression reading a node's raw, normalized value. A `split` codec's
+/// value is its two part elements joined (borrowed, as the parts are read
+/// together); any other node reads its one source path.
+fn node_value(
+    ctx: &GenCtx,
+    node: &SourceNode,
+    start_struct: &str,
+    target: &Target,
+    take: bool,
+) -> String {
+    if let Some(Pattern::Split { tail, .. }) = ctx.codec_of(node).map(|c| &c.pattern) {
+        let head_path = &node.source_path;
+        let tail_path = match head_path.rsplit_once('.') {
+            Some((element, _)) => format!("{element}.{}", xml_field_name(tail)),
+            None => xml_field_name(tail),
+        };
+        let head = access_expr(ctx.source, start_struct, head_path, target.base_var);
+        let tail = access_expr(ctx.source, start_struct, &tail_path, target.base_var);
+        return normalize_chain(
+            &format!("codec::join_parts({head}, {tail})"),
+            &node.normalize,
+            true,
+        );
+    }
+    read_one_value(
+        ctx.source,
+        start_struct,
+        &node.source_path,
+        &node.normalize,
+        target,
+        take,
+    )
+}
+
 /// Emits the decode + assign snippet, given `raw: String` is in scope inside
 /// `if let Some(raw) = value`.
 fn decode_and_assign(
@@ -719,6 +742,29 @@ fn decode_body(
                 format!("codec::decode_bool(raw.trim(), {yes:?}, {no:?})"),
                 format!("Some(b) => {lhs} = Some(b),"),
             ),
+            (Pattern::Values(pairs), _) => {
+                // First pair per wire value; an empty wire value is never read.
+                let mut seen = BTreeSet::new();
+                let arms: String = pairs
+                    .iter()
+                    .filter(|(_, wire)| !wire.is_empty() && seen.insert(wire.as_str()))
+                    .map(|(canonical, wire)| format!("{wire:?} => Some({canonical:?}), "))
+                    .collect();
+                (
+                    format!("match raw.trim() {{ {arms}_ => None }}"),
+                    format!("Some(v) => {lhs} = Some(CompactString::from(v)),"),
+                )
+            }
+            (Pattern::Fraction { .. }, MappingType::Decimal) => (
+                "Decimal::from_str(raw.trim()).ok()".to_string(),
+                format!("Some(d) => {lhs} = Some(d),"),
+            ),
+            // Latin-1 text and a joined split value are read as they are:
+            // nothing to decode, nothing that can fail.
+            (Pattern::Latin1 | Pattern::Split { .. }, _) => {
+                let _ = writeln!(out, "{pad}{lhs} = Some(raw);");
+                return;
+            }
             // Type / codec disagreement is validation's E085; nothing sane to emit.
             _ => (
                 format!(
@@ -792,6 +838,18 @@ fn decode_body(
         _ => {
             let _ = writeln!(out, "{pad}{lhs} = Some(raw);");
         }
+    }
+}
+
+/// The Rust expression for a canonical literal of type `ty` (a `default`,
+/// validated against the type at build time, E063).
+fn typed_literal(ty: MappingType, value: &str) -> String {
+    match ty {
+        MappingType::Decimal => {
+            format!("Decimal::from_str({value:?}).expect(\"validated at build time (E063)\")")
+        }
+        MappingType::Boolean => (value == "true").to_string(),
+        _ => format!("CompactString::from({value:?})"),
     }
 }
 

@@ -24,7 +24,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::codec::CodecTable;
+use crate::codec::{CodecTable, Pattern};
 use crate::error::{Diagnostic, Severity};
 use crate::ident::{RESERVED_TYPE_NAMES, escape_keyword, is_root_type_name, is_xml_name};
 use crate::node::{NodeId, RawNode, Scope};
@@ -854,6 +854,85 @@ fn insert_node(
         return Ok(path_parts.join("."));
     }
 
+    // A `split` codec writes the value as two child elements of the node's
+    // element: the element is a container of the two part fields, and the
+    // node's path runs to the head part (codegen finds the tail beside it).
+    if let Some(Pattern::Split { head, tail, .. }) = node
+        .codec
+        .as_deref()
+        .and_then(|c| ctx.codecs.get(c))
+        .map(|c| &c.pattern)
+    {
+        if multi {
+            return Err(e024(
+                "`multiple` is not valid with a `split` codec (model the repetition as a collection instead)"
+                    .to_string(),
+            ));
+        }
+        if node.xml.as_deref().is_some_and(is_leaf_binding) {
+            return Err(e024(
+                "a `split` codec writes child elements, so its node must bind an element, not an attribute or `$text`"
+                    .to_string(),
+            ));
+        }
+        if ctx
+            .aliases
+            .equivalents(id)
+            .iter()
+            .any(|eq| has_descendant(active, eq))
+        {
+            return Err(e024(
+                "a `split` codec's element holds the codec's two parts; declare no nodes beneath it"
+                    .to_string(),
+            ));
+        }
+        let field = snake_case(last);
+        let struct_name = ctx.element_struct(id);
+        let rename = node.xml.clone().unwrap_or_else(|| last.clone());
+        ctx.claim(&current, &rename, Claim::Node(id.clone()))?;
+        upsert_field(
+            structs,
+            &current,
+            &field,
+            FieldMeta {
+                optional: false,
+                repeated: false,
+                ty: FieldType::Struct(struct_name.clone()),
+                xml: Some(rename),
+                prefix: own_prefix(&ns.aggregate_prefix),
+                always_present: false,
+                order: node.position,
+                alias: None,
+            },
+        )
+        .map_err(e024)?;
+        structs.entry(struct_name.clone()).or_default();
+        // Head before tail: the struct holds only these two, so their orders
+        // need not fit among other nodes' positions.
+        for (order, part) in [head, tail].into_iter().enumerate() {
+            ctx.claim(&struct_name, part, Claim::Node(id.clone()))?;
+            upsert_field(
+                structs,
+                &struct_name,
+                &snake_case(part),
+                FieldMeta {
+                    optional: true,
+                    repeated: false,
+                    ty: FieldType::Scalar,
+                    xml: Some(part.clone()),
+                    prefix: ns.leaf_prefix.clone(),
+                    always_present: false,
+                    order,
+                    alias: None,
+                },
+            )
+            .map_err(e024)?;
+        }
+        path_parts.push(field);
+        path_parts.push(snake_case(head));
+        return Ok(path_parts.join("."));
+    }
+
     // Attribute leaf (`xml = "@..."`): a scalar field on the current struct.
     if let Some(xml) = node.xml.as_deref()
         && xml.starts_with('@')
@@ -1321,6 +1400,12 @@ fn camel_case(s: &str) -> String {
             }
         })
         .collect()
+}
+
+/// The Rust field name synthesis gives an XML element or attribute local name
+/// (codegen derives a `split` codec's tail field with it).
+pub(crate) fn xml_field_name(xml: &str) -> String {
+    snake_case(xml)
 }
 
 /// Converts an XML element/attribute local name to a `snake_case` Rust field name

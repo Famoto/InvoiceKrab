@@ -145,6 +145,7 @@ pub fn apply_defaults(
                 join_with: raw.join_with.clone(),
                 normalize: raw.normalize.clone().unwrap_or_default(),
                 constant: raw.constant.clone(),
+                default: raw.default.clone(),
                 clone_of: raw.clone_of.clone(),
                 description: raw.description.clone(),
                 ns: raw.ns.clone(),

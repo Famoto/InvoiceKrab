@@ -48,7 +48,7 @@ use std::fmt::Write as _;
 
 use crate::codec::{Codec, Pattern};
 use crate::node::{DerivationScope, Scope, SourceNode};
-use crate::source_model::{FieldType, SourceModelMeta};
+use crate::source_model::{FieldType, SourceModelMeta, xml_field_name};
 use crate::types::MappingType;
 
 use super::access::{assign_target_expr, collection_item_struct, walk_segments};
@@ -636,6 +636,45 @@ fn write_scalar_block(
     } else {
         let _ = writeln!(out, "{pad}if let Some(value) = &{hub_var}.{field} {{");
     }
+    if let Some(Codec {
+        pattern: Pattern::Split { at, tail, .. },
+        ..
+    }) = codec
+    {
+        // The value's two parts go to the element's head and tail children.
+        let tail_path = match path.rsplit_once('.') {
+            Some((element, _)) => format!("{element}.{}", xml_field_name(tail)),
+            None => xml_field_name(tail),
+        };
+        let tail_target = assign_target_expr(source, start_struct, &tail_path, src_var);
+        let _ = writeln!(
+            out,
+            "{pad}    match codec::split_at(value.as_str(), {at}) {{"
+        );
+        let _ = writeln!(out, "{pad}        Some((head, tail)) => {{");
+        let _ = writeln!(out, "{pad}            {target} = Some(head);");
+        let _ = writeln!(out, "{pad}            {tail_target} = Some(tail);");
+        let _ = writeln!(out, "{pad}        }}");
+        let _ = writeln!(out, "{pad}        None => {{");
+        let msg = format!(
+            "format!(\"`{{value}}` cannot be encoded with codec `{}` ({})\")",
+            codec.map_or("", |c| c.id.as_str()),
+            codec.map_or("", |c| c.lexical.as_str())
+        );
+        DiagSpec::new("Severity::Error", "CODEC_INVALID", node.id.as_str(), &msg)
+            .key(key)
+            .path(path)
+            .index(index_var)
+            .emit(out, &format!("{pad}            "));
+        let _ = writeln!(out, "{pad}        }}");
+        let _ = writeln!(out, "{pad}    }}");
+        if node.required {
+            let _ = writeln!(out, "{pad}}} else {{");
+            emit_required_missing(out, node, key, path, index_var, &format!("{pad}    "));
+        }
+        let _ = writeln!(out, "{pad}}}");
+        return;
+    }
     match codec {
         Some(codec) => write_encoded(out, node, codec, key, index_var, &format!("{pad}    ")),
         None => {
@@ -737,6 +776,46 @@ fn write_encoded(
             let _ = writeln!(out, "{pad}    }}");
             let _ = writeln!(out, "{pad}}};");
         }
+        (Pattern::Values(pairs), _) => {
+            // First pair per canonical value; an unmapped value cannot be
+            // written.
+            let mut seen = std::collections::BTreeSet::new();
+            let _ = writeln!(out, "{pad}let rendered = match value.as_str() {{");
+            for (canonical, wire) in pairs {
+                if seen.insert(canonical.as_str()) {
+                    let _ = writeln!(
+                        out,
+                        "{pad}    {canonical:?} => CompactString::from({wire:?}),"
+                    );
+                }
+            }
+            let _ = writeln!(out, "{pad}    _ => {{");
+            encode_failure(out, node, codec, key, index_var, &format!("{pad}        "));
+            let _ = writeln!(out, "{pad}    }}");
+            let _ = writeln!(out, "{pad}}};");
+        }
+        (Pattern::Fraction { min, max }, MappingType::Decimal) => {
+            let _ = writeln!(
+                out,
+                "{pad}let rendered = match codec::format_fraction(&value.to_string(), {min}, {max}) {{"
+            );
+            let _ = writeln!(out, "{pad}    Some(s) => s,");
+            let _ = writeln!(out, "{pad}    None => {{");
+            encode_failure(out, node, codec, key, index_var, &format!("{pad}        "));
+            let _ = writeln!(out, "{pad}    }}");
+            let _ = writeln!(out, "{pad}}};");
+        }
+        (Pattern::Latin1, _) => {
+            let _ = writeln!(
+                out,
+                "{pad}let rendered = match codec::to_latin1(value.as_str()) {{"
+            );
+            let _ = writeln!(out, "{pad}    Some(s) => s,");
+            let _ = writeln!(out, "{pad}    None => {{");
+            encode_failure(out, node, codec, key, index_var, &format!("{pad}        "));
+            let _ = writeln!(out, "{pad}    }}");
+            let _ = writeln!(out, "{pad}}};");
+        }
         _ => {
             let _ = writeln!(
                 out,
@@ -745,6 +824,28 @@ fn write_encoded(
             );
         }
     }
+}
+
+/// Emits the `CODEC_INVALID` diagnostic for a canonical value the node's codec
+/// cannot encode, and the empty rendering the writer's non-empty guard skips.
+fn encode_failure(
+    out: &mut String,
+    node: &SourceNode,
+    codec: &Codec,
+    key: &str,
+    index_var: Option<&str>,
+    pad: &str,
+) {
+    let msg = format!(
+        "format!(\"`{{value}}` cannot be encoded with codec `{}` ({})\")",
+        codec.id, codec.lexical
+    );
+    DiagSpec::new("Severity::Error", "CODEC_INVALID", node.id.as_str(), &msg)
+        .key(key)
+        .path(&node.source_path)
+        .index(index_var)
+        .emit(out, pad);
+    let _ = writeln!(out, "{pad}CompactString::new(\"\")");
 }
 
 /// Emits a writer-side missing-required diagnostic for a canonical field that

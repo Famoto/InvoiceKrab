@@ -45,8 +45,10 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::str::FromStr as _;
 
 use einvoice_transformator::result::{MappingDiagnostic, MappingResult, Severity};
+use rust_decimal::Decimal;
 
 use crate::contract::TransformationContract;
 use crate::{Engine, MainKey, Spoke};
@@ -224,6 +226,10 @@ pub struct RoundTrip {
     /// Covered labels the target pins to a constant on write, whose values
     /// changed accordingly (reported).
     pub pinned: Vec<Mismatch>,
+    /// Covered labels the target writes through a codec that recodes the
+    /// value (a Latin-1 transliteration, a many-to-one code table), whose
+    /// values changed accordingly (reported).
+    pub recoded: Vec<Mismatch>,
     /// Labels the sample carries that the target does not cover (reported).
     pub dropped: Vec<&'static str>,
 }
@@ -368,6 +374,13 @@ fn render_pair(out: &mut String, pair: &PairReport) {
                 out,
                 "       pinned: {}: sample {:?}, written as {:?}",
                 pin.label, pin.sample, pin.emitted
+            );
+        }
+        for recode in &rt.recoded {
+            let _ = writeln!(
+                out,
+                "       recoded: {}: sample {:?}, read back {:?}",
+                recode.label, recode.sample, recode.emitted
             );
         }
         if !rt.dropped.is_empty() {
@@ -628,7 +641,7 @@ pub fn round_trip(
                     rt.dropped.push(label);
                 }
             }
-            Some(_) if before == after => rt.preserved.push(label),
+            Some(key) if same_values(key.ty, &before, &after) => rt.preserved.push(label),
             Some(key) => {
                 let mismatch = Mismatch {
                     label,
@@ -637,6 +650,8 @@ pub fn round_trip(
                 };
                 if key.pinned.is_some() {
                     rt.pinned.push(mismatch);
+                } else if key.codec.is_some() {
+                    rt.recoded.push(mismatch);
                 } else {
                     rt.changed.push(mismatch);
                 }
@@ -644,6 +659,23 @@ pub fn round_trip(
         }
     }
     rt
+}
+
+/// Whether two label value lists are the same: equal strings, or for a
+/// `decimal` label equal numbers (`19` and `19.00` are one value at two
+/// scales; a format may fix the scale it writes).
+fn same_values(ty: &str, before: &[String], after: &[String]) -> bool {
+    if before == after {
+        return true;
+    }
+    ty == "decimal"
+        && before.len() == after.len()
+        && before.iter().zip(after).all(|(a, b)| {
+            matches!(
+                (Decimal::from_str(a), Decimal::from_str(b)),
+                (Ok(a), Ok(b)) if a == b
+            )
+        })
 }
 
 /// A hub's populated values grouped by label, each label's in walk order.
@@ -767,6 +799,43 @@ mod tests {
     }
 
     #[test]
+    fn test_round_trip_compares_decimals_by_value_and_reports_recodes() {
+        let mut contract_keys = TARGET.keys.to_vec();
+        contract_keys.push(KeyContract {
+            label: "PayableAmount",
+            key: "PayableAmount",
+            scope: &[],
+            ty: "decimal",
+            codec: Some("amount-2"),
+            pinned: None,
+        });
+        contract_keys.push(KeyContract {
+            label: "SellerName",
+            key: "SellerName",
+            scope: &[],
+            ty: "string",
+            codec: Some("latin-1"),
+            pinned: None,
+        });
+        let keys: &'static [KeyContract] = Box::leak(contract_keys.into_boxed_slice());
+        let target = TransformationContract { keys, ..TARGET };
+        let mut sample = hub(&["1"]);
+        sample.payable_amount = Some(Decimal::from_str("19").unwrap());
+        sample.seller_name = Some("A — B".into());
+        let mut emitted = hub(&["1"]);
+        emitted.payable_amount = Some(Decimal::from_str("19.00").unwrap());
+        emitted.seller_name = Some("A - B".into());
+        let rt = round_trip(&sample, &emitted, &target);
+        assert!(rt.changed.is_empty(), "{:?}", rt.changed);
+        assert!(
+            rt.preserved.contains(&"PayableAmount"),
+            "same number: {rt:?}"
+        );
+        assert_eq!(rt.recoded.len(), 1, "{rt:?}");
+        assert_eq!(rt.recoded[0].label, "SellerName");
+    }
+
+    #[test]
     fn test_split_by_gaps_and_stale_gaps() {
         let errors = vec![
             "Element 'A': Missing child element(s). Expected is ( Header ).".to_string(),
@@ -835,6 +904,7 @@ mod tests {
                                 emitted: Vec::new(),
                             }],
                             pinned: Vec::new(),
+                            recoded: Vec::new(),
                             dropped: vec!["PayableAmount"],
                         }),
                         errors: Vec::new(),

@@ -1,26 +1,40 @@
 # FatturaPA reference spoke — the mandatory Italian e-invoice (Sistema di
 # Interscambio). FatturaPA predates EN 16931 and uses its own `FatturaElettronica`
 # tree with Italian element names, so it shares no syntax with the UBL/CII spokes.
-# It still maps onto the *same* canonical keys, so an Italian invoice round-trips
-# through the shared hub with every other format.
+# It still maps onto the *same* canonical keys, following the Italian
+# EN 16931 ⇄ FatturaPA correspondence, so an Italian invoice round-trips through
+# the shared hub with every other format.
 #
 # Each node's dotted id IS its XML element path under `[meta].root`
 # (`FatturaElettronica`); the compiler synthesizes the typed source struct from
-# those ids. A real file may repeat `FatturaElettronicaBody` (a batch) and the
-# summary/payment groups; this minimal spoke models the common single-invoice
-# shape and reads the first occurrence of each.
+# those ids. A real file may repeat `FatturaElettronicaBody` (a batch); this
+# spoke models the single-invoice shape.
 #
 # Tables are declared in the FatturaPA 1.2.2 XSD *sequence* order (declaration
-# order is schema order, see mappings/README.md): `DatiGenerali`, then
-# `DatiBeniServizi` (lines before the VAT summary), then `DatiPagamento`.
+# order is schema order, see mappings/README.md).
 #
-# FatturaPA has no per-amount currency attribute (the currency is the
-# document-level `Divisa`), so this spoke does not carry the `*Currency` or
-# `BuyerReference` canonical keys the EN 16931 spokes add.
+# The format's own vocabulary goes through the codecs in
+# `config/codecs/fatturapa.toml`: code tables (TipoDocumento, ModalitaPagamento,
+# Natura), the fixed decimal formats (`Amount2DecimalType` and friends), the
+# Latin-1 character set, and the VAT identifier split into IdPaese + IdCodice.
+#
+# What EN 16931 does not carry is pinned, and documented where it is:
+#   * the transmission data (`DatiTrasmissione`): the transmitter is the seller
+#     (its VAT id is written there too), the transmission counter
+#     `ProgressivoInvio` is `00001` and the recipient code `CodiceDestinatario`
+#     is `0000000` (delivery through the recipient's fiscal drawer): an
+#     intermediary that transmits the file sets its own;
+#   * the seller's tax regime (`RegimeFiscale`) is the ordinary regime `RF01`;
+#   * the payment condition (`CondizioniPagamento`) is a full payment `TP02`.
+# FatturaPA makes more terms mandatory than EN 16931 — the seller's and the
+# buyer's street, post code and city, a numeric line number (`NumeroLinea`
+# from BT-126), the VAT rate of every line and summary, the payment means —
+# so those nodes are `required`: an invoice lacking them fails with
+# REQUIRED_MISSING rather than producing an invalid file.
 [meta]
 doc_format = "fatturapa"
 format_version = "1.2.2"
-mapping_version = "1.2"
+mapping_version = "2.0"
 source_model = "fatturapa:1.2.2"
 canonical_model = "canonical-invoice:1.0"
 root = "FatturaElettronica"
@@ -40,12 +54,6 @@ p = "http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2"
 [meta.schema]
 xsd = "testfiles/xsd/fatturapa-1.2.2/Schema_del_file_xml_FatturaPA_v1.2.2.xsd"
 catalog = "testfiles/xsd/fatturapa-1.2.2/catalog.xml"
-# Schema errors the output still produces, as substring patterns. Delete a
-# pattern as soon as its fix lands: one no error matches fails the check.
-#
-# FatturaElettronicaHeader (DatiTrasmissione, CedentePrestatore,
-# CessionarioCommittente) is mandatory and not yet mapped by this file.
-known_gaps = ["Expected is ( FatturaElettronicaHeader )"]
 
 # The schema-version attribute every FatturaPA document carries on its root.
 [FatturaElettronica.versione]
@@ -53,19 +61,125 @@ xml = "@versione"
 type = "string"
 constant = "FPR12"
 
-# --- General document data (DatiGeneraliDocumento) -----------------------------
+# ===========================================================================
+# HEADER — transmission data, seller (cedente) and buyer (cessionario)
+# ===========================================================================
+# The transmitter is the seller: its VAT identifier, split like every IdFiscale.
+[FatturaElettronica.FatturaElettronicaHeader.DatiTrasmissione.IdTrasmittente]
+type = "identifier"
+clone_of = "SellerVatIdentifier"
+codec = "fatturapa-id-fiscale"
+
+[FatturaElettronica.FatturaElettronicaHeader.DatiTrasmissione.ProgressivoInvio]
+type = "string"
+constant = "00001"
+
+[FatturaElettronica.FatturaElettronicaHeader.DatiTrasmissione.FormatoTrasmissione]
+type = "string"
+constant = "FPR12"
+
+[FatturaElettronica.FatturaElettronicaHeader.DatiTrasmissione.CodiceDestinatario]
+type = "string"
+constant = "0000000"
+
+# BT-31 seller VAT identifier, BT-27 seller name.
+[FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.DatiAnagrafici.IdFiscaleIVA]
+type = "identifier"
+canonical_key = "SellerVatIdentifier"
+codec = "fatturapa-id-fiscale"
+required = true
+normalize = ["trim"]
+
+[FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.DatiAnagrafici.Anagrafica.Denominazione]
+type = "string"
+canonical_key = "SellerName"
+codec = "fatturapa-text"
+required = true
+
+[FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.DatiAnagrafici.RegimeFiscale]
+type = "string"
+constant = "RF01"
+
+# BG-5 seller postal address.
+[FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.Sede.Indirizzo]
+type = "string"
+canonical_key = "SellerAddressLine1"
+codec = "fatturapa-text"
+required = true
+
+[FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.Sede.CAP]
+type = "string"
+canonical_key = "SellerPostCode"
+required = true
+
+[FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.Sede.Comune]
+type = "string"
+canonical_key = "SellerCity"
+codec = "fatturapa-text"
+required = true
+
+[FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.Sede.Nazione]
+type = "string"
+canonical_key = "SellerCountryCode"
+required = true
+normalize = ["trim", "uppercase"]
+
+# BT-48 buyer VAT identifier, BT-44 buyer name.
+[FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.DatiAnagrafici.IdFiscaleIVA]
+type = "identifier"
+canonical_key = "BuyerVatIdentifier"
+codec = "fatturapa-id-fiscale"
+normalize = ["trim"]
+
+[FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.DatiAnagrafici.Anagrafica.Denominazione]
+type = "string"
+canonical_key = "BuyerName"
+codec = "fatturapa-text"
+required = true
+
+# BG-8 buyer postal address.
+[FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.Sede.Indirizzo]
+type = "string"
+canonical_key = "BuyerAddressLine1"
+codec = "fatturapa-text"
+required = true
+
+[FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.Sede.CAP]
+type = "string"
+canonical_key = "BuyerPostCode"
+required = true
+
+[FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.Sede.Comune]
+type = "string"
+canonical_key = "BuyerCity"
+codec = "fatturapa-text"
+required = true
+
+[FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.Sede.Nazione]
+type = "string"
+canonical_key = "BuyerCountryCode"
+required = true
+normalize = ["trim", "uppercase"]
+
+# ===========================================================================
+# BODY — general document data (DatiGeneraliDocumento)
+# ===========================================================================
 [FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.TipoDocumento]
 type = "string"
 canonical_key = "InvoiceTypeCode"
+codec = "fatturapa-tipo-documento"
+required = true
 
 [FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Divisa]
 type = "currency"
 canonical_key = "DocumentCurrency"
+required = true
 normalize = ["trim", "uppercase"]
 
 [FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Data]
 type = "date"
 canonical_key = "IssueDate"
+required = true
 
 [FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Numero]
 type = "identifier"
@@ -73,36 +187,185 @@ canonical_key = "InvoiceNumber"
 required = true
 normalize = ["trim", "empty_as_missing"]
 
-# BT-115 equivalent: the document grand total.
+# BT-112 invoice total amount with VAT.
 [FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.ImportoTotaleDocumento]
 type = "decimal"
-canonical_key = "PayableAmount"
+canonical_key = "InvoiceTotalWithVat"
+codec = "fatturapa-amount-2"
 
-# --- Goods and services (DatiBeniServizi): invoice lines, then the VAT summary ---
+# BT-22 invoice note.
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Causale]
+type = "string"
+canonical_key = "InvoiceNote"
+codec = "fatturapa-text"
+
+# Document references: BT-13 purchase order, BT-12 contract, BT-25/26
+# preceding invoice.
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiOrdineAcquisto.IdDocumento]
+type = "identifier"
+canonical_key = "PurchaseOrderReference"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiContratto.IdDocumento]
+type = "identifier"
+canonical_key = "ContractReference"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiFattureCollegate.IdDocumento]
+type = "identifier"
+canonical_key = "PrecedingInvoiceReference"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiFattureCollegate.Data]
+type = "date"
+canonical_key = "PrecedingInvoiceIssueDate"
+
+# ===========================================================================
+# BODY — invoice lines (DettaglioLinee, BG-25) and VAT summary (DatiRiepilogo,
+# BG-23)
+# ===========================================================================
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee]
 type = "collection"
 canonical_key = "InvoiceLines"
 required = true
 
+# BT-126: FatturaPA numbers its lines, so the line identifier must be numeric.
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.NumeroLinea]
 type = "identifier"
 canonical_key = "LineId"
+required = true
 
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.Descrizione]
 type = "string"
 canonical_key = "ItemName"
+codec = "fatturapa-text"
+required = true
 
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.Quantita]
 type = "decimal"
 canonical_key = "Quantity"
+codec = "fatturapa-amount-8"
 
-# VAT summary tax amount (first DatiRiepilogo).
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.UnitaMisura]
+type = "unit_code"
+canonical_key = "QuantityUnitCode"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.DataInizioPeriodo]
+type = "date"
+canonical_key = "LinePeriodStart"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.DataFinePeriodo]
+type = "date"
+canonical_key = "LinePeriodEnd"
+
+# BT-146 item net price.
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.PrezzoUnitario]
+type = "decimal"
+canonical_key = "ItemNetPrice"
+codec = "fatturapa-amount-8"
+required = true
+
+# BG-27 / BG-28 line allowances and charges: sconto (SC) or maggiorazione (MG).
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.ScontoMaggiorazione]
+type = "collection"
+canonical_key = "LineAllowanceCharges"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.ScontoMaggiorazione.Tipo]
+type = "boolean"
+canonical_key = "LineChargeIndicator"
+codec = "fatturapa-sconto-maggiorazione"
+required = true
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.ScontoMaggiorazione.Percentuale]
+type = "decimal"
+canonical_key = "LineAllowanceChargePercentage"
+codec = "fatturapa-amount-2"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.ScontoMaggiorazione.Importo]
+type = "decimal"
+canonical_key = "LineAllowanceChargeAmount"
+codec = "fatturapa-amount-8"
+
+# BT-131 line net amount.
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.PrezzoTotale]
+type = "decimal"
+canonical_key = "LineNetAmount"
+codec = "fatturapa-amount-8"
+required = true
+
+# BT-152 / BT-151 line VAT rate and category (no Natura for a taxed line).
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.AliquotaIVA]
+type = "decimal"
+canonical_key = "LineVatRate"
+codec = "fatturapa-amount-2"
+required = true
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.Natura]
+type = "string"
+canonical_key = "LineVatCategoryCode"
+codec = "fatturapa-natura"
+default = "S"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DatiRiepilogo]
+type = "collection"
+canonical_key = "VatBreakdown"
+required = true
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DatiRiepilogo.AliquotaIVA]
+type = "decimal"
+canonical_key = "VatCategoryRate"
+codec = "fatturapa-amount-2"
+required = true
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DatiRiepilogo.Natura]
+type = "string"
+canonical_key = "VatCategoryCode"
+codec = "fatturapa-natura"
+default = "S"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DatiRiepilogo.ImponibileImporto]
+type = "decimal"
+canonical_key = "VatCategoryTaxableAmount"
+codec = "fatturapa-amount-2"
+required = true
+
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DatiRiepilogo.Imposta]
 type = "decimal"
-canonical_key = "TaxTotalAmount"
+canonical_key = "VatCategoryTaxAmount"
+codec = "fatturapa-amount-2"
+required = true
 
-# --- Payment data (DatiPagamento) ----------------------------------------------
-# Payment due date (first DettaglioPagamento).
+# BT-120 VAT exemption reason text.
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DatiRiepilogo.RiferimentoNormativo]
+type = "string"
+canonical_key = "VatExemptionReasonText"
+codec = "fatturapa-text"
+
+# ===========================================================================
+# BODY — payment (DatiPagamento, BG-16/17)
+# ===========================================================================
+[FatturaElettronica.FatturaElettronicaBody.DatiPagamento.CondizioniPagamento]
+type = "string"
+constant = "TP02"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento.ModalitaPagamento]
+type = "string"
+canonical_key = "PaymentMeansTypeCode"
+codec = "fatturapa-modalita-pagamento"
+required = true
+
 [FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento.DataScadenzaPagamento]
 type = "date"
 canonical_key = "DueDate"
+
+# BT-115 amount due for payment.
+[FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento.ImportoPagamento]
+type = "decimal"
+canonical_key = "PayableAmount"
+codec = "fatturapa-amount-2"
+required = true
+
+[FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento.IBAN]
+type = "identifier"
+canonical_key = "PaymentAccountIdentifier"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento.BIC]
+type = "identifier"
+canonical_key = "PaymentServiceProviderIdentifier"

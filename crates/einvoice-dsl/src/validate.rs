@@ -24,6 +24,9 @@
 //! - `E062` `constant` combined with `fallbacks`, `multiple` or `codec` (the
 //!   constant is emitted verbatim on write; none of these apply to it —
 //!   `normalize` is read-side and may accompany it).
+//! - `E063` `default` literal does not parse under the node's `type`.
+//! - `E064` `default` on a node without a `canonical_key`, a collection, or a
+//!   `clone_of` node (it has no hub key of its own to fill).
 //! - `E070` `clone_of` on a collection node, or combined with `canonical_key`,
 //!   `constant`, `fallbacks` or `multiple`.
 //! - `E071` `clone_of` target key not declared by a primary node in the
@@ -73,6 +76,7 @@ pub fn validate(input: &ValidationInput) -> Vec<Diagnostic> {
         check_fallbacks(node, input.ir, &mut diags);
         check_codec(node, input.codecs, &mut diags);
         check_constant(node, &mut diags);
+        check_default(node, &mut diags);
         check_clone_of(node, input.ir, &mut diags);
     }
     check_fallback_cycles(input.ir, &mut diags);
@@ -420,6 +424,35 @@ fn is_iso_datetime(s: &str) -> bool {
     is_iso_date(date)
         && hms
         && matches!(&time[8..], tail if tail.is_empty() || tail == "Z" || tail.starts_with(['.', '+', '-']))
+}
+
+/// Validates a node's read-side `default`: it fills the node's own hub key, so
+/// the node must have one and be neither a collection nor a clone (E064); the
+/// literal must parse under the node's `type` (E063).
+fn check_default(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
+    let Some(value) = &node.default else {
+        return;
+    };
+    if node.is_collection() || node.clone_of.is_some() || node.canonical_key.is_none() {
+        diags.push(err(
+            "E064",
+            &node.id,
+            "`default` fills the node's own canonical key on read, so it needs a \
+             `canonical_key` and is not valid on a collection or a `clone_of` node"
+                .to_string(),
+        ));
+        return;
+    }
+    if let Some(reason) = constant_literal_error(node.source_type, value) {
+        diags.push(err(
+            "E063",
+            &node.id,
+            format!(
+                "default `{value}` is not a valid `{}` literal: {reason}",
+                node.source_type
+            ),
+        ));
+    }
 }
 
 /// Validates a node's `clone_of`: role exclusions (E070), a well-formed
@@ -974,6 +1007,39 @@ mod tests {
             "[Invoice.X]\ntype = \"{ty}\"\nconstant = \"{value}\""
         ));
         assert_eq!(codes(&diags), ["E061"], "{ty} / {value:?}: {diags:?}");
+    }
+
+    #[rstest]
+    #[case::bad_date("date", "2026-13-01")]
+    #[case::bad_currency("currency", "eur")]
+    #[case::empty("string", "")]
+    fn test_invalid_default_literal_is_e063(#[case] ty: &str, #[case] value: &str) {
+        let diags = run(&format!(
+            "[Invoice.X]\ntype = \"{ty}\"\ncanonical_key = \"K\"\ndefault = \"{value}\""
+        ));
+        assert_eq!(codes(&diags), ["E063"], "{ty} / {value:?}: {diags:?}");
+    }
+
+    #[test]
+    fn test_valid_default_is_clean() {
+        let diags = run(r#"[Invoice.X]
+            type = "string"
+            canonical_key = "VatCategoryCode"
+            default = "S""#);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[rstest]
+    #[case::helper("[Invoice.X]\ntype = \"string\"\ndefault = \"S\"")]
+    #[case::clone(
+        "[Invoice.ID]\ntype = \"identifier\"\ncanonical_key = \"InvoiceNumber\"\n[Invoice.X]\ntype = \"identifier\"\nclone_of = \"InvoiceNumber\"\ndefault = \"A\""
+    )]
+    #[case::collection(
+        "[Line]\ntype = \"collection\"\ncanonical_key = \"Lines\"\ndefault = \"x\"\n[Line.ID]\ntype = \"identifier\"\ncanonical_key = \"LineId\""
+    )]
+    fn test_default_without_a_key_to_fill_is_e064(#[case] body: &str) {
+        let diags = run(body);
+        assert!(codes(&diags).contains(&"E064"), "{diags:?}");
     }
 
     #[rstest]
