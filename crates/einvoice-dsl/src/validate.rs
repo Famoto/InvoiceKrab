@@ -316,18 +316,11 @@ fn constant_literal_error(ty: MappingType, value: &str) -> Option<String> {
     if value.trim().is_empty() {
         return Some("it is empty".to_string());
     }
-    let date_shaped = |s: &str| {
-        s.len() == 10
-            && s.bytes().enumerate().all(|(i, b)| {
-                if i == 4 || i == 7 {
-                    b == b'-'
-                } else {
-                    b.is_ascii_digit()
-                }
-            })
-    };
     match ty {
-        MappingType::String | MappingType::Identifier | MappingType::UnitCode => None,
+        MappingType::String | MappingType::Identifier => None,
+        MappingType::UnitCode => (!(1..=3).contains(&value.len())
+            || !value.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .then(|| "expected 1–3 ASCII letters or digits".to_string()),
         MappingType::Boolean => {
             (value != "true" && value != "false").then(|| "expected `true` or `false`".to_string())
         }
@@ -341,14 +334,56 @@ fn constant_literal_error(ty: MappingType, value: &str) -> Option<String> {
             (!all_digits(int) || !all_digits(frac))
                 .then(|| "expected a plain decimal number".to_string())
         }
-        MappingType::Date => (!date_shaped(value)).then(|| "expected `YYYY-MM-DD`".to_string()),
-        MappingType::Datetime => (!matches!(
-            (value.get(..10), value.as_bytes().get(10)),
-            (Some(date), Some(b'T')) if date_shaped(date)
-        ))
-        .then(|| "expected `YYYY-MM-DDThh:mm:ss…`".to_string()),
+        MappingType::Date => (!is_iso_date(value))
+            .then(|| "expected `YYYY-MM-DD` with month 01–12 and day 01–31".to_string()),
+        MappingType::Datetime => (!is_iso_datetime(value)).then(|| {
+            "expected `YYYY-MM-DDThh:mm:ss` (in range, optional fraction/zone)".to_string()
+        }),
         MappingType::Collection => unreachable!("E060 rejects collections before this check"),
     }
+}
+
+/// Two ASCII digits at `b[i..i + 2]` as a number, if both are digits.
+fn two_digits(b: &[u8], i: usize) -> Option<u8> {
+    match b.get(i..i + 2)? {
+        [hi, lo] if hi.is_ascii_digit() && lo.is_ascii_digit() => {
+            Some((hi - b'0') * 10 + (lo - b'0'))
+        }
+        _ => None,
+    }
+}
+
+/// A `YYYY-MM-DD` date with month 01–12 and day 01–31: the same shape check the
+/// runtime's `validate::is_date` applies to read values, so a constant the
+/// build accepts is one the runtime would accept too.
+fn is_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[..4].iter().all(u8::is_ascii_digit)
+        && two_digits(b, 5).is_some_and(|m| (1..=12).contains(&m))
+        && two_digits(b, 8).is_some_and(|d| (1..=31).contains(&d))
+}
+
+/// An [`is_iso_date`] date, `T`, an in-range `hh:mm:ss`, then nothing, `Z`, a
+/// fraction or a zone offset — mirroring the runtime's `validate::is_datetime`.
+fn is_iso_datetime(s: &str) -> bool {
+    let Some((date, time)) = s.split_once('T') else {
+        return false;
+    };
+    let b = time.as_bytes();
+    let in_range = |i: usize, max: u8| two_digits(b, i).is_some_and(|v| v <= max);
+    let hms = b.len() >= 8
+        && b[2] == b':'
+        && b[5] == b':'
+        && in_range(0, 23)
+        && in_range(3, 59)
+        && in_range(6, 59);
+    // `hms` guarantees bytes 0..8 are ASCII, so slicing at 8 is a char boundary.
+    is_iso_date(date)
+        && hms
+        && matches!(&time[8..], tail if tail.is_empty() || tail == "Z" || tail.starts_with(['.', '+', '-']))
 }
 
 /// Validates a node's `clone_of`: role exclusions (E070), a well-formed
@@ -887,6 +922,16 @@ mod tests {
     #[case::bad_date("date", "2024-1-1")]
     #[case::bad_datetime("datetime", "2024-01-01 10:00:00")]
     #[case::bad_datetime_literal("datetime", "é234-56-78T12:34:56")]
+    #[case::date_month_out_of_range("date", "2026-13-01")]
+    #[case::date_day_out_of_range("date", "2026-01-32")]
+    #[case::date_day_zero("date", "2026-01-00")]
+    #[case::datetime_bad_month("datetime", "2026-00-01T10:00:00")]
+    #[case::datetime_no_time("datetime", "2026-01-01T")]
+    #[case::datetime_garbage_time("datetime", "2026-01-01Tgarbage")]
+    #[case::datetime_hour_out_of_range("datetime", "2026-01-01T24:00:00")]
+    #[case::datetime_bad_tail("datetime", "2026-01-01T10:00:00X")]
+    #[case::unit_code_too_long("unit_code", "ABCD")]
+    #[case::unit_code_symbol("unit_code", "m²")]
 
     fn test_invalid_constant_literal_is_e061(#[case] ty: &str, #[case] value: &str) {
         let diags = run(&format!(
@@ -902,6 +947,9 @@ mod tests {
     #[case::decimal_signed("decimal", "-19.00")]
     #[case::date("date", "2024-01-01")]
     #[case::datetime("datetime", "2024-01-01T10:00:00")]
+    #[case::datetime_zulu("datetime", "2024-01-01T23:59:59Z")]
+    #[case::datetime_fraction_offset("datetime", "2024-01-01T10:00:00.5+01:00")]
+    #[case::date_day_31("date", "2024-12-31")]
     #[case::unit_code("unit_code", "C62")]
     fn test_valid_constant_literal_is_clean(#[case] ty: &str, #[case] value: &str) {
         let diags = run(&format!(

@@ -224,8 +224,10 @@ file = "testfiles/xrechnung-3.0.2-beispiel.xml"
 | `[meta.schema]` | — | `xsd`, `catalog`, `known_gaps`: the schema the spoke's documents must satisfy; inherited — see [Schema conformance](#schema-conformance) |
 | `[[meta.samples]]` | — | `file`, `source`: sample documents every spoke with a schema must write validly and round-trip; not inherited |
 
-`source_model` is also an assertion: if it disagrees with the synthesized
-model's id, the build fails (E020). Duplicate mapping ids or slugs across
+`source_model` is the id other mappings name in `inherits`. (The synthesized
+model takes its id from it, so the E020 consistency check cannot fire from a
+mapping file; it guards callers that supply source metadata separately.)
+Duplicate mapping ids or slugs across
 files, and unknown or cyclic `inherits` targets, fail the load before
 compilation starts.
 
@@ -383,7 +385,8 @@ join_with = "\n"
 is only valid on a plain scalar element leaf — not on collections, attributes,
 `$text` overrides, or valued containers — and cannot be combined with
 `fallbacks`: a multi-valued node collapses its own values, and a fallback
-chain on top has no defined order of application (E043).
+chain on top has no defined order of application (E043). `multiple` on a
+node of the wrong shape is E024.
 
 ---
 
@@ -514,7 +517,7 @@ Rules, all enforced at build time:
 - **No orphan keys inside anonymous collections (E011).** A key inside a
   collection needs the collection itself to be keyed.
 - **No generated-name collisions (E012).** Two keys that collapse to the same
-  generated Rust field name (e.g. `InvoiceId` and `INVOICE_ID`), or a
+  generated Rust field name (e.g. `FooBar` and `Foo_bar`, both `foo_bar`), or a
   collection key reused in two different scopes, would break the generated
   hub — rename one.
 
@@ -993,6 +996,7 @@ Validation reports **every** problem in one run, never just the first error.
 | `E021` | Node id does not resolve to a source path |
 | `E022` | Collection node whose path is not a repeated field |
 | `E023` | Scalar node whose path resolves to a struct, not a leaf |
+| `E024` | Incompatible bindings of one element: a leaf, attribute, valued container or collection shape conflict; `multiple` on an attribute, `$text`, collection or valued container; logical nodes of one element disagreeing on `ns` |
 | `E030` | Fallback target does not exist or is disabled |
 | `E031` | Fallback target type incompatible with the primary |
 | `E032` | Fallback target in a different scope |
