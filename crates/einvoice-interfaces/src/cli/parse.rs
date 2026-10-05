@@ -3,7 +3,7 @@
 //! Pure and IO-free, so the whole flag grammar is unit-tested without touching
 //! the process environment.
 
-use super::{Args, CliError, Command};
+use super::{AnalyzeArgs, Args, CliError, Command};
 
 /// Parses raw argv (excluding the program name) into a [`Command`].
 ///
@@ -22,8 +22,10 @@ use super::{Args, CliError, Command};
 pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
     let mut positionals: Vec<String> = Vec::new();
     let mut source_format: Option<String> = None;
+    let mut target_format: Option<String> = None;
     let mut output: Option<String> = None;
     let mut analyze = false;
+    let mut deny_lossy = false;
     let mut keys = false;
 
     let mut i = 0;
@@ -40,14 +42,18 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
                 keys = true;
                 i += 1;
             }
-            "--from" | "--out" => {
+            "--deny-lossy" => {
+                deny_lossy = true;
+                i += 1;
+            }
+            "--from" | "--to" | "--out" => {
                 let value = args
                     .get(i + 1)
                     .ok_or_else(|| CliError::Usage(format!("`{arg}` requires a value")))?;
-                if arg == "--from" {
-                    source_format = Some(value.clone());
-                } else {
-                    output = Some(value.clone());
+                match arg.as_str() {
+                    "--from" => source_format = Some(value.clone()),
+                    "--to" => target_format = Some(value.clone()),
+                    _ => output = Some(value.clone()),
                 }
                 i += 2;
             }
@@ -61,25 +67,50 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
         }
     }
 
-    // `--analyze` and `--keys` are mode switches: the optional format comes from
-    // `--from` or a lone positional, so e.g. `--keys`, `--keys ubl-invoice`, and
-    // `--keys --from ubl-invoice` all work. They are mutually exclusive.
-    if analyze || keys {
-        let flag = if analyze { "--analyze" } else { "--keys" };
-        if analyze && keys {
+    // `--analyze` and `--keys` are mode switches: the optional format(s) come
+    // from `--from` / `--to` or positionals, so e.g. `--keys`, `--keys
+    // ubl-invoice`, `--keys --from ubl-invoice`, `--analyze ubl-invoice
+    // xrechnung-invoice` and `--analyze --from ubl-invoice --to xrechnung-invoice`
+    // all work. They are mutually exclusive.
+    if analyze && keys {
+        return Err(CliError::Usage(
+            "--analyze and --keys cannot be combined".into(),
+        ));
+    }
+    if analyze {
+        if positionals.len() > 2 {
             return Err(CliError::Usage(
-                "--analyze and --keys cannot be combined".into(),
+                "--analyze takes at most a source and a target format".into(),
             ));
         }
+        let mut positionals = positionals.into_iter();
+        let source = source_format.or_else(|| positionals.next());
+        let target = target_format.or_else(|| positionals.next());
+        if target.is_some() && source.is_none() {
+            return Err(CliError::Usage(
+                "--analyze needs a source format (--from) to go with the target".into(),
+            ));
+        }
+        return Ok(Command::Analyze(AnalyzeArgs {
+            source,
+            target,
+            deny_lossy,
+        }));
+    }
+    if deny_lossy {
+        return Err(CliError::Usage(
+            "--deny-lossy only applies to --analyze".into(),
+        ));
+    }
+    if target_format.is_some() {
+        return Err(CliError::Usage("--to only applies to --analyze".into()));
+    }
+    if keys {
         if positionals.len() > 1 {
-            return Err(CliError::Usage(format!("{flag} takes at most one format")));
+            return Err(CliError::Usage("--keys takes at most one format".into()));
         }
         let format = source_format.or_else(|| positionals.first().cloned());
-        return Ok(if analyze {
-            Command::Analyze(format)
-        } else {
-            Command::Keys(format)
-        });
+        return Ok(Command::Keys(format));
     }
 
     match positionals.as_slice() {
@@ -160,11 +191,19 @@ mod tests {
         assert_eq!(a.input, s("in.xml"));
     }
 
+    fn analyze(source: Option<&str>, target: Option<&str>, deny_lossy: bool) -> Command {
+        Command::Analyze(AnalyzeArgs {
+            source: source.map(s),
+            target: target.map(s),
+            deny_lossy,
+        })
+    }
+
     #[test]
     fn test_parse_args_analyze_alone_has_no_source() {
         assert_eq!(
             parse_args(&[s("--analyze")]).expect("ok"),
-            Command::Analyze(None)
+            analyze(None, None, false)
         );
     }
 
@@ -172,7 +211,7 @@ mod tests {
     fn test_parse_args_analyze_with_positional_source() {
         assert_eq!(
             parse_args(&[s("--analyze"), s("ubl-invoice")]).expect("ok"),
-            Command::Analyze(Some(s("ubl-invoice")))
+            analyze(Some("ubl-invoice"), None, false)
         );
     }
 
@@ -180,13 +219,52 @@ mod tests {
     fn test_parse_args_analyze_with_from_source() {
         assert_eq!(
             parse_args(&[s("--analyze"), s("--from"), s("ubl-invoice")]).expect("ok"),
-            Command::Analyze(Some(s("ubl-invoice")))
+            analyze(Some("ubl-invoice"), None, false)
         );
     }
 
     #[test]
-    fn test_parse_args_analyze_too_many_sources_is_usage_error() {
-        let err = parse_args(&[s("--analyze"), s("a"), s("b")]).expect_err("should fail");
+    fn test_parse_args_analyze_pair_positional_or_flags() {
+        assert_eq!(
+            parse_args(&[s("--analyze"), s("ubl-invoice"), s("xrechnung-invoice")]).expect("ok"),
+            analyze(Some("ubl-invoice"), Some("xrechnung-invoice"), false)
+        );
+        assert_eq!(
+            parse_args(&[
+                s("--analyze"),
+                s("--from"),
+                s("ubl-invoice"),
+                s("--to"),
+                s("xrechnung-invoice"),
+                s("--deny-lossy"),
+            ])
+            .expect("ok"),
+            analyze(Some("ubl-invoice"), Some("xrechnung-invoice"), true)
+        );
+        assert_eq!(
+            parse_args(&[s("--deny-lossy"), s("--analyze")]).expect("ok"),
+            analyze(None, None, true)
+        );
+    }
+
+    #[test]
+    fn test_parse_args_analyze_too_many_formats_is_usage_error() {
+        let err = parse_args(&[s("--analyze"), s("a"), s("b"), s("c")]).expect_err("should fail");
+        assert!(matches!(err, CliError::Usage(_)));
+    }
+
+    #[test]
+    fn test_parse_args_analyze_target_without_source_is_usage_error() {
+        let err = parse_args(&[s("--analyze"), s("--to"), s("b")]).expect_err("should fail");
+        assert!(matches!(err, CliError::Usage(_)));
+    }
+
+    #[test]
+    fn test_parse_args_deny_lossy_or_to_outside_analyze_is_usage_error() {
+        let err = parse_args(&[s("in.xml"), s("ubl-invoice"), s("--deny-lossy")])
+            .expect_err("should fail");
+        assert!(matches!(err, CliError::Usage(_)));
+        let err = parse_args(&[s("--keys"), s("--to"), s("ubl-invoice")]).expect_err("should fail");
         assert!(matches!(err, CliError::Usage(_)));
     }
 

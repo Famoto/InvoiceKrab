@@ -15,8 +15,6 @@
 //! - [`normalize`] — pure string transforms emitted as direct function calls.
 //! - [`validate`] — lexical shape checks for `currency`/`date`/`datetime`/
 //!   `unit_code`, called by generated code before a field is built.
-//! - [`adapter`] — the string-based [`Adapter`] contract for named, deterministic
-//!   conversions (deprecated in favour of `normalize` and codecs).
 //! - [`codec`] — lexical codecs: pattern-driven date / date-time / boolean
 //!   decode and encode between the hub's canonical forms and a format's wire
 //!   forms.
@@ -27,21 +25,19 @@
 //!
 //! Everything here is pure data and pure functions: the crate performs no I/O
 //! and has no dependency on `einvoice-dsl`. Generated code normalizes/validates
-//! `&str` inputs, calls adapter functions, and returns a [`MappingResult`]
-//! carrying diagnostics. There is no `Value` and no dynamic hub.
+//! `&str` inputs, runs codecs, and returns a [`MappingResult`] carrying
+//! diagnostics. There is no `Value` and no dynamic hub.
 //!
 //! # Testing
 //!
 //! Each module carries `#[cfg(test)]` unit tests plus doc tests on the public
 //! API.
 
-pub mod adapter;
 pub mod codec;
 pub mod normalize;
 pub mod result;
 pub mod validate;
 
-pub use adapter::{Adapter, AdapterError, uppercase_currency};
 pub use codec::{
     decode_bool, decode_date, decode_datetime, encode_bool, encode_date, encode_datetime,
 };

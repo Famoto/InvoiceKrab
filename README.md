@@ -104,7 +104,7 @@ Factur-X/ZUGFeRD and emits no spoke of its own, so it does not appear in
 ```
 USAGE:
     krab-cli <INPUT> <TARGET-FORMAT> [--from <SOURCE-FORMAT>] [--out <FILE>]
-    krab-cli --analyze [SOURCE-FORMAT]
+    krab-cli --analyze [SOURCE-FORMAT [TARGET-FORMAT]] [--deny-lossy]
     krab-cli --keys [FORMAT]
     krab-cli --list
     krab-cli --help
@@ -116,7 +116,11 @@ ARGS:
 OPTIONS:
     --from <FORMAT>    Source format; auto-detected when omitted
     --out <FILE>       Write to FILE instead of stdout
-    --analyze          Report each transform's loss/error state
+    --analyze          Report transforms' loss/error state: the whole matrix,
+                       one source's row, or one SOURCE TARGET pair in full
+    --to <FORMAT>      With --analyze: the target format of the pair
+    --deny-lossy       With --analyze: exit 65 unless every reported
+                       transform is lossless (a CI gate)
     --keys [FORMAT]    Show canonical main keys; with FORMAT, show that
                        spoke's covered and unused keys
     --list             List available formats
@@ -154,9 +158,11 @@ Prints every format compiled into this build (one per `config/mappings/*.toml`).
 
 ### Analyze conversions (no input needed)
 
-`--analyze` statically reports the loss/error state of every conversion — which
-target formats can represent everything a source carries, and which would drop
-fields — *without* needing an actual document.
+`--analyze` statically reports the loss/error state of conversions — which
+target formats can represent everything a source carries, which would drop
+fields, and which cannot be fed a value they require — *without* needing an
+actual document. It compares the two formats' transformation contracts (what
+each maps, what each requires on write, what each declares it may lose).
 
 ```bash
 # Full source x target matrix
@@ -164,6 +170,13 @@ krab-cli --analyze
 
 # Scope to "from UBL to everything else"
 krab-cli --analyze ubl-invoice
+
+# One pair in full: missing required routes, dropped keys, pins, recodes,
+# and what the source collapses on read
+krab-cli --analyze ubl-invoice facturx-invoice
+
+# A CI gate: exit 65 unless the pair is lossless
+krab-cli --analyze ubl-invoice xrechnung-invoice --deny-lossy
 ```
 
 ### Inspect canonical keys (authoring aid)
@@ -215,8 +228,9 @@ parameters/XML, `422` mapping errors (rendered diagnostics in the body),
 memory budget.
 
 Capability and health endpoints: `GET /formats` (JSON array of accepted
-format names), `GET /analyze[?from=<format>]` (the CLI's `--analyze` table),
-`GET /health` (`200 ok`; `krab-server --healthcheck` self-probes it for the
+format names), `GET /analyze[?from=<format>[&to=<format>]][&deny_lossy=1]`
+(the CLI's `--analyze` report; `deny_lossy` answers `422` with the report when
+the result is not lossless), `GET /health` (`200 ok`; `krab-server --healthcheck` self-probes it for the
 Docker `HEALTHCHECK`).
 
 Configuration is environment variables; defaults derive from the actual
@@ -307,8 +321,9 @@ an `EngineError` only means the XML could not be parsed or rendered at all.
 - **Diagnostics, not silent loss.** Missing required fields, type errors, and
   taken fallbacks are reported as structured diagnostics with severity and a
   source-node reference — they don't vanish.
-- **Static conversion analysis.** `--analyze` shows what each conversion would
-  lose before you run it.
+- **Static conversion analysis.** Every format carries a transformation
+  contract; `--analyze` compares two to show what a conversion would lose or
+  fail to fill before you run it, and `--deny-lossy` gates CI on it.
 - **Canonical key authoring aid.** `--keys` shows the hub vocabulary and, for one
   format, which existing keys are still unmapped.
 - **Namespace-agnostic reading, namespaced writing.** Mappings bind XML *local*

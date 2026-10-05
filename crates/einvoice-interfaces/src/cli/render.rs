@@ -13,7 +13,7 @@ pub fn usage() -> String {
          \n\
          USAGE:\n    \
          krab-cli <INPUT> <TARGET-FORMAT> [--from <SOURCE-FORMAT>] [--out <FILE>]\n    \
-         krab-cli --analyze [SOURCE-FORMAT]\n    \
+         krab-cli --analyze [SOURCE-FORMAT [TARGET-FORMAT]] [--deny-lossy]\n    \
          krab-cli --keys [FORMAT]\n    \
          krab-cli --list\n    \
          krab-cli --help\n\
@@ -25,7 +25,11 @@ pub fn usage() -> String {
          OPTIONS:\n    \
          --from <FORMAT>    Source format; auto-detected when omitted\n    \
          --out <FILE>       Write to FILE instead of stdout\n    \
-         --analyze          Report each transform's loss/error state\n    \
+         --analyze          Report transforms' loss/error state: the whole matrix,\n                       \
+         one source's row, or one SOURCE TARGET pair in full\n    \
+         --to <FORMAT>      With --analyze: the target format of the pair\n    \
+         --deny-lossy       With --analyze: exit 65 unless every reported\n                       \
+         transform is lossless (a CI gate)\n    \
          --keys [FORMAT]    Show canonical main keys (a mapping-authoring aid);\n                       \
          with FORMAT, that spoke's covered vs. unused keys\n    \
          --list             List available formats\n    \

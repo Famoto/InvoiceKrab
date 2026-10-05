@@ -172,16 +172,12 @@ pub struct RawNode {
     pub fallbacks: Option<Vec<String>>,
     /// Human description (reports only).
     pub description: Option<String>,
-    /// Minimum item count for a collection node.
-    pub min_items: Option<usize>,
     /// Repeated-scalar policy.
     pub multiple: Option<MultiplePolicy>,
     /// Separator, required iff `multiple = "join"`.
     pub join_with: Option<String>,
     /// Normalization operations, in declared order.
     pub normalize: Option<Vec<NormalizeOp>>,
-    /// Compiler-known adapter name.
-    pub adapter: Option<String>,
     /// Fixed write-side value: the writer always emits this literal at the
     /// node's source path, ignoring the hub. Read side is unaffected.
     pub constant: Option<String>,
@@ -252,11 +248,9 @@ impl RawNode {
     pub fn has_mapping_field(&self) -> bool {
         self.canonical_key.is_some()
             || self.fallbacks.is_some()
-            || self.min_items.is_some()
             || self.multiple.is_some()
             || self.join_with.is_some()
             || self.normalize.is_some()
-            || self.adapter.is_some()
             || self.constant.is_some()
             || self.clone_of.is_some()
             || self.codec.is_some()
@@ -299,11 +293,9 @@ impl RawNode {
                     .description
                     .clone()
                     .or_else(|| self.description.clone()),
-                min_items: child.min_items.or(self.min_items),
                 multiple: child.multiple.or(self.multiple),
                 join_with: child.join_with.clone().or_else(|| self.join_with.clone()),
                 normalize: child.normalize.clone().or_else(|| self.normalize.clone()),
-                adapter: child.adapter.clone().or_else(|| self.adapter.clone()),
                 constant: child.constant.clone().or_else(|| self.constant.clone()),
                 clone_of: child.clone_of.clone().or_else(|| self.clone_of.clone()),
                 disabled: child.disabled.or(self.disabled),
@@ -396,7 +388,11 @@ pub struct SourceNode {
     pub source_type: MappingType,
     /// Target canonical field, or `None` for a fallback-only helper node.
     pub canonical_key: Option<String>,
-    /// Whether the value is required.
+    /// Whether the value is required: the node must have a deterministic write
+    /// route (its hub key filled by the source, a `constant`, a resolved
+    /// `clone_of`, or a `match` discriminator). A required scalar missing at
+    /// runtime, or a required collection without items, is a `REQUIRED_MISSING`
+    /// error.
     pub required: bool,
     /// Fallback node ids in declared order.
     pub fallbacks: Vec<NodeId>,
@@ -407,14 +403,10 @@ pub struct SourceNode {
     /// not defaulted away: whether `multiple` was declared changes the
     /// synthesized source shape.
     pub multiple: Option<MultiplePolicy>,
-    /// Minimum item count for a collection node.
-    pub min_items: Option<usize>,
     /// Join separator (present iff `multiple = Join`).
     pub join_with: Option<String>,
     /// Normalization operations in declared order.
     pub normalize: Vec<NormalizeOp>,
-    /// Compiler-known adapter name.
-    pub adapter: Option<String>,
     /// Fixed write-side value (writer emits this literal, hub ignored on write).
     pub constant: Option<String>,
     /// Canonical key this node mirrors (write fan-out + read consistency check).
@@ -442,12 +434,6 @@ impl SourceNode {
     /// Whether this node is a fallback-only helper (no canonical target).
     pub fn is_helper(&self) -> bool {
         self.canonical_key.is_none()
-    }
-
-    /// The effective minimum item count for a collection node: an explicit
-    /// `min_items`, else 1 when `required`, else 0.
-    pub fn effective_min_items(&self) -> usize {
-        self.min_items.unwrap_or(if self.required { 1 } else { 0 })
     }
 }
 

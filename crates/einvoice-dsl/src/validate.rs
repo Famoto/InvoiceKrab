@@ -17,16 +17,14 @@
 //! - `E032` fallback target is not in the same scope as the referring node.
 //! - `E033` fallback reference cycle.
 //! - `E040` `multiple = "join"` without `join_with`, or `join_with` without join.
-//! - `E041` `min_items` on a non-collection node.
 //! - `E043` `multiple` combined with `fallbacks`.
-//! - `E050` unknown adapter name (against the known-adapter set).
 //! - `E060` `constant` on a collection node.
 //! - `E061` `constant` literal does not parse under the node's `type`.
-//! - `E062` `constant` combined with `fallbacks`, `multiple`, `adapter`, or
-//!   `normalize` (the constant is emitted verbatim on write; none of these
-//!   apply to it).
+//! - `E062` `constant` combined with `fallbacks`, `multiple` or `codec` (the
+//!   constant is emitted verbatim on write; none of these apply to it —
+//!   `normalize` is read-side and may accompany it).
 //! - `E070` `clone_of` on a collection node, or combined with `canonical_key`,
-//!   `constant`, `fallbacks`, `multiple`, or `adapter`.
+//!   `constant`, `fallbacks` or `multiple`.
 //! - `E071` `clone_of` target key not declared by a primary node in the
 //!   referenced scope (the node's own, `$parent`, or `$root`).
 //! - `E072` `clone_of` node's `type` differs from its target's.
@@ -35,7 +33,6 @@
 //! - `E084` unknown codec id.
 //! - `E085` codec on a collection, or codec `for_type` differs from the node's
 //!   `type`.
-//! - `W050` `adapter` is deprecated (warning): use `normalize` or a codec.
 //!
 //! Unknown TOML fields (`E001`), missing `path`/`type` (`E002`), and cross-spoke
 //! hub conflicts (`E010`/`E011`) are caught earlier (parse / resolve / hub), as
@@ -58,8 +55,6 @@ pub struct ValidationInput<'a> {
     pub ir: &'a MappingIr,
     /// Typed source-model metadata to resolve `path`s against.
     pub source: &'a SourceModelMeta,
-    /// Known adapter names. Empty means none are known.
-    pub adapters: &'a BTreeSet<String>,
     /// The shared codec table a node's `codec` must name.
     pub codecs: &'a CodecTable,
 }
@@ -73,7 +68,6 @@ pub fn validate(input: &ValidationInput) -> Vec<Diagnostic> {
         check_path(node, input, &mut diags);
         check_structural(node, &mut diags);
         check_fallbacks(node, input.ir, &mut diags);
-        check_adapter(node, input.adapters, &mut diags);
         check_codec(node, input.codecs, &mut diags);
         check_constant(node, &mut diags);
         check_clone_of(node, input.ir, &mut diags);
@@ -207,15 +201,6 @@ fn check_structural(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
         _ => {}
     }
 
-    // min_items only applies to collections.
-    if node.min_items.is_some() && !node.is_collection() {
-        diags.push(err(
-            "E041",
-            &node.id,
-            "`min_items` is only valid on a collection node".to_string(),
-        ));
-    }
-
     // A multi-valued node collapses its own values; a fallback chain on top of
     // that has no defined order of application, so the combination is rejected.
     if node.multiple.is_some() && !node.fallbacks.is_empty() {
@@ -303,11 +288,11 @@ fn check_constant(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
         ));
     }
 
+    // `normalize` is read-side and may accompany a constant; the read collapse
+    // and transform features below have no meaning for a pinned write value.
     for (set, field) in [
         (!node.fallbacks.is_empty(), "fallbacks"),
         (node.multiple.is_some(), "multiple"),
-        (node.adapter.is_some(), "adapter"),
-        (!node.normalize.is_empty(), "normalize"),
         (node.codec.is_some(), "codec"),
     ] {
         if set {
@@ -372,7 +357,7 @@ fn constant_literal_error(ty: MappingType, value: &str) -> Option<String> {
 ///
 /// A clone is a write-only mirror plus a read-side consistency check, so it
 /// cannot also be a primary (`canonical_key`), a `constant`, or carry read
-/// collapse/transform features (`fallbacks`, `multiple`, `adapter`) — and a
+/// collapse features (`fallbacks`, `multiple`) — and a
 /// collection has no single value to mirror. Clone chains are impossible by
 /// construction: the target is a canonical *key*, and clones declare none.
 fn check_clone_of(node: &SourceNode, ir: &MappingIr, diags: &mut Vec<Diagnostic>) {
@@ -393,7 +378,6 @@ fn check_clone_of(node: &SourceNode, ir: &MappingIr, diags: &mut Vec<Diagnostic>
         (node.constant.is_some(), "constant"),
         (!node.fallbacks.is_empty(), "fallbacks"),
         (node.multiple.is_some(), "multiple"),
-        (node.adapter.is_some(), "adapter"),
     ] {
         if set {
             diags.push(err(
@@ -462,24 +446,6 @@ fn check_clone_of(node: &SourceNode, ir: &MappingIr, diags: &mut Vec<Diagnostic>
             ),
         ));
     }
-}
-
-fn check_adapter(node: &SourceNode, adapters: &BTreeSet<String>, diags: &mut Vec<Diagnostic>) {
-    let Some(name) = &node.adapter else {
-        return;
-    };
-    if !adapters.contains(name) {
-        diags.push(err("E050", &node.id, format!("unknown adapter `{name}`")));
-    }
-    diags.push(Diagnostic {
-        code: "W050".to_string(),
-        severity: Severity::Warning,
-        source_node: Some(node.id.to_string()),
-        message: format!(
-            "`adapter = \"{name}\"` is deprecated and will be removed; use `normalize` or a `codec`"
-        ),
-        span: None,
-    });
 }
 
 /// `E084`/`E085`: a node's `codec` must name a known codec whose `for_type` is
@@ -583,19 +549,14 @@ mod tests {
     }
 
     fn run(body: &str) -> Vec<Diagnostic> {
-        run_with_adapters(body, &BTreeSet::new())
+        run_with(body, &CodecTable::new())
     }
 
-    fn run_with_adapters(body: &str, adapters: &BTreeSet<String>) -> Vec<Diagnostic> {
-        run_with(body, adapters, &CodecTable::new())
-    }
-
-    fn run_with(body: &str, adapters: &BTreeSet<String>, codecs: &CodecTable) -> Vec<Diagnostic> {
+    fn run_with(body: &str, codecs: &CodecTable) -> Vec<Diagnostic> {
         let (ir, source) = compiled(body);
         validate(&ValidationInput {
             ir: &ir,
             source: &source,
-            adapters,
             codecs,
         })
     }
@@ -681,7 +642,6 @@ mod tests {
             type = "date"
             canonical_key = "IssueDate"
             codec = "cii-date-102""#,
-            &BTreeSet::new(),
             &date_codecs(),
         );
         assert!(diags.is_empty(), "{diags:?}");
@@ -693,7 +653,6 @@ mod tests {
             r#"[Invoice.IssueDate]
             type = "date"
             codec = "nope""#,
-            &BTreeSet::new(),
             &date_codecs(),
         );
         assert_eq!(codes(&diags), ["E084"]);
@@ -705,7 +664,6 @@ mod tests {
             r#"[Invoice.Note]
             type = "string"
             codec = "cii-date-102""#,
-            &BTreeSet::new(),
             &date_codecs(),
         );
         assert_eq!(codes(&diags), ["E085"]);
@@ -718,7 +676,6 @@ mod tests {
             r#"[Lines]
             type = "collection"
             codec = "cii-date-102""#,
-            &BTreeSet::new(),
             &date_codecs(),
         );
         assert!(codes(&diags).contains(&"E085"), "{diags:?}");
@@ -731,23 +688,9 @@ mod tests {
             type = "date"
             constant = "2026-01-01"
             codec = "cii-date-102""#,
-            &BTreeSet::new(),
             &date_codecs(),
         );
         assert!(codes(&diags).contains(&"E062"), "{diags:?}");
-    }
-
-    #[test]
-    fn test_adapter_is_deprecated_w050() {
-        let adapters: BTreeSet<String> = ["known".to_string()].into_iter().collect();
-        let diags = run_with_adapters(
-            r#"[Invoice.X]
-            type = "string"
-            adapter = "known""#,
-            &adapters,
-        );
-        assert_eq!(codes(&diags), ["W050"]);
-        assert_eq!(diags[0].severity, Severity::Warning);
     }
 
     fn codes(diags: &[Diagnostic]) -> Vec<&str> {
@@ -903,38 +846,6 @@ mod tests {
     }
 
     #[test]
-    fn test_min_items_on_scalar_is_e041() {
-        let diags = run(r#"[Invoice.ID]
-            type = "identifier"
-            min_items = 1"#);
-        assert!(codes(&diags).contains(&"E041"));
-    }
-
-    #[test]
-    fn test_unknown_adapter_is_e050() {
-        let diags = run(r#"[Invoice.ID]
-            type = "identifier"
-            adapter = "nope""#);
-        assert_eq!(codes(&diags), ["E050", "W050"]);
-    }
-
-    #[test]
-    fn test_known_adapter_ok() {
-        let adapters: BTreeSet<String> = ["known".to_string()].into_iter().collect();
-        let diags = run_with_adapters(
-            r#"[Invoice.ID]
-            type = "identifier"
-            adapter = "known""#,
-            &adapters,
-        );
-        assert_eq!(
-            codes(&diags),
-            ["W050"],
-            "known: only the deprecation warning"
-        );
-    }
-
-    #[test]
     fn test_constant_only_node_is_clean() {
         let diags = run(r#"[Invoice.UBLVersionID]
             type = "identifier"
@@ -1002,15 +913,20 @@ mod tests {
     #[rstest]
     #[case::fallbacks("fallbacks = [\"Invoice.Alt\"]\n\n[Invoice.Alt]\ntype = \"identifier\"")]
     #[case::multiple("multiple = \"first\"")]
-    #[case::adapter("adapter = \"known\"")]
-    #[case::normalize("normalize = [\"trim\"]")]
-    fn test_constant_combined_with_read_features_is_e062(#[case] extra: &str) {
-        let adapters: BTreeSet<String> = ["known".to_string()].into_iter().collect();
-        let diags = run_with_adapters(
-            &format!("[Invoice.X]\ntype = \"identifier\"\nconstant = \"v\"\n{extra}"),
-            &adapters,
-        );
+    fn test_constant_combined_with_read_collapse_is_e062(#[case] extra: &str) {
+        let diags = run(&format!(
+            "[Invoice.X]\ntype = \"identifier\"\nconstant = \"v\"\n{extra}"
+        ));
         assert!(codes(&diags).contains(&"E062"), "{extra}: {diags:?}");
+    }
+
+    #[test]
+    fn test_constant_with_normalize_is_clean() {
+        // `normalize` shapes what is read; the constant is what is written.
+        let diags = run(
+            "[Invoice.X]\ntype = \"identifier\"\ncanonical_key = \"X\"\nconstant = \"v\"\nnormalize = [\"trim\"]",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
@@ -1030,16 +946,11 @@ mod tests {
     #[case::constant("constant = \"v\"")]
     #[case::fallbacks("fallbacks = [\"Invoice.Alt\"]\n\n[Invoice.Alt]\ntype = \"identifier\"")]
     #[case::multiple("multiple = \"first\"")]
-    #[case::adapter("adapter = \"known\"")]
     fn test_clone_of_combined_with_other_roles_is_e070(#[case] extra: &str) {
-        let adapters: BTreeSet<String> = ["known".to_string()].into_iter().collect();
-        let diags = run_with_adapters(
-            &format!(
-                "[Invoice.ID]\ntype = \"identifier\"\ncanonical_key = \"InvoiceNumber\"\n\n\
-                 [Invoice.Copy]\ntype = \"identifier\"\nclone_of = \"InvoiceNumber\"\n{extra}"
-            ),
-            &adapters,
-        );
+        let diags = run(&format!(
+            "[Invoice.ID]\ntype = \"identifier\"\ncanonical_key = \"InvoiceNumber\"\n\n\
+             [Invoice.Copy]\ntype = \"identifier\"\nclone_of = \"InvoiceNumber\"\n{extra}"
+        ));
         assert!(codes(&diags).contains(&"E070"), "{extra}: {diags:?}");
     }
 
@@ -1099,9 +1010,12 @@ mod tests {
         let diags = run(r#"[Invoice.Note]
             type = "string"
             multiple = "join"
-            min_items = 1"#);
+            fallbacks = ["Invoice.Alt"]
+
+            [Invoice.Alt]
+            type = "string""#);
         let c = codes(&diags);
         assert!(c.contains(&"E040"), "{c:?}");
-        assert!(c.contains(&"E041"), "{c:?}");
+        assert!(c.contains(&"E043"), "{c:?}");
     }
 }

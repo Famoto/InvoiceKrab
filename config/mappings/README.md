@@ -31,7 +31,7 @@ pointing at the offending node.
 - [Constants: pinning write-side values](#constants-pinning-write-side-values)
 - [Clones: one value, several places](#clones-one-value-several-places)
 - [Codecs](#codecs)
-- [Adapters (deprecated)](#adapters-deprecated)
+- [`required` and the transformation contract](#required-and-the-transformation-contract)
 - [Inheritance](#inheritance)
 - [Auto-detection](#auto-detection)
 - [A complete example](#a-complete-example)
@@ -52,10 +52,13 @@ and compiles every `*.toml` through the DSL pipeline:
    from the node ids. You never write a struct.
 4. **Hub derivation** — the canonical model (`MainKey`) is computed as the
    union of every spoke's `canonical_key`s, with cross-spoke consistency checks.
-5. **Validation** — paths, fallbacks, scopes, constants, clones, and adapters
-   are checked; every problem is reported (never just the first).
+5. **Validation** — paths, fallbacks, scopes, constants, clones and codecs are
+   checked, then every spoke's `required` write routes against the other
+   spokes; every problem is reported (never just the first).
 6. **Codegen** — the `read`/`write` mappers and the format registry (the
-   `Spoke` enum, display names, detection markers) are emitted as Rust.
+   `Spoke` enum, display names, detection markers, each spoke's
+   [transformation contract](#required-and-the-transformation-contract)) are
+   emitted as Rust.
 
 Two spokes round-trip through the hub precisely because they share canonical
 keys — adding a spoke makes it interoperable with *all* existing formats, with
@@ -247,16 +250,14 @@ A node plays one of five roles, depending on which fields it declares:
 | `type` | string | Value type (see [Types](#types)). Required for active nodes (E002). |
 | `canonical_key` | string | Target field in the canonical hub. Omit for a helper node. |
 | `xml` | string | Leaf binding override (see [below](#the-xml-field-attributes-text-renames)); on a collection or structural node, the physical element it binds (see [Structural matching](#structural-matching-one-element-several-nodes)). |
-| `required` | bool | Whether the value must be present (default `false`). |
+| `required` | bool | The node must have a deterministic write route and its value must be present (default `false`; see [`required`](#required-and-the-transformation-contract)). |
 | `normalize` | array | String transforms, applied in order (see [Normalization](#normalization)). |
 | `fallbacks` | array | Other node ids to try, in order, when this node is missing (see [Fallbacks](#fallbacks)). |
 | `multiple` | string | Policy for repeated scalar values (see [Multiple values](#multiple-values)). |
 | `join_with` | string | Separator — required iff `multiple = "join"` (E040). |
-| `min_items` | int | Minimum item count for a `collection` node (E041 elsewhere). |
 | `constant` | string | Fixed write-side literal (see [Constants](#constants-pinning-write-side-values)). |
 | `clone_of` | string | Canonical key this node mirrors (see [Clones](#clones-one-value-several-places)). |
 | `codec` | string | Id of a shared lexical codec for a `date`, `datetime` or `boolean` node (see [Codecs](#codecs)). |
-| `adapter` | string | *Deprecated* (W050): name of a compiler-known value adapter (see [Adapters](#adapters-deprecated)). |
 | `description` | string | Human note, reports only. |
 | `disabled` | bool | Remove this node from the effective mapping (useful with [inheritance](#inheritance)). |
 | `ns` | string | Namespace prefix of this node's own element on write (see [Namespaces](#namespaces)). Alone on a `type`-less table it makes a structural node. |
@@ -386,7 +387,6 @@ scope** for its descendant nodes. Collections nest.
 type = "collection"
 canonical_key = "InvoiceLines"
 required = true
-min_items = 1
 
 [InvoiceLine.ID]               # a field on each line item
 type = "identifier"
@@ -397,9 +397,9 @@ type = "string"
 canonical_key = "ItemName"
 ```
 
-The effective minimum item count is `min_items` when declared, else `1` when
-the collection is `required`, else `0`. `min_items` is only valid on a
-collection node (E041).
+A `required` collection must have at least one item: reading a document
+without any, or writing a hub without any, is a `REQUIRED_MISSING` error, like
+a missing required scalar.
 
 Scopes matter for two rules:
 
@@ -595,9 +595,10 @@ Rules:
 - The literal must parse under the node's `type` (E061); shape checks only —
   malformed values fail the build instead of surfacing in emitted documents.
 - Not valid on a collection node (E060).
-- Cannot be combined with `fallbacks`, `multiple`, `adapter`, `normalize`, or
-  `codec` (E062): the constant is emitted verbatim on write, so read-side
-  collapse and transform features don't apply.
+- Cannot be combined with `fallbacks`, `multiple` or `codec` (E062): the
+  constant is emitted verbatim on write, so read-side collapse features don't
+  apply. `normalize` is fine: it shapes what is *read* from the node, the
+  constant is what is *written*.
 
 ---
 
@@ -639,8 +640,7 @@ Rules: the derivation is `Key`, `$parent.Key` or `$root.Key` — anything else,
 or `$parent` at the root, is E093; the target key must be declared by a
 primary node in the referenced scope (E071) with the same type (E072). A clone
 is *only* a mirror — it cannot also declare `canonical_key`, `constant`,
-`fallbacks`, `multiple`, or `adapter`, and a collection cannot be a clone
-(E070).
+`fallbacks` or `multiple`, and a collection cannot be a clone (E070).
 
 ---
 
@@ -690,19 +690,43 @@ exactly as an attribute child would.
 
 ---
 
-## Adapters (deprecated)
+## `required` and the transformation contract
 
-`adapter` names a compiler-known value transformation implemented in the
-runtime crate. The set is closed; an unknown name is a build error (E050), and
-**every use is a deprecation warning (W050)**: adapters are superseded by
-`normalize` for string operations and by [codecs](#codecs) for lexical forms,
-and will be removed.
+`required = true` on a mapped node is a promise about the *written* document:
+it will carry the node's value. The compiler reads that as "the node has a
+deterministic **write route**" — one of:
 
-Currently known:
+- its **hub key**, which the source of a transform must map;
+- a **`constant`**, always available;
+- a **`clone_of`**, resolved to the key it mirrors (which the source must map);
+- for a structural node, the element itself, always materialized (see
+  [Namespaces](#namespaces)).
 
-| Adapter | Effect |
-|---------|--------|
-| `uppercase_currency` | Upper-cases a currency code |
+The route is checked at three points. At build time, a key a spoke requires
+from the hub that **no other spoke maps** is W095: no transform into that
+spoke, except from itself, could ever supply it. Per transform, `krab-cli
+--analyze <source> <target>` reports every required route the source cannot
+feed. At runtime, a document that still arrives without the value — or a
+required collection without items — is a `REQUIRED_MISSING` error, on read
+and on write alike. Making a node required never relaxes any of these; it only
+adds the static checks.
+
+Everything a transform analysis needs is a spoke's **transformation
+contract**, embedded in the generated registry as `Spoke::contract()`:
+
+| Part | Contents |
+|------|----------|
+| `keys` | every canonical key the spoke maps, as a scope-qualified label (`InvoiceLines/LineId`) with its type, codec and write-side pin (`constant` on a keyed node) |
+| `required` | every `required` node's write route (`Hub(label)`, `Constant(value)`, `Clone(label)`) |
+| `collapses` | nodes whose `multiple = "first" \| "join"` collapses several source values into one |
+| `selectors` | the `match` selectors, and whether each node keeps one occurrence or all |
+
+Two contracts determine a pair: `--analyze` (and `GET /analyze`) compares them
+and reports missing required routes and type clashes (blocking: the output is
+partial), dropped keys (lossy), and — as information — pins, recodes (a key
+read and written through different codecs) and the source's declared
+collapses. `--deny-lossy` turns anything but a lossless verdict into exit code
+65, for CI gates.
 
 ---
 
@@ -812,12 +836,11 @@ xml = "@currencyID"
 type = "currency"
 canonical_key = "PayableAmountCurrency"
 
-# A required collection of invoice lines.
+# A required collection of invoice lines (at least one item).
 [InvoiceLine]
 type = "collection"
 canonical_key = "InvoiceLines"
 required = true
-min_items = 1
 
 [InvoiceLine.ID]
 type = "identifier"
@@ -881,13 +904,11 @@ Validation reports **every** problem in one run, never just the first error.
 | `E032` | Fallback target in a different scope |
 | `E033` | Fallback reference cycle |
 | `E040` | `multiple = "join"` without `join_with`, or `join_with` without join |
-| `E041` | `min_items` on a non-collection node |
 | `E043` | `multiple` combined with `fallbacks` |
-| `E050` | Unknown adapter name |
 | `E060` | `constant` on a collection node |
 | `E061` | `constant` literal does not parse under the node's `type` |
-| `E062` | `constant` combined with `fallbacks`, `multiple`, `adapter`, `normalize`, or `codec` |
-| `E070` | `clone_of` on a collection, or combined with `canonical_key`, `constant`, `fallbacks`, `multiple`, or `adapter` |
+| `E062` | `constant` combined with `fallbacks`, `multiple` or `codec` |
+| `E070` | `clone_of` on a collection, or combined with `canonical_key`, `constant`, `fallbacks` or `multiple` |
 | `E071` | `clone_of` target key not declared by a primary node in the referenced scope |
 | `E072` | `clone_of` node's `type` differs from its target's |
 | `E080` | Namespace prefix used by `root_ns`, `ns_defaults`, or a node's `ns` but not declared in `[meta.namespaces]` |
@@ -900,7 +921,7 @@ Validation reports **every** problem in one run, never just the first error.
 | `E091` | `match` on a scalar node |
 | `E092` | `match` key does not name a single scalar declared beneath the element's logical nodes (or the selector is empty) |
 | `E093` | Malformed `clone_of` derivation (`$sibling.Key`, `$root.A.B`), or `$parent` at root scope |
-| `W050` | `adapter` is deprecated (warning): use `normalize` or a codec |
+| `W095` | A `required` node needs a hub key no other spoke maps (warning): no transform into this spoke, except from itself, can supply it |
 
 Runtime (per-document) diagnostics — missing required values, type validation
 failures, taken fallbacks, `CLONE_MISMATCH`, `CODEC_INVALID`,

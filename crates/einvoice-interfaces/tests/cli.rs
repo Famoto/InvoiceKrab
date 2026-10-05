@@ -155,6 +155,54 @@ fn test_analyze_scoped_to_one_source_exits_zero() {
 }
 
 #[test]
+fn test_analyze_pair_reports_in_full_and_exits_zero() {
+    let (code, out, err) = invoke(&["--analyze", "ubl-invoice", "facturx-invoice"], b"");
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(
+        out.starts_with("ubl-invoice:2.1 -> facturx-invoice:1.0: ~ lossful\n"),
+        "got: {out}"
+    );
+    assert!(
+        out.contains("dropped (no slot in the target)"),
+        "got: {out}"
+    );
+    assert!(out.contains("recoded"), "got: {out}");
+    assert!(!out.contains("legend:"), "a pair is not the table: {out}");
+}
+
+#[test]
+fn test_analyze_deny_lossy_exits_65_with_the_report_on_stderr() {
+    let (code, out, err) = invoke(
+        &[
+            "--analyze",
+            "fatturapa",
+            "xrechnung-invoice",
+            "--deny-lossy",
+        ],
+        b"",
+    );
+    assert_eq!(code, 65);
+    assert!(out.is_empty(), "nothing on stdout when the gate fails");
+    assert!(err.contains("! partial"), "stderr: {err}");
+    assert!(err.contains("SpecificationId"), "stderr: {err}");
+    assert!(err.contains("not lossless (--deny-lossy)"), "stderr: {err}");
+
+    let (code, out, err) = invoke(
+        &[
+            "--analyze",
+            "--from",
+            "ubl-invoice",
+            "--to",
+            "ubl-invoice",
+            "--deny-lossy",
+        ],
+        b"",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(out.contains("= lossless"), "got: {out}");
+}
+
+#[test]
 fn test_analyze_unknown_source_exits_64() {
     let (code, out, err) = invoke(&["--analyze", "no-such-format"], b"");
     assert_eq!(code, 64);

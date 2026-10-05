@@ -41,7 +41,8 @@ codegen emits text that *targets* the runtime's API by name.
 | `ir.rs` | `MappingIr` + `build_ir` (the normalized mapping + synthesized source model). |
 | `source_model/` | `SourceModelMeta` (metadata types, including each field's write prefix and the root's `NamespaceMeta`), path resolution (`resolve_path`), and `synthesize_source_model` (struct tree + source paths + prefixes from the nodes; E080/E081/E083 namespace diagnostics) — split into `meta.rs` / `resolve.rs` / `synth.rs`. |
 | `hub.rs` | `derive_hub` — the canonical model as the union of spoke `canonical_key`s. |
-| `validate.rs` | the compile-time validation pipeline (E020–E085, W050). |
+| `validate.rs` | the compile-time validation pipeline (E020–E085). |
+| `contract.rs` | the transformation contract per spoke (keys, required write routes, collapses, selectors), its registry rendering, and W095. |
 | `compile.rs` | `compile` — runs the whole multi-spoke pipeline and aggregates diagnostics. |
 | `report.rs` | Static reporting helpers: coverage matrix, gap report, fallback graph. |
 | `codegen/` | `generate_hub` and `generate_spoke` — emit the typed hub plus native Rust reader/writer modules. |
@@ -70,11 +71,13 @@ codecs ─► TOML mappings ─► parse ─► resolve(inherit, disabled)
 3. `derive_hub` folds every spoke's `canonical_key`s into a `CanonicalModel`,
    enforcing cross-spoke type/scope consistency.
 4. `validate` checks canonical scopes, fallbacks (existence, type, cycles),
-   adapters (deprecated, W050), codecs (known id, matching type), constants,
+   codecs (known id, matching type), constants,
    and `clone_of` mirrors (role exclusions, `$parent`/`$root` derivation
    paths, target key in the referenced scope, type agreement); the
    synthesized source model is consistent by construction.
-5. `compile` aggregates diagnostics from every stage in deterministic order.
+5. `compile` aggregates diagnostics from every stage in deterministic order,
+   and checks the spokes' `required` write routes against each other
+   (`contract`: W095 for a required key no other spoke maps).
 6. `report` renders comparison views; `generate_hub` emits the typed `MainKey`
    hub, and `generate_spoke` emits the reader (source→hub) and writer
    (hub→source) as Rust source text.

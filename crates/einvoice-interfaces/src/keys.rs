@@ -8,7 +8,8 @@
 //! near-duplicate with a typo that silently becomes a brand-new, single-spoke hub
 //! field — or (b) forget which already-established keys this spoke has not mapped
 //! yet. This module answers both questions without parsing any XML, purely from
-//! the generated [`Spoke::covered_keys`] / [`Spoke::required_keys`] footprints.
+//! the generated [`Spoke::contract`]s (the keys each maps and the hub keys its
+//! `required` nodes need).
 //!
 //! # Structure
 //!
@@ -69,8 +70,9 @@ fn build_hub_keys() -> Vec<KeyInfo> {
     let mut acc: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> = BTreeMap::new();
 
     for &spoke in Spoke::ALL {
-        let required: BTreeSet<&str> = spoke.required_keys().iter().copied().collect();
-        for &key in spoke.covered_keys() {
+        let contract = spoke.contract();
+        let required: BTreeSet<&str> = contract.required_labels().into_iter().collect();
+        for key in contract.labels() {
             let entry = acc.entry(key.to_string()).or_default();
             entry.0.insert(spoke.name().to_string());
             if required.contains(key) {
@@ -124,8 +126,9 @@ pub struct SpokeKeys {
 /// `covered` and `unused` partition the hub vocabulary, so their lengths always
 /// sum to `hub_keys().len()`.
 pub fn spoke_keys(spoke: Spoke) -> SpokeKeys {
-    let covers: BTreeSet<&str> = spoke.covered_keys().iter().copied().collect();
-    let requires: BTreeSet<&str> = spoke.required_keys().iter().copied().collect();
+    let contract = spoke.contract();
+    let covers: BTreeSet<&str> = contract.labels().collect();
+    let requires: BTreeSet<&str> = contract.required_labels().into_iter().collect();
 
     let mut covered = Vec::new();
     let mut unused = Vec::new();
@@ -236,7 +239,7 @@ mod tests {
         // The vocabulary is exactly the union of every spoke's covered keys.
         let union: BTreeSet<String> = Spoke::ALL
             .iter()
-            .flat_map(|s| s.covered_keys().iter().map(|k| k.to_string()))
+            .flat_map(|s| s.contract().labels().map(str::to_string))
             .collect();
         let listed: BTreeSet<String> = keys.iter().map(|k| k.key.clone()).collect();
         assert_eq!(listed, union);
@@ -264,7 +267,7 @@ mod tests {
         let sample = keys.first().expect("at least one main key");
         let expected: Vec<String> = Spoke::ALL
             .iter()
-            .filter(|s| s.covered_keys().contains(&sample.key.as_str()))
+            .filter(|s| s.contract().covers(&sample.key))
             .map(|s| s.name().to_string())
             .collect();
         assert_eq!(sample.defined_by, expected);
@@ -309,7 +312,7 @@ mod tests {
             let view = spoke_keys(spoke);
             let covered: BTreeSet<String> = view.covered.iter().map(|c| c.key.clone()).collect();
             let expected: BTreeSet<String> =
-                spoke.covered_keys().iter().map(|k| k.to_string()).collect();
+                spoke.contract().labels().map(str::to_string).collect();
             assert_eq!(covered, expected, "{}", spoke.name());
         }
     }
@@ -334,9 +337,10 @@ mod tests {
         for &spoke in Spoke::ALL {
             let view = spoke_keys(spoke);
             let required: BTreeSet<String> = spoke
-                .required_keys()
-                .iter()
-                .map(|k| k.to_string())
+                .contract()
+                .required_labels()
+                .into_iter()
+                .map(str::to_string)
                 .collect();
             for c in view.covered {
                 assert_eq!(

@@ -21,6 +21,7 @@
 pub mod codec;
 pub mod codegen;
 pub mod compile;
+pub mod contract;
 pub mod error;
 pub mod hub;
 pub mod ir;
@@ -38,7 +39,11 @@ pub mod validate;
 
 pub use codec::{Codec, CodecTable, Pattern, Token, compile_pattern, parse_codecs};
 pub use codegen::{SpokeDedupPlan, SpokeModule, generate_hub, plan_spoke_dedup};
-pub use compile::{CompileOutput, KNOWN_ADAPTERS, SpokeInput, compile, known_adapters};
+pub use compile::{CompileOutput, SpokeInput, compile};
+pub use contract::{
+    Collapse, KeyContract, RequiredRoute, Route, Selector, SpokeContract, check_required_routes,
+    render_contract, spoke_contract,
+};
 pub use error::{ConfigError, Diagnostic, Severity};
 pub use hub::{CanonicalField, CanonicalModel, CanonicalScope, canonical_scope_of, derive_hub};
 pub use ir::{MappingIr, build_ir, build_ir_with};

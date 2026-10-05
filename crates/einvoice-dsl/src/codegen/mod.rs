@@ -17,7 +17,7 @@
 //!
 //! The runtime never interprets the TOML; it links against the generated Rust,
 //! which targets the small `einvoice-transformator` helper API (`normalize`,
-//! `validate`, `adapter`, `MappingResult`) and uses native Rust types
+//! `validate`, `codec`, `MappingResult`) and uses native Rust types
 //! (`compact_str::CompactString`, `rust_decimal::Decimal`, `bool`, `Vec<…>`)
 //! directly.
 //!
@@ -37,8 +37,7 @@
 //! first), because serde serializes in declaration order and the emitted XML
 //! must follow the schema's sequence. The emitted reader, per node: reads the source field, applies
 //! `normalize` ops, falls back through `fallbacks`, decodes/validates by `type`,
-//! applies an optional `adapter`, enforces `required`/`min_items`, and assigns
-//! into the typed `MainKey`. Helper nodes (no `canonical_key`) are read only as
+//! enforces `required`, and assigns into the typed `MainKey`. Helper nodes (no `canonical_key`) are read only as
 //! fallback sources. A node with a `constant` is written from that literal
 //! instead of the hub (spec-pinned values like CIUS `CustomizationID` URNs);
 //! its read side is unchanged.
@@ -263,7 +262,7 @@ fn mapper_imports(out: &mut String, hub_module: &str) {
     out.push_str(
         "use einvoice_transformator::result::{MappingDiagnostic, MappingResult, Severity};\n",
     );
-    out.push_str("use einvoice_transformator::{adapter, codec, normalize, validate};\n");
+    out.push_str("use einvoice_transformator::{codec, normalize, validate};\n");
     let _ = writeln!(out, "use {hub_module}::*;");
 }
 
@@ -351,7 +350,6 @@ mod tests {
         type = "collection"
         canonical_key = "InvoiceLines"
         required = true
-        min_items = 1
 
         [InvoiceLine.InvoicedQuantity]
         type = "decimal"

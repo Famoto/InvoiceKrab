@@ -259,7 +259,7 @@ mod tests {
                 chain: std::slice::from_ref(&b),
             },
         ];
-        compile(&spokes, &BTreeSet::new(), &CodecTable::new())
+        compile(&spokes, &CodecTable::new())
     }
 
     #[test]
@@ -312,7 +312,7 @@ mod tests {
             id: "a".into(),
             chain: std::slice::from_ref(&a),
         }];
-        let out = compile(&spokes, &BTreeSet::new(), &CodecTable::new());
+        let out = compile(&spokes, &CodecTable::new());
         let graph = fallback_graph(&out.irs["a"]);
         assert_eq!(graph[&NodeId::new("Doc.ID")], [NodeId::new("Doc.Alt")]);
         assert!(!graph.contains_key(&NodeId::new("Doc.Alt")));
@@ -351,7 +351,7 @@ mod tests {
             id: "a".into(),
             chain: std::slice::from_ref(&m),
         }];
-        let out = compile(&spokes, &BTreeSet::new(), &CodecTable::new());
+        let out = compile(&spokes, &CodecTable::new());
         let ir = &out.irs["a"];
         assert_eq!(
             required_canonical_fields(ir),
@@ -377,7 +377,7 @@ mod tests {
             id: "a".into(),
             chain: std::slice::from_ref(&m),
         }];
-        let out = compile(&spokes, &BTreeSet::new(), &CodecTable::new());
+        let out = compile(&spokes, &CodecTable::new());
         let ir = &out.irs["a"];
         assert!(covered_canonical_fields(ir).contains("Lines/LineId"));
         assert!(required_canonical_fields(ir).contains("Lines/LineId"));

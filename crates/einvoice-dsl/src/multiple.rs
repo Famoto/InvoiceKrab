@@ -32,6 +32,17 @@ pub enum MultiplePolicy {
     Join,
 }
 
+impl MultiplePolicy {
+    /// The TOML keyword of the policy.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MultiplePolicy::Error => "error",
+            MultiplePolicy::First => "first",
+            MultiplePolicy::Join => "join",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

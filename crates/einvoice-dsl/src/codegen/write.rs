@@ -411,16 +411,19 @@ fn write_collection_block(
     let _ = writeln!(out, "{body}}}");
     let _ = writeln!(out, "{pad}}}");
 
-    let min = coll.effective_min_items();
-    if min > 0 {
-        let _ = writeln!(out, "{pad}if {count} < {min} {{");
-        let msg = format!(
-            "format!(\"collection `{coll_key}` has {{{count}}} items, expected at least {min}\")"
-        );
-        DiagSpec::new("Severity::Error", "MIN_ITEMS", coll.id.as_str(), &msg)
-            .key(coll_key)
-            .path(&coll.source_path)
-            .emit(out, &body);
+    // A required collection must have written at least one item.
+    if coll.required {
+        let _ = writeln!(out, "{pad}if {count} == 0 {{");
+        let msg = format!("\"required collection `{coll_key}` has no items\"");
+        DiagSpec::new(
+            "Severity::Error",
+            "REQUIRED_MISSING",
+            coll.id.as_str(),
+            &msg,
+        )
+        .key(coll_key)
+        .path(&coll.source_path)
+        .emit(out, &body);
         let _ = writeln!(out, "{pad}}}");
     }
 }

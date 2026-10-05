@@ -4,8 +4,8 @@
 //! then mappings) through the same [`einvoice_dsl::loader`] the
 //! `einvoice-interfaces` build script uses — inheritance chains resolved,
 //! disabled bases skipped, slugs from `[meta].doc_format` — compiles every
-//! spoke through [`einvoice_dsl::compile`] with the compiler-known adapters and
-//! the loaded codecs, and renders the result. What `check` accepts, the real
+//! spoke through [`einvoice_dsl::compile`] with the loaded codecs, and renders
+//! the result. What `check` accepts, the real
 //! build accepts; there is no second loading path.
 //!
 //! # Commands
@@ -20,7 +20,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use einvoice_dsl::compile::{CompileOutput, SpokeInput, compile, known_adapters};
+use einvoice_dsl::compile::{CompileOutput, SpokeInput, compile};
 use einvoice_dsl::error::Severity;
 use einvoice_dsl::loader::load_config;
 use einvoice_dsl::report::{coverage_matrix, gap_report, render_coverage_markdown};
@@ -97,7 +97,7 @@ fn with_spokes(
             chain: &s.chain,
         })
         .collect();
-    let out = compile(&spokes, &known_adapters(), &loaded.codecs);
+    let out = compile(&spokes, &loaded.codecs);
     render(out)
 }
 
@@ -155,7 +155,6 @@ fn render_report(out: &CompileOutput) -> CommandOutput {
 mod tests {
     use super::*;
     use einvoice_dsl::parse::parse_mapping;
-    use std::collections::BTreeSet;
 
     fn output(bodies: &[(&str, &str)]) -> CompileOutput {
         let chains: Vec<(String, Vec<einvoice_dsl::ParsedMapping>)> = bodies
@@ -184,7 +183,7 @@ mod tests {
                 chain,
             })
             .collect();
-        compile(&spokes, &BTreeSet::new(), &Default::default())
+        compile(&spokes, &Default::default())
     }
 
     #[test]
@@ -202,16 +201,17 @@ mod tests {
 
     #[test]
     fn test_check_invalid_node_exits_one_and_reports_code() {
-        // `min_items` on a scalar is an error-severity diagnostic (E041).
+        // `join_with` without `multiple = "join"` is an error-severity
+        // diagnostic (E040).
         let out = output(&[(
             "ubl",
             r#"[Doc.X]
             type = "string"
-            min_items = 1"#,
+            join_with = ", ""#,
         )]);
         let rendered = render_check(&out);
         assert_eq!(rendered.exit_code, 1);
-        assert!(rendered.stdout.contains("E041"));
+        assert!(rendered.stdout.contains("E040"));
     }
 
     #[test]

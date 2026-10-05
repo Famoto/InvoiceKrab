@@ -26,7 +26,7 @@
 //! - `Option<T>` → contributes `optional` (a `None` is missing at runtime).
 //! - `Vec<T>` → contributes `repeated` (a collection or multiple values).
 //! - A scalar leaf cannot be descended into.
-//! - Enum/choice fields are unsupported except through an adapter, so they are
+//! - Enum/choice fields are unsupported, so they are
 //!   not represented here as descendable structs.
 //!
 //! # Testing

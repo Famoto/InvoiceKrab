@@ -142,10 +142,8 @@ pub fn apply_defaults(
                     .map(NodeId::new)
                     .collect(),
                 multiple: raw.multiple,
-                min_items: raw.min_items,
                 join_with: raw.join_with.clone(),
                 normalize: raw.normalize.clone().unwrap_or_default(),
-                adapter: raw.adapter.clone(),
                 constant: raw.constant.clone(),
                 clone_of: raw.clone_of.clone(),
                 description: raw.description.clone(),
@@ -237,8 +235,6 @@ mod tests {
         assert_eq!(n.multiple, None, "undeclared multiple stays None");
         assert!(n.fallbacks.is_empty());
         assert!(n.normalize.is_empty());
-        assert_eq!(n.min_items, None);
-        assert_eq!(n.adapter, None);
         assert_eq!(n.constant, None, "undeclared constant stays None");
         assert_eq!(n.codec, None);
         assert_eq!(n.scope, Scope::Root);

@@ -15,7 +15,8 @@
 //! - [`Engine`] — [`Engine::to_hub`] (source bytes → [`MainKey`]),
 //!   [`Engine::from_hub`] ([`MainKey`] → target bytes), and [`Engine::transform`]
 //!   (source bytes → target bytes through the hub — the N–1–N path).
-//! - [`Spoke`] — selects which generated mapper to use.
+//! - [`Spoke`] — selects which generated mapper to use; [`Spoke::contract`] is
+//!   its embedded [`contract::TransformationContract`].
 //! - [`MainKey`] — the generated typed canonical hub.
 //! - [`EngineError`] — XML (de)serialization failures at the crate boundary.
 //!
@@ -39,6 +40,7 @@ use einvoice_transformator::result::MappingResult;
 
 pub mod analysis;
 pub mod cli;
+pub mod contract;
 pub mod keys;
 pub mod server;
 mod table;

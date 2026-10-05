@@ -70,7 +70,6 @@ canonical_key = "PayableAmount"
 type = "collection"
 canonical_key = "InvoiceLines"
 required = true
-min_items = 1
 
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.NumeroLinea]
 type = "identifier"

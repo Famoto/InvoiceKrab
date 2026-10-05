@@ -4,8 +4,8 @@
 //! through `fallbacks`, decodes/validates by `type` (through the node's `codec`
 //! when it has one: the lexical form becomes the canonical form, a mismatch is
 //! `CODEC_INVALID`, and a wire attribute that disagrees with the codec's is
-//! `CODEC_WIRE_MISMATCH`), applies an optional `adapter`, enforces
-//! `required`/`min_items`, and assigns into the typed hub.
+//! `CODEC_WIRE_MISMATCH`), enforces `required`, and assigns into the typed hub.
+//! A required collection with no items is `REQUIRED_MISSING` like a scalar.
 //!
 //! A `clone_of` node never fills the hub: after every primary assign in its
 //! scope, its path is read and decoded only to check the copy against the
@@ -640,17 +640,19 @@ fn read_collection_block(
     let _ = writeln!(out, "{body}{parent_hub}.{hub_field}.push({item});");
     let _ = writeln!(out, "{pad}}}");
 
-    // min_items / required underflow.
-    let min = coll.effective_min_items();
-    if min > 0 {
-        let _ = writeln!(out, "{pad}if {count} < {min} {{");
-        let msg = format!(
-            "format!(\"collection `{coll_key}` has {{{count}}} items, expected at least {min}\")"
-        );
-        DiagSpec::new("Severity::Error", "MIN_ITEMS", coll.id.as_str(), &msg)
-            .key(coll_key)
-            .path(&coll.source_path)
-            .emit(out, &body);
+    // A required collection must have at least one item.
+    if coll.required {
+        let _ = writeln!(out, "{pad}if {count} == 0 {{");
+        let msg = format!("\"required collection `{coll_key}` has no items\"");
+        DiagSpec::new(
+            "Severity::Error",
+            "REQUIRED_MISSING",
+            coll.id.as_str(),
+            &msg,
+        )
+        .key(coll_key)
+        .path(&coll.source_path)
+        .emit(out, &body);
         let _ = writeln!(out, "{pad}}}");
     }
 }
@@ -673,8 +675,8 @@ fn read_one_value(
     normalize_chain(&access, normalize, take)
 }
 
-/// Emits the decode + adapter + assign snippet, given `raw: String` is in scope
-/// inside `if let Some(raw) = value`.
+/// Emits the decode + assign snippet, given `raw: String` is in scope inside
+/// `if let Some(raw) = value`.
 fn decode_and_assign(
     out: &mut String,
     node: &SourceNode,
@@ -687,34 +689,7 @@ fn decode_and_assign(
     let field = snake_case(key);
     let lhs = format!("{}.{field}", target.struct_var);
 
-    // Optional adapter: transform the raw string first (String -> String).
-    let (decode_pad, has_adapter_wrap) = if let Some(adapter) = &node.adapter {
-        let _ = writeln!(out, "{pad}let adapted = match adapter::{adapter}(&raw) {{");
-        let _ = writeln!(out, "{pad}    Ok(s) => Some(CompactString::from(s)),");
-        let _ = writeln!(out, "{pad}    Err(err) => {{");
-        DiagSpec::new(
-            "Severity::Error",
-            "ADAPTER_FAILED",
-            node.id.as_str(),
-            "err.to_string()",
-        )
-        .key(key)
-        .index(target.index_var)
-        .emit(out, &format!("{pad}        "));
-        let _ = writeln!(out, "{pad}        None");
-        let _ = writeln!(out, "{pad}    }}");
-        let _ = writeln!(out, "{pad}}};");
-        let _ = writeln!(out, "{pad}if let Some(raw) = adapted {{");
-        ("    ".repeat(indent + 1), true)
-    } else {
-        (pad.clone(), false)
-    };
-
-    decode_body(out, node, codec, key, &decode_pad, &lhs, target);
-
-    if has_adapter_wrap {
-        let _ = writeln!(out, "{pad}}}");
-    }
+    decode_body(out, node, codec, key, &pad, &lhs, target);
 }
 
 /// Emits the type-specific decode of `raw: String` into the typed `lhs` field.
