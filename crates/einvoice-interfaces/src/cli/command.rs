@@ -19,6 +19,10 @@ pub enum Command {
     /// `None` lists the whole hub vocabulary; `Some(format)` shows that spoke's
     /// covered vs. unused keys.
     Keys(Option<String>),
+    /// Run the schema-conformance checks the mappings declare (see
+    /// [`crate::conformance`]) against the files under a workspace root:
+    /// `None` means the current directory.
+    Check(Option<String>),
     /// Print usage and exit successfully.
     Help,
 }

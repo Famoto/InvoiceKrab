@@ -15,6 +15,7 @@ pub fn usage() -> String {
          krab-cli <INPUT> <TARGET-FORMAT> [--from <SOURCE-FORMAT>] [--out <FILE>]\n    \
          krab-cli --analyze [SOURCE-FORMAT [TARGET-FORMAT]] [--deny-lossy]\n    \
          krab-cli --keys [FORMAT]\n    \
+         krab-cli --check [ROOT]\n    \
          krab-cli --list\n    \
          krab-cli --help\n\
          \n\
@@ -32,6 +33,9 @@ pub fn usage() -> String {
          transform is lossless (a CI gate)\n    \
          --keys [FORMAT]    Show canonical main keys (a mapping-authoring aid);\n                       \
          with FORMAT, that spoke's covered vs. unused keys\n    \
+         --check [ROOT]     Run the schema-conformance checks the mappings declare\n                       \
+         (sample and output XSD validity, round trips) on the\n                       \
+         files under ROOT (default: .); exit 65 on a failure\n    \
          --list             List available formats\n    \
          -h, --help         Show this help\n\
          \n\

@@ -33,7 +33,7 @@ codegen emits text that *targets* the runtime's API by name.
 | `codec.rs` | `Codec` / `CodecTable` — the shared lexical codecs (`config/codecs/*.toml`): the pattern language, validated per type, and the wire attributes. |
 | `normalize.rs` | `NormalizeOp` — declared string transforms. |
 | `multiple.rs` | `MultiplePolicy` — repeated-scalar handling. |
-| `meta.rs` | `MappingMeta` — the `[meta]` table (identity, `root`, `inherits`, `detect`, inherit-only `disabled`, the inherited namespace entries `root_ns` / `namespaces` / `ns_defaults`). |
+| `meta.rs` | `MappingMeta` — the `[meta]` table (identity, `root`, `inherits`, `detect`, inherit-only `disabled`, the inherited namespace entries `root_ns` / `namespaces` / `ns_defaults`, the inherited `[meta.schema]` and the `[[meta.samples]]` of the schema-conformance checks). |
 | `node.rs` | `NodeId` / `Scope` / `RawNode` (as-declared) / `SourceNode` (effective). |
 | `error.rs` | `ConfigError`, `Diagnostic`, `Severity`. |
 | `parse.rs` | TOML → `ParsedMapping` (dotted-table flattening). |
@@ -45,7 +45,7 @@ codegen emits text that *targets* the runtime's API by name.
 | `contract.rs` | the transformation contract per spoke (keys, required write routes, collapses, selectors), its registry rendering, and W095. |
 | `compile.rs` | `compile` — runs the whole multi-spoke pipeline and aggregates diagnostics. |
 | `report.rs` | Static reporting helpers: coverage matrix, gap report, fallback graph. |
-| `codegen/` | `generate_hub` and `generate_spoke` — emit the typed hub plus native Rust reader/writer modules. |
+| `codegen/` | `generate_hub` and `generate_spoke` — emit the typed hub (with its `values` walker, the label-keyed view round trips compare) plus native Rust reader/writer modules. |
 
 ## How the pieces fit together
 

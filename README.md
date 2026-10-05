@@ -106,6 +106,7 @@ USAGE:
     krab-cli <INPUT> <TARGET-FORMAT> [--from <SOURCE-FORMAT>] [--out <FILE>]
     krab-cli --analyze [SOURCE-FORMAT [TARGET-FORMAT]] [--deny-lossy]
     krab-cli --keys [FORMAT]
+    krab-cli --check [ROOT]
     krab-cli --list
     krab-cli --help
 
@@ -123,6 +124,9 @@ OPTIONS:
                        transform is lossless (a CI gate)
     --keys [FORMAT]    Show canonical main keys; with FORMAT, show that
                        spoke's covered and unused keys
+    --check [ROOT]     Run the schema-conformance checks the mappings declare
+                       (sample and output XSD validity, round trips) on the
+                       files under ROOT (default: .); exit 65 on a failure
     --list             List available formats
     -h, --help         Show this help
 ```
@@ -194,6 +198,27 @@ krab-cli --keys
 krab-cli --keys xrechnung-invoice
 ```
 
+### Check schema conformance
+
+`--check` runs the checks the mappings declare in `[meta.schema]` and
+`[[meta.samples]]`: every sample validates against the XSD of the format that
+reads it, and written by every format with a schema it validates against that
+format's XSD (up to its documented `known_gaps`) and reads back with the same
+value for every canonical key the format covers. Keys a format does not cover
+are reported, not failed. The declared paths are relative to ROOT, the
+workspace root (default: the current directory).
+
+```bash
+# From the repository root
+krab-cli --check
+```
+
+Schema validation needs `xmllint` (libxml2) on `PATH`; without it the schema
+checks are skipped with a notice and the round trips still run. A failed check
+exits 65 with the report on stderr. See
+[Schema conformance](config/mappings/README.md#schema-conformance) in the DSL
+reference.
+
 ### Exit codes
 
 KrabInvoice follows BSD `sysexits.h` conventions:
@@ -202,7 +227,7 @@ KrabInvoice follows BSD `sysexits.h` conventions:
 |------|---------|
 | `0`  | Success (warnings/info may still appear on stderr) |
 | `64` | Usage error — bad arguments, unknown format, or ambiguous source |
-| `65` | Data error — input couldn't be parsed/rendered, or mapping had errors |
+| `65` | Data error — input couldn't be parsed/rendered, mapping had errors, or a gate failed (`--analyze --deny-lossy`, `--check`) |
 | `74` | I/O error — couldn't read input or write output |
 
 ---
@@ -326,6 +351,10 @@ an `EngineError` only means the XML could not be parsed or rendered at all.
   fail to fill before you run it, and `--deny-lossy` gates CI on it.
 - **Canonical key authoring aid.** `--keys` shows the hub vocabulary and, for one
   format, which existing keys are still unmapped.
+- **Declared schema conformance.** A mapping names the XSD its format is
+  defined by and the sample documents that prove it; the checks (sample
+  validity, output validity, round trips) are derived from those
+  declarations, run in `cargo test`, and on demand with `--check`.
 - **Namespace-agnostic reading, namespaced writing.** Mappings bind XML *local*
   names, so the same mapping reads real namespaced (`cbc:`/`cac:`) UBL and
   bare-name fixtures; on write the declared namespaces are emitted on the root
@@ -375,7 +404,12 @@ every diagnostic code — lives in
 2. Give it the same `canonical_key`s (with matching types) as the existing
    spokes for everything you want to round-trip; add new keys for fields unique
    to your format.
-3. Rebuild:
+3. Declare the format's XSD in `[meta.schema]` (vendor it under
+   [testfiles/xsd/](testfiles/xsd/)) and, ideally, a sample document in
+   `[[meta.samples]]`: every format's output is then validated against it
+   and round-tripped — see
+   [Schema conformance](config/mappings/README.md#schema-conformance).
+4. Rebuild:
 
    ```bash
    cargo build --release -p einvoice-interfaces
@@ -408,9 +442,11 @@ executes only that generated code.
 
 Emitted documents are validated against the vendored XSDs in
 [testfiles/xsd/](testfiles/xsd/) by `crates/einvoice-interfaces/tests/xsd_validation.rs`
-(it needs `xmllint` from libxml2 on `PATH`; CI installs it). Remaining schema
-errors are listed per target in `tests/xsd_allowlist/`, and the test fails both
-on a new error and on a stale allowlist line, so the lists only shrink.
+(it needs `xmllint` from libxml2 on `PATH`; CI installs it). The test names no
+format: it runs the checks each mapping declares in `[meta.schema]` and
+`[[meta.samples]]`, the same ones `krab-cli --check` reports. A format's
+remaining schema errors are its `known_gaps`, and the check fails both on a
+new error and on a stale gap, so the lists only shrink.
 
 Install the local pre-commit hooks once per checkout:
 

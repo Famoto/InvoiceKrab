@@ -242,3 +242,33 @@ fn test_help_lists_keys_command() {
     assert_eq!(code, 0);
     assert!(out.contains("--keys"), "got: {out}");
 }
+
+#[test]
+fn test_check_on_the_workspace_exits_zero_with_the_report_on_stdout() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let (code, out, err) = invoke(&["--check", root], b"");
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(out.contains("schema conformance:"), "{out}");
+    assert!(out.contains("result: every check passed"), "{out}");
+}
+
+#[test]
+fn test_check_without_the_declared_files_exits_65_with_the_report_on_stderr() {
+    // An existing directory that holds none of the declared samples.
+    let root = std::env::temp_dir().join(format!("krab-check-empty-{}", std::process::id()));
+    std::fs::create_dir_all(&root).expect("create temp dir");
+    let (code, out, err) = invoke(&["--check", root.to_str().expect("utf8")], b"");
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(code, 65, "stdout: {out}");
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("cannot read the sample"), "{err}");
+    assert!(err.contains("failure(s)"), "{err}");
+}
+
+#[test]
+fn test_check_root_that_is_no_directory_exits_74() {
+    let (code, out, err) = invoke(&["--check", "/no/such/workspace"], b"");
+    assert_eq!(code, 74);
+    assert!(out.is_empty());
+    assert!(err.contains("not a directory"), "stderr: {err}");
+}

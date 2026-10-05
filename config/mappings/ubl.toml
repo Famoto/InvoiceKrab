@@ -73,6 +73,13 @@ cac = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
 leaf = "cbc"
 aggregate = "cac"
 
+# Schema conformance: every document this spoke writes (and every sample it
+# reads) must validate against the UBL 2.1 Invoice schema. Inherited by
+# XRechnung and Peppol, whose documents are UBL 2.1 Invoices too. See
+# `krab-cli --check`.
+[meta.schema]
+xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
+
 # ===========================================================================
 # PROCESS CONTROL (BG-2)
 # ===========================================================================

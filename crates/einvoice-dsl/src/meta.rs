@@ -27,6 +27,23 @@
 //! - `[meta.ns_defaults]` — `leaf` and `aggregate`: the prefix every scalar /
 //!   valued element and every interior / collection element gets unless its
 //!   node says `ns = "…"` itself.
+//!
+//! # Schema conformance
+//!
+//! Two more optional tables let a mapping declare the schema its format is
+//! defined by and the documents that prove the mapping right, so the build
+//! derives the conformance checks instead of hand-written output tests:
+//!
+//! - `[meta.schema]` ([`SchemaMeta`]) — the root XSD (`xsd`), an optional XML
+//!   catalog resolving its imports offline (`catalog`), and `known_gaps`: the
+//!   schema errors the spoke's output is documented to still produce.
+//!   **Inherited** like the namespace entries (a CIUS validates against its
+//!   base syntax's schema); a child may override it whole.
+//! - `[[meta.samples]]` ([`SampleMeta`]) — documents to validate and round-trip
+//!   through every emitting spoke. Read by the declaring spoke unless `source`
+//!   names another one. Never inherited.
+//!
+//! Paths are workspace-relative; the loader checks they exist.
 
 use std::collections::BTreeMap;
 
@@ -44,6 +61,38 @@ pub struct NsDefaults {
     /// `cac`). Default: none.
     #[serde(default)]
     pub aggregate: Option<String>,
+}
+
+/// The `[meta.schema]` table: the XSD the format is defined by, which the
+/// spoke's emitted documents (and the samples it reads) are validated against.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaMeta {
+    /// The root XSD, relative to the workspace root.
+    pub xsd: String,
+    /// An XML catalog (`XML_CATALOG_FILES`) resolving the schema's remote
+    /// imports offline, relative to the workspace root. Default: none.
+    #[serde(default)]
+    pub catalog: Option<String>,
+    /// Substring patterns of the schema errors the spoke's output is known to
+    /// still produce (a documented gap). Every reported error must match one,
+    /// and every pattern must still match some error, so the list only shrinks.
+    #[serde(default)]
+    pub known_gaps: Vec<String>,
+}
+
+/// One `[[meta.samples]]` entry: a document that must be schema-valid itself and
+/// must round-trip through every emitting spoke.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SampleMeta {
+    /// The document, relative to the workspace root.
+    pub file: String,
+    /// The spoke that reads it, when it is not the declaring spoke's own format:
+    /// a mapping id (`xrechnung-invoice:3.0.2`) or a bare `doc_format`
+    /// (`xrechnung-invoice`). Default: the declaring spoke.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// The parsed `[meta]` table of a spoke mapping file.
@@ -100,6 +149,14 @@ pub struct MappingMeta {
     /// parent when omitted.
     #[serde(default)]
     pub ns_defaults: Option<NsDefaults>,
+    /// The schema the format is defined by, for conformance checks. Inherited
+    /// whole from the parent when omitted.
+    #[serde(default)]
+    pub schema: Option<SchemaMeta>,
+    /// Sample documents that must be schema-valid and round-trip through every
+    /// emitting spoke. Never inherited.
+    #[serde(default)]
+    pub samples: Vec<SampleMeta>,
 }
 
 impl MappingMeta {
@@ -116,6 +173,16 @@ impl MappingMeta {
         }
         if self.ns_defaults.is_none() {
             self.ns_defaults = parent.ns_defaults.clone();
+        }
+    }
+
+    /// Fills in `[meta.schema]` from `parent` when this meta omits it, so a
+    /// CIUS validates against its base syntax's schema. Inherited whole: a
+    /// child's own table replaces, never merges with, the parent's. Samples are
+    /// never inherited.
+    pub fn inherit_schema(&mut self, parent: &MappingMeta) {
+        if self.schema.is_none() {
+            self.schema = parent.schema.clone();
         }
     }
 
@@ -249,6 +316,57 @@ mod tests {
         let src = format!("{}\ndisabled = true", required_only());
         let meta: MappingMeta = toml::from_str(&src).unwrap();
         assert!(meta.disabled);
+    }
+
+    #[test]
+    fn test_schema_and_samples_default_empty_and_parse() {
+        let meta: MappingMeta = toml::from_str(required_only()).unwrap();
+        assert_eq!(meta.schema, None);
+        assert!(meta.samples.is_empty());
+
+        let src = format!(
+            "{}\n[schema]\nxsd = \"xsd/root.xsd\"\ncatalog = \"xsd/catalog.xml\"\nknown_gaps = [\"Expected is ( Header )\"]\n\n[[samples]]\nfile = \"a.xml\"\n\n[[samples]]\nfile = \"b.xml\"\nsource = \"other-fmt\"",
+            required_only()
+        );
+        let meta: MappingMeta = toml::from_str(&src).unwrap();
+        let schema = meta.schema.expect("schema");
+        assert_eq!(schema.xsd, "xsd/root.xsd");
+        assert_eq!(schema.catalog.as_deref(), Some("xsd/catalog.xml"));
+        assert_eq!(schema.known_gaps, ["Expected is ( Header )"]);
+        assert_eq!(meta.samples.len(), 2);
+        assert_eq!(meta.samples[0].file, "a.xml");
+        assert_eq!(meta.samples[0].source, None);
+        assert_eq!(meta.samples[1].source.as_deref(), Some("other-fmt"));
+    }
+
+    #[test]
+    fn test_schema_requires_xsd_and_rejects_unknown_keys() {
+        let src = format!("{}\n[schema]\ncatalog = \"c.xml\"", required_only());
+        assert!(toml::from_str::<MappingMeta>(&src).is_err(), "xsd missing");
+        let src = format!("{}\n[schema]\nxsd = \"x.xsd\"\nbogus = 1", required_only());
+        assert!(toml::from_str::<MappingMeta>(&src).is_err(), "unknown key");
+        let src = format!("{}\n[[samples]]\nsource = \"x\"", required_only());
+        assert!(toml::from_str::<MappingMeta>(&src).is_err(), "file missing");
+    }
+
+    #[test]
+    fn test_inherit_schema_fills_only_an_omitted_table() {
+        let parent_src = format!(
+            "{}\n[schema]\nxsd = \"base.xsd\"\nknown_gaps = [\"gap\"]\n[[samples]]\nfile = \"base.xml\"",
+            required_only()
+        );
+        let parent: MappingMeta = toml::from_str(&parent_src).unwrap();
+        let mut child: MappingMeta = toml::from_str(required_only()).unwrap();
+        child.inherit_schema(&parent);
+        assert_eq!(child.schema, parent.schema, "omitted: inherited whole");
+        assert!(child.samples.is_empty(), "samples are never inherited");
+
+        let own_src = format!("{}\n[schema]\nxsd = \"own.xsd\"", required_only());
+        let mut own: MappingMeta = toml::from_str(&own_src).unwrap();
+        own.inherit_schema(&parent);
+        let schema = own.schema.expect("schema");
+        assert_eq!(schema.xsd, "own.xsd", "declared: replaces the parent's");
+        assert!(schema.known_gaps.is_empty(), "replaced whole, not merged");
     }
 
     #[test]

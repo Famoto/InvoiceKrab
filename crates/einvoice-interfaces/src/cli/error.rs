@@ -24,6 +24,9 @@ pub enum CliError {
     /// `--analyze --deny-lossy` found a transform that is not lossless; carries
     /// the rendered report. Exit code 65 (`EX_DATAERR`).
     Lossy(String),
+    /// `--check` found a schema-conformance failure; carries the rendered
+    /// report. Exit code 65 (`EX_DATAERR`).
+    Nonconformant(String),
 }
 
 impl std::fmt::Display for CliError {
@@ -35,7 +38,7 @@ impl std::fmt::Display for CliError {
             CliError::Io(m) => write!(f, "io error: {m}"),
             CliError::Engine(m) => write!(f, "engine error: {m}"),
             CliError::Mapping(m) => write!(f, "{m}"),
-            CliError::Lossy(m) => write!(f, "{m}"),
+            CliError::Lossy(m) | CliError::Nonconformant(m) => write!(f, "{m}"),
         }
     }
 }
@@ -48,7 +51,10 @@ impl CliError {
         match self {
             CliError::Usage(_) | CliError::UnknownFormat(_) | CliError::AmbiguousSource(_) => 64,
             CliError::Io(_) => 74,
-            CliError::Engine(_) | CliError::Mapping(_) | CliError::Lossy(_) => 65,
+            CliError::Engine(_)
+            | CliError::Mapping(_)
+            | CliError::Lossy(_)
+            | CliError::Nonconformant(_) => 65,
         }
     }
 }

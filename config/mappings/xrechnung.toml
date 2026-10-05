@@ -27,6 +27,12 @@ inherits = "ubl-invoice:2.1"
 # which for the CIUS carries `...:xrechnung_3.0`.
 detect = ["xrechnung"]
 
+# The XRechnung 3.0.2 example invoice: valid against the inherited UBL 2.1
+# schema, read by this spoke, written by every spoke with a schema, and read
+# back by each (`krab-cli --check`).
+[[meta.samples]]
+file = "testfiles/xrechnung-3.0.2-beispiel.xml"
+
 # Overrides the base UBL node: the CIUS makes CustomizationID mandatory. An
 # override merges over the inherited node, so only the delta is stated here;
 # type, canonical key and normalization come from ubl.toml.

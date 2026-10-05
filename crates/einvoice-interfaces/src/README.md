@@ -16,7 +16,7 @@ No format is named in hand-written code.
 
 - `build.rs` — mapping discovery, inheritance-chain resolution, compilation, and
   code generation (`hub.rs` + `spokes.rs` in `OUT_DIR`, the registry carrying
-  each spoke's embedded contract).
+  each spoke's embedded contract and its declared schema and samples).
 - `lib.rs` — [`Engine`] (`to_hub`, `from_hub`, `transform`), [`EngineError`], and
   the re-exported generated [`Spoke`] enum and [`MainKey`] hub.
 - `contract.rs` — the runtime `TransformationContract` types: what a spoke
@@ -28,6 +28,10 @@ No format is named in hand-written code.
   recodes, collapses), without an input document.
 - `keys.rs` — canonical-key reporting (the CLI's `--keys`): the hub vocabulary,
   and per-spoke covered/unused keys.
+- `conformance.rs` — schema conformance (the CLI's `--check`): derives from
+  each spoke's `Spoke::schema` and `Spoke::samples` the sample-validity,
+  emitted-validity (up to `known_gaps`) and round-trip checks, validating with
+  `xmllint`.
 - `table.rs` — shared aligned-table rendering used by `analysis` and `keys`.
 - `cli/` — the `krab-cli` CLI: argument parsing, format resolution, source
   auto-detection, IO wiring, and diagnostic rendering (see its `mod.rs` docs).
@@ -51,7 +55,8 @@ bytes could not be parsed or rendered at all.
 ## Testing
 
 `lib.rs` carries end-to-end tests over the generated mappers (read, round-trip,
-diagnostics, malformed input). `analysis`, `keys`, `table`, and the `cli`
-submodules carry in-module unit tests; CLI behavior is tested through
+diagnostics, malformed input). `analysis`, `conformance`, `keys`, `table`, and
+the `cli` submodules carry in-module unit tests; CLI behavior is tested through
 `cli::run` against the generated registry; `contract` checks every embedded
-contract for internal consistency.
+contract for internal consistency. `tests/xsd_validation.rs` runs the
+conformance checks the mappings declare over the whole registry.

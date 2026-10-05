@@ -16,3 +16,8 @@ inherits = "cii-invoice:en16931"
 # Factur-X (FR) and ZUGFeRD (DE) are the same syntax; both guideline ids carry
 # one of these substrings, letting auto-detection prefer this CIUS over base CII.
 detect = ["factur-x", "zugferd"]
+
+# Schema conformance: written documents must validate against the Factur-X
+# EN 16931 profile schema (CII D16B, restricted to the profile).
+[meta.schema]
+xsd = "testfiles/xsd/facturx-en16931/Factur-X_EN16931.xsd"

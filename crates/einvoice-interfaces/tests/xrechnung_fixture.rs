@@ -4,10 +4,15 @@
 //! same mapper reads a fully namespaced (`cbc:`/`cac:`) XRechnung document and
 //! ignores the many elements the minimal spoke does not model. This pins that
 //! end-to-end behaviour against the checked-in fixture in `testfiles/`.
+//!
+//! What the schemas decide (element order, mandatory elements and attributes)
+//! and whether every covered value survives a round trip are not asserted
+//! here: the mappings declare the fixture as a sample, and
+//! `tests/xsd_validation.rs` derives those checks for every spoke. What stays
+//! are the values the XSDs leave open: the codes, wire attributes and
+//! currencies the mappings pin.
 
 use einvoice_interfaces::{Engine, Spoke};
-use quick_xml::Reader;
-use quick_xml::events::Event;
 use rust_decimal::Decimal;
 use std::str::FromStr as _;
 
@@ -52,124 +57,10 @@ fn test_to_hub_reads_namespaced_xrechnung() {
 }
 
 #[test]
-fn test_transform_xrechnung_to_ubl_preserves_canonical_values() {
-    let engine = Engine::new();
-    let out = engine
-        .transform(Spoke::UblInvoice, Spoke::UblInvoice, &xrechnung())
-        .expect("fixture is well-formed XML");
-
-    assert!(!out.has_errors(), "{:?}", out.diagnostics);
-    let xml = out.value.expect("writer yields a document");
-
-    // The emitted UBL re-parses and preserves the canonical values.
-    let again = engine
-        .to_hub(Spoke::UblInvoice, xml.as_bytes())
-        .expect("re-parse emitted UBL")
-        .value
-        .expect("hub");
-    assert_eq!(again.invoice_number.as_deref(), Some("RE-2026-04-0042"));
-    assert_eq!(again.document_currency.as_deref(), Some("EUR"));
-    assert_eq!(
-        again.payable_amount,
-        Some(Decimal::from_str("1190.00").unwrap())
-    );
-    assert_eq!(again.invoice_lines.len(), 2);
-}
-
-/// Every start tag's *local* name, in document order.
-fn start_tags(xml: &[u8]) -> Vec<String> {
-    let mut reader = Reader::from_reader(xml);
-    let mut buf = Vec::new();
-    let mut tags = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf).expect("well-formed") {
-            Event::Start(e) | Event::Empty(e) => {
-                tags.push(String::from_utf8_lossy(e.local_name().as_ref()).into_owned());
-            }
-            Event::Eof => return tags,
-            _ => {}
-        }
-        buf.clear();
-    }
-}
-
-/// Whether `needle` occurs in `hay` as a (not necessarily contiguous) subsequence.
-fn is_subsequence(needle: &[String], hay: &[String]) -> bool {
-    let mut it = hay.iter();
-    needle.iter().all(|n| it.any(|h| h == n))
-}
-
-#[test]
-fn test_transform_emits_elements_in_the_fixtures_schema_order() {
-    // The fixture is a real, schema-valid XRechnung, so its element sequence
-    // *is* the UBL sequence order. The writer emits a subset of those elements
-    // (the mapped ones), nested the same way, so the emitted start tags must
-    // read as a subsequence of the fixture's — anything alphabetical
-    // (`AccountingCustomerParty` before `CustomizationID`, `TaxTotal` after
-    // `LegalMonetaryTotal`) breaks this.
-    let input = xrechnung();
-    let engine = Engine::new();
-    let out = engine
-        .transform(Spoke::UblInvoice, Spoke::UblInvoice, &input)
-        .expect("fixture is well-formed XML");
-    assert!(!out.has_errors(), "{:?}", out.diagnostics);
-    let xml = out.value.expect("writer yields a document");
-
-    let emitted = start_tags(xml.as_bytes());
-    let fixture = start_tags(&input);
-    assert!(
-        is_subsequence(&emitted, &fixture),
-        "emitted element order diverges from the schema order:\n{emitted:?}\nvs fixture\n{fixture:?}"
-    );
-
-    // And the top level, spelled out.
-    let mut depth = 0usize;
-    let mut top_level = Vec::new();
-    let mut reader = Reader::from_str(&xml);
-    loop {
-        match reader.read_event().expect("well-formed") {
-            Event::Start(e) => {
-                if depth == 1 {
-                    top_level.push(String::from_utf8_lossy(e.local_name().as_ref()).into_owned());
-                }
-                depth += 1;
-            }
-            Event::Empty(e) => {
-                if depth == 1 {
-                    top_level.push(String::from_utf8_lossy(e.local_name().as_ref()).into_owned());
-                }
-            }
-            Event::End(_) => depth -= 1,
-            Event::Eof => break,
-            _ => {}
-        }
-    }
-    assert_eq!(
-        top_level,
-        [
-            "CustomizationID",
-            "ProfileID",
-            "ID",
-            "IssueDate",
-            "DueDate",
-            "InvoiceTypeCode",
-            "DocumentCurrencyCode",
-            "BuyerReference",
-            "AccountingSupplierParty",
-            "AccountingCustomerParty",
-            "PaymentMeans",
-            "TaxTotal",
-            "LegalMonetaryTotal",
-            "InvoiceLine",
-            "InvoiceLine",
-        ]
-    );
-}
-
-#[test]
-fn test_cii_dates_round_trip_through_the_format_102_codec() {
-    // UBL ISO dates become CII format-102 dates with the wire attribute on the
-    // way out, and come back as ISO dates on the way in.
+fn test_cii_dates_are_written_in_the_format_102_wire_form() {
+    // UBL ISO dates become CII format-102 dates, wire attribute included. The
+    // XSD only requires *a* `format`; the codec pins its value and lexical
+    // form. (Reading them back as ISO dates is the derived round trip.)
     let engine = Engine::new();
     let facturx = engine
         .transform(Spoke::UblInvoice, Spoke::FacturxInvoice, &xrechnung())
@@ -183,24 +74,6 @@ fn test_cii_dates_round_trip_through_the_format_102_codec() {
     assert!(
         xml.contains(r#"<udt:DateTimeString format="102">20260515</udt:DateTimeString>"#),
         "due date: {xml}"
-    );
-    assert!(
-        !xml.contains("2026-04-15"),
-        "no ISO date leaks into CII: {xml}"
-    );
-
-    let back = engine
-        .transform(Spoke::FacturxInvoice, Spoke::UblInvoice, xml.as_bytes())
-        .expect("emitted Factur-X is well-formed");
-    assert!(!back.has_errors(), "{:?}", back.diagnostics);
-    let ubl = back.value.expect("document");
-    assert!(
-        ubl.contains("<cbc:IssueDate>2026-04-15</cbc:IssueDate>"),
-        "{ubl}"
-    );
-    assert!(
-        ubl.contains("<cbc:DueDate>2026-05-15</cbc:DueDate>"),
-        "{ubl}"
     );
 }
 
@@ -312,30 +185,18 @@ fn test_tax_scheme_constant_is_not_written_without_its_owner() {
 }
 
 #[test]
-fn test_cii_output_pins_vat_type_codes_and_materializes_the_delivery_element() {
+fn test_cii_output_pins_the_vat_type_code() {
+    // The XSD requires a TypeCode in every tax group but leaves its value
+    // open; the mapping pins `VAT`.
     let engine = Engine::new();
     let out = engine
         .transform(Spoke::UblInvoice, Spoke::FacturxInvoice, &xrechnung())
         .expect("fixture is well-formed XML");
     assert!(!out.has_errors(), "{:?}", out.diagnostics);
     let xml = out.value.expect("document");
-    assert!(
-        xml.contains("<ram:ApplicableHeaderTradeAgreement>"),
-        "{xml}"
-    );
-    // Mandatory even though the fixture has no delivery data.
-    assert!(
-        xml.contains("</ram:ApplicableHeaderTradeAgreement><ram:ApplicableHeaderTradeDelivery/><ram:ApplicableHeaderTradeSettlement>"),
-        "{xml}"
-    );
-    // TypeCode precedes CategoryCode in every tax group, as the schema orders it.
     assert_eq!(
         xml.matches("<ram:TypeCode>VAT</ram:TypeCode>").count(),
         3,
         "two line taxes + one header breakdown: {xml}"
-    );
-    assert!(
-        xml.contains("<ram:CalculatedAmount>190.00</ram:CalculatedAmount><ram:TypeCode>VAT</ram:TypeCode><ram:BasisAmount>1000.00</ram:BasisAmount>"),
-        "{xml}"
     );
 }

@@ -48,13 +48,21 @@
 //! which spokes define each; with a format it shows that spoke's covered keys and
 //! the hub keys it does not yet map (candidates to add). See [`crate::keys`].
 //!
+//! `krab-cli --check [ROOT]` runs the schema-conformance checks the mappings
+//! declare (`[meta.schema]`, `[[meta.samples]]`): every sample validates
+//! against its reader's XSD, and written by every spoke with a schema it
+//! validates against that spoke's XSD (up to its `known_gaps`) and round-trips
+//! its covered keys. Paths resolve under ROOT (default: the current
+//! directory); a failure exits 65 with the report on stderr. See
+//! [`crate::conformance`].
+//!
 //! # Testing
 //!
 //! Unit tests live beside each submodule: argument parsing (including error
 //! paths) in [`parse`], case-insensitive format resolution and detection in
-//! [`detect`], diagnostic and list rendering in [`render`], and the `--analyze` /
-//! `--keys` outputs in [`run`]. Integration tests in `tests/cli.rs` drive [`run`]
-//! end to end against the bundled spokes.
+//! [`detect`], diagnostic and list rendering in [`render`], and the
+//! `--analyze` / `--keys` / `--check` outputs in [`run`]. Integration tests in
+//! `tests/cli.rs` drive [`run`] end to end against the bundled spokes.
 
 mod command;
 mod detect;
@@ -68,4 +76,4 @@ pub use detect::{detect_source, resolve_spoke};
 pub use error::CliError;
 pub use parse::parse_args;
 pub use render::{format_list, render_diagnostics, usage};
-pub use run::{analyze_output, run, write_output_file};
+pub use run::{analyze_output, check_output, run, write_output_file};

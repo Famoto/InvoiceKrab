@@ -7,14 +7,17 @@
 //! first) and `config/mappings/*.toml` (the spokes). This module owns that
 //! loading so the two can never diverge: scanning `*.toml`, parsing, resolving
 //! each spoke's `[meta].inherits` chain (ancestor-first), skipping
-//! `disabled = true` inherit-only bases, and deriving each spoke's slug from
-//! `[meta].doc_format`.
+//! `disabled = true` inherit-only bases, deriving each spoke's slug from
+//! `[meta].doc_format`, and checking the files the mappings declare for their
+//! schema conformance checks.
 //!
 //! # Structure
 //!
-//! - [`LoadedSpoke`] — one emitted spoke: its slug and owned mapping chain.
-//! - [`LoadOutput`] — the codec table, the loaded spokes, and the scanned file
-//!   paths (the build script registers those for `rerun-if-changed`).
+//! - [`LoadedSpoke`] — one emitted spoke: its slug, owned mapping chain, and
+//!   the sample documents it reads.
+//! - [`LoadOutput`] — the codec table, the loaded spokes, the scanned file
+//!   paths and the declared data files (the build script registers both for
+//!   `rerun-if-changed`), and the workspace root.
 //! - [`load_config`] — load a `config/` directory: codecs, then mappings.
 //! - [`load_dir`] — scan + parse + chain-resolve one mappings directory.
 //! - [`slug_of`] — `doc_format` → `snake_case` Rust module id.
@@ -26,10 +29,19 @@
 //! `inherits`) are fatal [`ConfigError`]s: loading cannot proceed past them. A
 //! missing `codecs/` directory simply means no codecs.
 //!
+//! The paths in `[meta.schema]` and `[[meta.samples]]` are relative to the
+//! workspace root — for [`load_config`], the parent of the `config/` directory.
+//! Every one must name an existing file (E100), and every sample must resolve
+//! to the emitted spoke that reads it (E101): its `source` (a mapping id or a
+//! bare `doc_format`), else the declaring mapping, which must then not be an
+//! inherit-only base. These checks report every problem at once, as one
+//! [`ConfigError`] with a line per problem naming the mapping file.
+//!
 //! # Testing
 //!
 //! Unit tests cover chain resolution, disabled-base skipping, slug derivation,
-//! and each structural error path, over temp directories.
+//! sample resolution and the declared-file checks, and each structural error
+//! path, over temp directories.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -38,8 +50,8 @@ use crate::codec::{CodecTable, parse_codecs};
 use crate::error::ConfigError;
 use crate::parse::{ParsedMapping, parse_mapping};
 
-/// One emitted spoke: its meta-derived slug and its inheritance chain
-/// (ancestor-first, leaf-last).
+/// One emitted spoke: its meta-derived slug, its inheritance chain
+/// (ancestor-first, leaf-last), and the sample documents it reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedSpoke {
     /// `snake_case` module id derived from `[meta].doc_format` (e.g.
@@ -47,6 +59,11 @@ pub struct LoadedSpoke {
     pub slug: String,
     /// The mapping chain, ancestor-first and leaf-last.
     pub chain: Vec<ParsedMapping>,
+    /// The `[[meta.samples]]` files this spoke reads, workspace-relative as
+    /// declared: its own samples without a `source`, and those any mapping
+    /// declares with a `source` naming it. Mappings in id order, each one's
+    /// samples in declaration order, duplicates dropped.
+    pub samples: Vec<String>,
 }
 
 /// The result of loading a configuration (or a bare mappings directory).
@@ -58,17 +75,35 @@ pub struct LoadOutput {
     pub spokes: Vec<LoadedSpoke>,
     /// Every `*.toml` file scanned, sorted (for build-script change tracking).
     pub files: Vec<PathBuf>,
+    /// Every file a `[meta.schema]` or `[[meta.samples]]` entry declares,
+    /// resolved under [`Self::root`], sorted and de-duplicated (for
+    /// build-script change tracking).
+    pub declared_files: Vec<PathBuf>,
+    /// The workspace root the declared paths are relative to.
+    pub root: PathBuf,
 }
 
 /// Loads a `config/` directory: the codecs from `<dir>/codecs/*.toml` (if the
 /// directory exists), then the spoke mappings from `<dir>/mappings/*.toml` via
-/// [`load_dir`].
+/// [`load_dir`], with the parent of `dir` as the workspace root.
 ///
 /// # Errors
 ///
-/// Everything [`load_dir`] fails on, plus an unreadable codecs directory or
-/// file, an invalid codec file, or a codec id declared in more than one file.
+/// Everything [`load_dir`] fails on, plus a `dir` that cannot be resolved, an
+/// unreadable codecs directory or file, an invalid codec file, or a codec id
+/// declared in more than one file.
 pub fn load_config(dir: &Path) -> Result<LoadOutput, ConfigError> {
+    // Canonical first, so `config`, `./config` and `.` all find their parent.
+    let root = std::fs::canonicalize(dir)
+        .map_err(|e| ConfigError::msg(format!("cannot read `{}`: {e}", dir.display())))?
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            ConfigError::msg(format!(
+                "`{}` has no parent directory to serve as the workspace root",
+                dir.display()
+            ))
+        })?;
     let codecs_dir = dir.join("codecs");
     let mut codecs = CodecTable::new();
     let mut codec_files: Vec<PathBuf> = Vec::new();
@@ -91,13 +126,13 @@ pub fn load_config(dir: &Path) -> Result<LoadOutput, ConfigError> {
             }
         }
     }
-    let mappings = load_dir(&dir.join("mappings"))?;
+    let mappings = load_dir(&dir.join("mappings"), &root)?;
     let mut files = codec_files;
     files.extend(mappings.files);
     Ok(LoadOutput {
         codecs,
-        spokes: mappings.spokes,
         files,
+        ..mappings
     })
 }
 
@@ -116,20 +151,25 @@ fn toml_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
 }
 
 /// Loads every spoke mapping from `dir`: scans `*.toml`, parses each file,
-/// resolves `inherits` chains, skips `disabled` inherit-only bases, and derives
-/// slugs from `[meta].doc_format`. The returned codec table is empty.
+/// resolves `inherits` chains, skips `disabled` inherit-only bases, derives
+/// slugs from `[meta].doc_format`, and checks the declared schema and sample
+/// files under the workspace `root`. The returned codec table is empty.
 ///
 /// # Errors
 ///
 /// Fails on an unreadable directory or file, a TOML parse error, two mappings
 /// sharing an id or slug, an `inherits` reference to an unknown mapping, or an
-/// inheritance cycle.
-pub fn load_dir(dir: &Path) -> Result<LoadOutput, ConfigError> {
+/// inheritance cycle. Then, all reported together: a declared schema or
+/// sample path that is absolute or names no file under `root` (E100), and a
+/// sample no emitted spoke reads (E101).
+pub fn load_dir(dir: &Path, root: &Path) -> Result<LoadOutput, ConfigError> {
     let files = toml_files(dir)?;
 
     // Parse every mapping first, keyed by its mapping id, so a spoke's
-    // `inherits` can resolve to an ancestor regardless of file order.
+    // `inherits` can resolve to an ancestor regardless of file order. The
+    // file each came from names it in the declared-file diagnostics.
     let mut by_id: BTreeMap<String, ParsedMapping> = BTreeMap::new();
+    let mut file_of: BTreeMap<String, &Path> = BTreeMap::new();
     for path in &files {
         let src = std::fs::read_to_string(path)
             .map_err(|e| ConfigError::msg(format!("cannot read `{}`: {e}", path.display())))?;
@@ -141,6 +181,7 @@ pub fn load_dir(dir: &Path) -> Result<LoadOutput, ConfigError> {
                 "two spokes share the same mapping id `{id}`"
             )));
         }
+        file_of.insert(id, path);
     }
     if by_id.is_empty() {
         return Err(ConfigError::msg(format!(
@@ -167,15 +208,103 @@ pub fn load_dir(dir: &Path) -> Result<LoadOutput, ConfigError> {
         spokes.push(LoadedSpoke {
             slug,
             chain: resolve_chain(id, &by_id)?,
+            samples: Vec::new(),
         });
     }
     spokes.sort_by(|a, b| a.slug.cmp(&b.slug));
+
+    // The conformance declarations: every declared file must exist, every
+    // sample must have a reader. All problems are reported together.
+    let mut problems: Vec<String> = Vec::new();
+    let mut declared_files: Vec<PathBuf> = Vec::new();
+    for (id, mapping) in &by_id {
+        let file = file_of[id].display();
+        let meta = &mapping.meta;
+        let mut declared: Vec<(&str, &str)> = Vec::new();
+        if let Some(schema) = &meta.schema {
+            declared.push(("[meta.schema].xsd", &schema.xsd));
+            if let Some(catalog) = &schema.catalog {
+                declared.push(("[meta.schema].catalog", catalog));
+            }
+        }
+        for sample in &meta.samples {
+            declared.push(("[[meta.samples]].file", &sample.file));
+        }
+        for (field, path) in declared {
+            match declared_file(root, path) {
+                Ok(resolved) => declared_files.push(resolved),
+                Err(why) => problems.push(format!("{file}: E100: {field} `{path}` {why}")),
+            }
+        }
+
+        for sample in &meta.samples {
+            let reader = match &sample.source {
+                Some(source) => emitted_spoke(source, &by_id).ok_or_else(|| {
+                    format!(
+                        "sample `{}` names source `{source}`, which is no emitted spoke (a mapping id or a `doc_format` of a mapping that is not `disabled`)",
+                        sample.file
+                    )
+                }),
+                None if meta.disabled => Err(format!(
+                    "sample `{}` is declared on an inherit-only base, which reads nothing: name the spoke that reads it with `source`",
+                    sample.file
+                )),
+                None => slug_of(&meta.doc_format).map_err(|e| e.message),
+            };
+            match reader {
+                Ok(slug) => {
+                    let spoke = spokes
+                        .iter_mut()
+                        .find(|s| s.slug == slug)
+                        .expect("an emitted mapping's slug names a loaded spoke");
+                    if !spoke.samples.contains(&sample.file) {
+                        spoke.samples.push(sample.file.clone());
+                    }
+                }
+                Err(why) => problems.push(format!("{file}: E101: {why}")),
+            }
+        }
+    }
+    if !problems.is_empty() {
+        return Err(ConfigError::msg(problems.join("\n")));
+    }
+    declared_files.sort();
+    declared_files.dedup();
 
     Ok(LoadOutput {
         codecs: CodecTable::new(),
         spokes,
         files,
+        declared_files,
+        root: root.to_path_buf(),
     })
+}
+
+/// Resolves a declared workspace-relative `path` under `root`, or says why it
+/// cannot be used: it is absolute, or no file exists there.
+fn declared_file(root: &Path, path: &str) -> Result<PathBuf, String> {
+    if Path::new(path).is_absolute() {
+        return Err("must be relative to the workspace root, not absolute".to_string());
+    }
+    let resolved = root.join(path);
+    if resolved.is_file() {
+        Ok(resolved)
+    } else {
+        Err(format!(
+            "does not exist (paths are relative to the workspace root `{}`)",
+            root.display()
+        ))
+    }
+}
+
+/// The slug of the emitted (not `disabled`) mapping `name` identifies: its
+/// mapping id, or its bare `doc_format`.
+fn emitted_spoke(name: &str, by_id: &BTreeMap<String, ParsedMapping>) -> Option<String> {
+    by_id
+        .iter()
+        .filter(|(_, m)| !m.meta.disabled)
+        .find(|(id, m)| id.as_str() == name || m.meta.doc_format == name)
+        .and_then(|(_, m)| slug_of(&m.meta.doc_format).ok())
 }
 
 /// A mapping's identity, mirroring `build_ir`'s `source_model` fallback: the
@@ -285,7 +414,7 @@ mod tests {
             ("base", &meta("base-fmt", "")),
             ("child", &meta("child-fmt", r#"inherits = "base-fmt:1""#)),
         ]);
-        let out = load_dir(&dir).expect("loads");
+        let out = load_dir(&dir, &dir).expect("loads");
         assert_eq!(out.spokes.len(), 2);
         let child = out
             .spokes
@@ -303,7 +432,7 @@ mod tests {
             ("base", &meta("base-fmt", "disabled = true")),
             ("child", &meta("child-fmt", r#"inherits = "base-fmt:1""#)),
         ]);
-        let out = load_dir(&dir).expect("loads");
+        let out = load_dir(&dir, &dir).expect("loads");
         // The disabled base emits no spoke but still parents the child's chain.
         assert_eq!(out.spokes.len(), 1);
         assert_eq!(out.spokes[0].slug, "child_fmt");
@@ -313,7 +442,7 @@ mod tests {
     #[test]
     fn test_load_dir_unknown_parent_is_error() {
         let dir = dir_with(&[("child", &meta("child-fmt", r#"inherits = "ghost:1""#))]);
-        let err = load_dir(&dir).unwrap_err();
+        let err = load_dir(&dir, &dir).unwrap_err();
         assert!(err.message.contains("unknown parent"), "{}", err.message);
     }
 
@@ -323,28 +452,28 @@ mod tests {
             ("a", &meta("a-fmt", r#"inherits = "b-fmt:1""#)),
             ("b", &meta("b-fmt", r#"inherits = "a-fmt:1""#)),
         ]);
-        let err = load_dir(&dir).unwrap_err();
+        let err = load_dir(&dir, &dir).unwrap_err();
         assert!(err.message.contains("cycle"), "{}", err.message);
     }
 
     #[test]
     fn test_load_dir_duplicate_mapping_id_is_error() {
         let dir = dir_with(&[("a", &meta("same-fmt", "")), ("b", &meta("same-fmt", ""))]);
-        let err = load_dir(&dir).unwrap_err();
+        let err = load_dir(&dir, &dir).unwrap_err();
         assert!(err.message.contains("same mapping id"), "{}", err.message);
     }
 
     #[test]
     fn test_load_dir_empty_dir_is_error() {
         let dir = dir_with(&[]);
-        let err = load_dir(&dir).unwrap_err();
+        let err = load_dir(&dir, &dir).unwrap_err();
         assert!(err.message.contains("no `*.toml`"), "{}", err.message);
     }
 
     #[test]
     fn test_load_dir_lists_scanned_files_sorted() {
         let dir = dir_with(&[("b", &meta("b-fmt", "")), ("a", &meta("a-fmt", ""))]);
-        let out = load_dir(&dir).expect("loads");
+        let out = load_dir(&dir, &dir).expect("loads");
         let names: Vec<_> = out
             .files
             .iter()
@@ -413,6 +542,174 @@ mod tests {
         let err = load_config(&dir).unwrap_err();
         assert!(err.message.contains("bad.toml"), "{}", err.message);
         assert!(err.message.contains("`MM` is required"), "{}", err.message);
+    }
+
+    /// Writes `body` to `<dir>/<rel>`, creating its parent directories.
+    fn touch(dir: &Path, rel: &str, body: &str) {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn test_load_dir_attributes_samples_to_their_reader_and_lists_declared_files() {
+        let dir = dir_with(&[
+            (
+                "base",
+                &meta(
+                    "base-fmt",
+                    "[meta.schema]\nxsd = \"xsd/base.xsd\"\ncatalog = \"xsd/catalog.xml\"\n[[meta.samples]]\nfile = \"docs/base.xml\"\n[[meta.samples]]\nfile = \"docs/child.xml\"\nsource = \"child-fmt\"",
+                ),
+            ),
+            (
+                "child",
+                &meta(
+                    "child-fmt",
+                    "inherits = \"base-fmt:1\"\n[[meta.samples]]\nfile = \"docs/child.xml\"\n[[meta.samples]]\nfile = \"docs/other.xml\"",
+                ),
+            ),
+        ]);
+        for rel in [
+            "xsd/base.xsd",
+            "xsd/catalog.xml",
+            "docs/base.xml",
+            "docs/child.xml",
+            "docs/other.xml",
+        ] {
+            touch(&dir, rel, "<x/>");
+        }
+        let out = load_dir(&dir, &dir).expect("loads");
+        assert_eq!(out.root, dir);
+        let samples = |slug: &str| {
+            out.spokes
+                .iter()
+                .find(|s| s.slug == slug)
+                .expect("spoke")
+                .samples
+                .clone()
+        };
+        assert_eq!(samples("base_fmt"), ["docs/base.xml"]);
+        assert_eq!(
+            samples("child_fmt"),
+            ["docs/child.xml", "docs/other.xml"],
+            "`source` attributes a sample to its reader; a duplicate is dropped"
+        );
+        let declared: Vec<_> = out
+            .declared_files
+            .iter()
+            .map(|p| p.strip_prefix(&dir).unwrap().to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            declared,
+            [
+                "docs/base.xml",
+                "docs/child.xml",
+                "docs/other.xml",
+                "xsd/base.xsd",
+                "xsd/catalog.xml"
+            ],
+            "sorted, de-duplicated, resolved under the root"
+        );
+    }
+
+    #[test]
+    fn test_load_dir_sample_source_may_be_a_mapping_id_on_an_inherit_only_base() {
+        let dir = dir_with(&[
+            (
+                "base",
+                &meta(
+                    "base-fmt",
+                    "disabled = true\n[[meta.samples]]\nfile = \"doc.xml\"\nsource = \"child-fmt:1\"",
+                ),
+            ),
+            ("child", &meta("child-fmt", r#"inherits = "base-fmt:1""#)),
+        ]);
+        touch(&dir, "doc.xml", "<x/>");
+        let out = load_dir(&dir, &dir).expect("loads");
+        assert_eq!(out.spokes.len(), 1);
+        assert_eq!(out.spokes[0].samples, ["doc.xml"]);
+    }
+
+    #[test]
+    fn test_load_dir_missing_or_absolute_declared_file_is_e100_naming_the_mapping() {
+        let dir = dir_with(&[(
+            "base",
+            &meta(
+                "base-fmt",
+                "[meta.schema]\nxsd = \"xsd/missing.xsd\"\ncatalog = \"/abs/catalog.xml\"\n[[meta.samples]]\nfile = \"docs/missing.xml\"",
+            ),
+        )]);
+        let err = load_dir(&dir, &dir).unwrap_err();
+        let lines: Vec<&str> = err.message.lines().collect();
+        assert_eq!(lines.len(), 3, "every problem at once: {}", err.message);
+        for line in &lines {
+            assert!(line.contains("base.toml: E100:"), "{line}");
+        }
+        assert!(
+            lines[0].contains("[meta.schema].xsd `xsd/missing.xsd` does not exist"),
+            "{}",
+            lines[0]
+        );
+        assert!(lines[1].contains("not absolute"), "{}", lines[1]);
+        assert!(lines[2].contains("[[meta.samples]].file"), "{}", lines[2]);
+    }
+
+    #[test]
+    fn test_load_dir_sample_without_a_reader_is_e101() {
+        let dir = dir_with(&[
+            (
+                "base",
+                &meta(
+                    "base-fmt",
+                    "disabled = true\n[[meta.samples]]\nfile = \"doc.xml\"",
+                ),
+            ),
+            (
+                "child",
+                &meta(
+                    "child-fmt",
+                    "inherits = \"base-fmt:1\"\n[[meta.samples]]\nfile = \"doc.xml\"\nsource = \"ghost-fmt\"\n[[meta.samples]]\nfile = \"doc.xml\"\nsource = \"base-fmt\"",
+                ),
+            ),
+        ]);
+        touch(&dir, "doc.xml", "<x/>");
+        let err = load_dir(&dir, &dir).unwrap_err();
+        let lines: Vec<&str> = err.message.lines().collect();
+        assert_eq!(lines.len(), 3, "{}", err.message);
+        assert!(
+            lines[0].contains("base.toml: E101:") && lines[0].contains("inherit-only base"),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            lines[1].contains("child.toml: E101:") && lines[1].contains("`ghost-fmt`"),
+            "{}",
+            lines[1]
+        );
+        assert!(
+            lines[2].contains("`base-fmt`"),
+            "a disabled base reads nothing: {}",
+            lines[2]
+        );
+    }
+
+    #[test]
+    fn test_load_config_resolves_declared_paths_under_the_parent_of_the_config_dir() {
+        let workspace = dir_with(&[]);
+        let config = workspace.join("config");
+        std::fs::create_dir_all(config.join("mappings")).unwrap();
+        std::fs::write(
+            config.join("mappings/base.toml"),
+            meta("base-fmt", "[meta.schema]\nxsd = \"testfiles/base.xsd\""),
+        )
+        .unwrap();
+        touch(&workspace, "testfiles/base.xsd", "<xs:schema/>");
+        let out = load_config(&config).expect("loads");
+        assert_eq!(out.root, workspace.canonicalize().unwrap());
+        assert_eq!(
+            out.declared_files,
+            [workspace.canonicalize().unwrap().join("testfiles/base.xsd")]
+        );
     }
 
     #[test]
