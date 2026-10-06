@@ -8,9 +8,8 @@
 //!
 //! Required fields (`doc_format`, `format_version`, `mapping_version`,
 //! `source_model`, `canonical_model`) are enforced by deserialization; the
-//! optional `inherits` and `description` default to `None`, `detect`
-//! (the auto-detection markers) defaults to empty, and `disabled` (inherit-only
-//! base, emits no spoke) defaults to `false`. Unknown keys are rejected
+//! optional `inherits` and `description` default to `None`, and `disabled`
+//! (inherit-only base, emits no spoke) defaults to `false`. Unknown keys are rejected
 //! (E001), so unsupported metadata never enters the compiler pipeline.
 //!
 //! # Namespaces
@@ -44,6 +43,16 @@
 //!   names another one. Never inherited.
 //!
 //! Paths are workspace-relative; the loader checks they exist.
+//!
+//! # Document identity
+//!
+//! `[meta.identity]` ([`IdentityMeta`]) states what a document must declare to
+//! be read by the spoke: the exact specification (profile) identifiers it
+//! supports, the versions it supports, and the mandatory identity attributes of
+//! the root. Together with the root's namespace URI (`[meta.namespaces]` at
+//! `root_ns`) and local name (`root`), it is checked on every read — whether
+//! the source format was auto-detected or named explicitly — and it is what
+//! auto-detection matches. **Inherited** whole, like `[meta.schema]`.
 
 use std::collections::BTreeMap;
 
@@ -88,6 +97,36 @@ pub struct SchemaMeta {
     pub refuses: Vec<String>,
 }
 
+/// The `[meta.identity]` table: what a document must declare about itself to
+/// be read by the spoke. Every value is matched exactly (after trimming the
+/// element text) — no substrings, no case folding.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityMeta {
+    /// Dotted element path, under the root, of the element whose text names
+    /// the specification the document follows (UBL `CustomizationID`, CII
+    /// `ExchangedDocumentContext.GuidelineSpecifiedDocumentContextParameter.ID`,
+    /// EN 16931 BT-24). When set, the element is mandatory and its text must be
+    /// one of [`Self::profiles`].
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// The exact profile identifiers the spoke supports.
+    #[serde(default)]
+    pub profiles: Vec<String>,
+    /// Dotted element path, under the root, of an optional version element
+    /// (UBL `UBLVersionID`). When the document carries it, its text must be one
+    /// of [`Self::versions`].
+    #[serde(default)]
+    pub version: Option<String>,
+    /// The exact version values the spoke supports.
+    #[serde(default)]
+    pub versions: Vec<String>,
+    /// Mandatory unqualified attributes of the root element and the exact values
+    /// each may take (FatturaPA `versione`).
+    #[serde(default)]
+    pub attributes: BTreeMap<String, Vec<String>>,
+}
+
 /// One `[[meta.samples]]` entry: a document that must be schema-valid itself and
 /// must round-trip through every emitting spoke.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -124,14 +163,6 @@ pub struct MappingMeta {
     /// synthesized model's id; defaults to `doc_format:format_version`.
     #[serde(default)]
     pub source_model: Option<String>,
-    /// Optional discriminator substrings used to recognize this format when a
-    /// caller must auto-detect the source format of a document. Matched
-    /// case-insensitively against the document's `CustomizationID` (EN16931
-    /// BT-24); a format whose marker is present is preferred over a generic
-    /// format that declares none. A base format (e.g. plain UBL) leaves this
-    /// empty and acts as the fallback.
-    #[serde(default)]
-    pub detect: Vec<String>,
     /// Optional parent mapping id this file inherits from.
     #[serde(default)]
     pub inherits: Option<String>,
@@ -164,6 +195,11 @@ pub struct MappingMeta {
     /// emitting spoke. Never inherited.
     #[serde(default)]
     pub samples: Vec<SampleMeta>,
+    /// What a document must declare to be read by this spoke (profile,
+    /// version, root identity attributes). Inherited whole from the parent
+    /// when omitted.
+    #[serde(default)]
+    pub identity: Option<IdentityMeta>,
 }
 
 impl MappingMeta {
@@ -191,6 +227,23 @@ impl MappingMeta {
         if self.schema.is_none() {
             self.schema = parent.schema.clone();
         }
+    }
+
+    /// Fills in `[meta.identity]` from `parent` when this meta omits it.
+    /// Inherited whole: a child's own table replaces the parent's.
+    pub fn inherit_identity(&mut self, parent: &MappingMeta) {
+        if self.identity.is_none() {
+            self.identity = parent.identity.clone();
+        }
+    }
+
+    /// The namespace URI of the root element: the `[meta.namespaces]` entry of
+    /// its prefix (`root_ns`), or `None` when the root is in no namespace.
+    pub fn root_namespace(&self) -> Option<&str> {
+        self.namespaces
+            .as_ref()
+            .and_then(|ns| ns.get(self.root_prefix()))
+            .map(String::as_str)
     }
 
     /// The effective root prefix (`""` when unset).
@@ -245,16 +298,42 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_defaults_empty_and_parses_list() {
+    fn test_identity_defaults_none_and_parses() {
         let meta: MappingMeta = toml::from_str(required_only()).unwrap();
-        assert!(meta.detect.is_empty());
+        assert_eq!(meta.identity, None);
 
-        let src = format!("{}\ndetect = [\"xrechnung\", \"cius\"]", required_only());
-        let meta: MappingMeta = toml::from_str(&src).unwrap();
-        assert_eq!(
-            meta.detect,
-            vec!["xrechnung".to_string(), "cius".to_string()]
+        let src = format!(
+            "{}\n[identity]\nprofile = \"CustomizationID\"\nprofiles = [\"urn:a\"]\nversion = \"UBLVersionID\"\nversions = [\"2.1\"]\n[identity.attributes]\nversione = [\"FPA12\"]",
+            required_only()
         );
+        let meta: MappingMeta = toml::from_str(&src).unwrap();
+        let identity = meta.identity.expect("identity");
+        assert_eq!(identity.profile.as_deref(), Some("CustomizationID"));
+        assert_eq!(identity.profiles, ["urn:a"]);
+        assert_eq!(identity.version.as_deref(), Some("UBLVersionID"));
+        assert_eq!(identity.versions, ["2.1"]);
+        assert_eq!(identity.attributes["versione"], ["FPA12"]);
+    }
+
+    #[test]
+    fn test_detect_is_rejected() {
+        // Substring markers were replaced by exact `[meta.identity]` values.
+        let src = format!("{}\ndetect = [\"xrechnung\"]", required_only());
+        assert!(toml::from_str::<MappingMeta>(&src).is_err());
+    }
+
+    #[test]
+    fn test_inherit_identity_and_root_namespace() {
+        let parent: MappingMeta = toml::from_str(&format!(
+            "{}\nroot_ns = \"p\"\n[namespaces]\np = \"urn:p\"\n[identity]\nprofile = \"X\"\nprofiles = [\"a\"]",
+            required_only()
+        ))
+        .unwrap();
+        assert_eq!(parent.root_namespace(), Some("urn:p"));
+        let mut child: MappingMeta = toml::from_str(required_only()).unwrap();
+        assert_eq!(child.root_namespace(), None);
+        child.inherit_identity(&parent);
+        assert_eq!(child.identity, parent.identity);
     }
 
     #[test]

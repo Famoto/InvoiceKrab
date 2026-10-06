@@ -6,7 +6,7 @@
 # document as defined by *Universal Business Language Version 2.5* (the `Invoice`
 # schema, §3.2.45, assembled from the common `cac:`/`cbc:` library, §3.3). It is
 # the generic, profile-neutral peer of `xrechnung.toml`: same UBL element tree,
-# but without any CIUS-specific requirements or detection markers.
+# but without any CIUS-specific requirements.
 #
 # One TOML compiles to: a typed `Invoice` source struct (synthesized by the
 # compiler from the node ids, which mirror the XML element tree), the
@@ -58,8 +58,6 @@ mapping_version = "2.5"
 source_model = "ubl-invoice:2.1"
 canonical_model = "canonical-invoice:1.0"
 root = "Invoice"
-# No detection markers: this base UBL spoke is the fallback when a more specific
-# CIUS (XRechnung, Peppol) does not claim the document by its CustomizationID.
 
 # Namespaces (write side): the root sits in the default UBL Invoice namespace,
 # basic components (leaves) are `cbc:`, aggregates `cac:`. Declared once here and
@@ -72,6 +70,19 @@ cac = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
 [meta.ns_defaults]
 leaf = "cbc"
 aggregate = "cac"
+
+# Document identity, checked on every read (auto-detected or `--from`) and
+# matched by auto-detection, together with the root's namespace URI and local
+# name: an EN 16931 invoice names the specification it follows in its mandatory
+# `CustomizationID` (BT-24). This base spoke reads the plain EN 16931 core; a
+# CIUS identifier belongs to the CIUS's own spoke (XRechnung, Peppol restate
+# this table), so no document is read by two spokes. `UBLVersionID` is
+# optional, but when present must name the UBL version this mapping reads.
+[meta.identity]
+profile = "CustomizationID"
+profiles = ["urn:cen.eu:en16931:2017"]
+version = "UBLVersionID"
+versions = ["2.1"]
 
 # Schema conformance: every document this spoke writes (and every sample it
 # reads) must validate against the UBL 2.1 Invoice schema. Inherited by

@@ -38,15 +38,19 @@ mapping_version = "2.0"
 source_model = "fatturapa:1.2.2"
 canonical_model = "canonical-invoice:1.0"
 root = "FatturaElettronica"
-# FatturaPA carries no EN 16931 CustomizationID; its distinct root element is what
-# distinguishes it, so it declares no CustomizationID-based marker.
-detect = []
 # The root is `p:FatturaElettronica`; every element beneath it is unqualified
 # (the schema's `elementFormDefault="unqualified"`), so no `ns_defaults`.
 root_ns = "p"
 
 [meta.namespaces]
 p = "http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2"
+
+# Document identity: FatturaPA carries no EN 16931 CustomizationID. Besides its
+# root (`FatturaElettronica` in the v1.2 namespace), a document identifies
+# itself by the mandatory `versione` attribute: FPA12 (to public
+# administrations) or FPR12 (between private parties), the two 1.2.x formats.
+[meta.identity.attributes]
+versione = ["FPA12", "FPR12"]
 
 # Schema conformance: written documents must validate against the FatturaPA
 # 1.2.2 schema. It imports xmldsig by absolute URL; the catalog maps that to

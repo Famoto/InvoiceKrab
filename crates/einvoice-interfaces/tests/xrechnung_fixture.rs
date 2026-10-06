@@ -1,7 +1,8 @@
-//! Integration test: read the real XRechnung 3.0.2 sample through the UBL spoke.
+//! Integration test: read the real XRechnung 3.0.2 sample through the
+//! XRechnung spoke.
 //!
-//! The reference UBL mapping binds to namespace-*local* element names, so the
-//! same mapper reads a fully namespaced (`cbc:`/`cac:`) XRechnung document and
+//! The UBL-syntax mappings bind to namespace-*local* element names below the
+//! root, so the mapper reads a fully namespaced (`cbc:`/`cac:`) document and
 //! ignores the many elements the minimal spoke does not model. This pins that
 //! end-to-end behaviour against the checked-in fixture in `testfiles/`.
 //!
@@ -26,10 +27,24 @@ fn xrechnung() -> Vec<u8> {
 }
 
 #[test]
+fn test_explicit_source_format_still_checks_identity() {
+    // Naming the source format does not skip the identity check: the
+    // XRechnung sample declares the XRechnung CustomizationID, which the
+    // base UBL spoke does not read.
+    let err = Engine::new()
+        .to_hub(Spoke::UblInvoice, &xrechnung())
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("unsupported profile identifier"),
+        "{err}"
+    );
+}
+
+#[test]
 fn test_to_hub_reads_namespaced_xrechnung() {
     let engine = Engine::new();
     let result = engine
-        .to_hub(Spoke::UblInvoice, &xrechnung())
+        .to_hub(Spoke::XrechnungInvoice, &xrechnung())
         .expect("fixture is well-formed XML");
 
     assert!(!result.has_errors(), "{:?}", result.diagnostics);
@@ -68,7 +83,7 @@ fn test_cii_dates_are_written_in_the_format_102_wire_form() {
     // form. (Reading them back as ISO dates is the derived round trip.)
     let engine = Engine::new();
     let facturx = engine
-        .transform(Spoke::UblInvoice, Spoke::FacturxInvoice, &xrechnung())
+        .transform(Spoke::XrechnungInvoice, Spoke::FacturxInvoice, &xrechnung())
         .expect("fixture is well-formed XML");
     assert!(!facturx.has_errors(), "{:?}", facturx.diagnostics);
     let xml = facturx.value.expect("writer yields a document");
@@ -87,7 +102,7 @@ fn test_cii_date_codec_diagnostics_on_read() {
     let engine = Engine::new();
     // A date not in the codec's lexical form is a CODEC_INVALID error; a wire
     // attribute that disagrees with the codec is a CODEC_WIRE_MISMATCH warning.
-    let doc = br#"<CrossIndustryInvoice>
+    let doc = br#"<CrossIndustryInvoice xmlns="urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100"><ExchangedDocumentContext><GuidelineSpecifiedDocumentContextParameter><ID>urn:cen.eu:en16931:2017</ID></GuidelineSpecifiedDocumentContextParameter></ExchangedDocumentContext>
         <ExchangedDocument>
             <ID>INV-1</ID>
             <IssueDateTime><DateTimeString format="610">2026-04-15</DateTimeString></IssueDateTime>
@@ -132,7 +147,7 @@ fn test_cii_date_codec_diagnostics_on_read() {
 fn test_ubl_amounts_carry_the_document_currency_and_tax_schemes_are_pinned() {
     let engine = Engine::new();
     let out = engine
-        .transform(Spoke::UblInvoice, Spoke::UblInvoice, &xrechnung())
+        .transform(Spoke::XrechnungInvoice, Spoke::UblInvoice, &xrechnung())
         .expect("fixture is well-formed XML");
     assert!(!out.has_errors(), "{:?}", out.diagnostics);
     let xml = out.value.expect("writer yields a document");
@@ -167,7 +182,7 @@ fn test_tax_scheme_constant_is_not_written_without_its_owner() {
     // to complete, so no PartyTaxScheme is emitted — while the VAT categories,
     // which have content, each get their TaxScheme.
     let engine = Engine::new();
-    let doc = br#"<Invoice>
+    let doc = br#"<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"><CustomizationID>urn:cen.eu:en16931:2017</CustomizationID>
         <ID>INV-1</ID>
         <IssueDate>2026-04-15</IssueDate>
         <InvoiceTypeCode>380</InvoiceTypeCode>
@@ -208,7 +223,7 @@ fn test_cii_output_pins_the_vat_type_code() {
     // open; the mapping pins `VAT`.
     let engine = Engine::new();
     let out = engine
-        .transform(Spoke::UblInvoice, Spoke::FacturxInvoice, &xrechnung())
+        .transform(Spoke::XrechnungInvoice, Spoke::FacturxInvoice, &xrechnung())
         .expect("fixture is well-formed XML");
     assert!(!out.has_errors(), "{:?}", out.diagnostics);
     let xml = out.value.expect("document");

@@ -40,9 +40,9 @@ use std::path::{Path, PathBuf};
 use einvoice_dsl::compile::{CompileOutput, SpokeInput};
 use einvoice_dsl::ir::MappingIr;
 use einvoice_dsl::{
-    LoadedSpoke, SchemaMeta, Severity, SourceModelMeta, SpokeContract, SpokeDedupPlan, SpokeModule,
-    check_derivations, compile, generate_hub_with, load_config, plan_spoke_dedup, render_contract,
-    spoke_contract,
+    IdentityMeta, LoadedSpoke, SchemaMeta, Severity, SourceModelMeta, SpokeContract,
+    SpokeDedupPlan, SpokeModule, check_derivations, compile, generate_hub_with, load_config,
+    plan_spoke_dedup, render_contract, spoke_contract,
 };
 
 /// One discovered spoke: its meta-derived names plus its compiled artifacts.
@@ -53,12 +53,15 @@ struct Spoke {
     variant: String,
     /// Display id carried into `Spoke::name` (the source-model id from `[meta]`).
     name: String,
-    /// Discriminator substrings from `[meta].detect`, carried into
-    /// `Spoke::detect_markers` for source auto-detection.
-    detect: Vec<String>,
     /// The root XML element name (from `[meta].root`), carried into
-    /// `Spoke::root` as the primary signature for source auto-detection.
+    /// `Spoke::root` and `Spoke::identity`.
     root: String,
+    /// The root element's namespace URI (`[meta.namespaces]` at `root_ns`),
+    /// carried into `Spoke::identity`.
+    namespace: Option<String>,
+    /// The effective `[meta.identity]` (inherited by a CIUS), carried into
+    /// `Spoke::identity`.
+    identity: IdentityMeta,
     /// The compiled, normalized mapping IR.
     ir: MappingIr,
     /// The synthesized typed source model (input to codegen).
@@ -154,7 +157,7 @@ fn workspace_config_dir() -> PathBuf {
 }
 
 /// Builds the per-spoke codegen descriptors from a clean [`CompileOutput`]. Every
-/// name (`variant`, `name`, `detect`) is derived from the compiled IR's `[meta]`,
+/// name (`variant`, `name`, `root`) is derived from the compiled IR's `[meta]`,
 /// and the `ir` + `source` are the exact artifacts `compile` validated; the
 /// samples each spoke reads come from the loader (`loaded`).
 fn collect_spokes(out: &CompileOutput, loaded: &[LoadedSpoke]) -> Vec<Spoke> {
@@ -182,8 +185,9 @@ fn collect_spokes(out: &CompileOutput, loaded: &[LoadedSpoke]) -> Vec<Spoke> {
                 slug: slug.clone(),
                 variant: pascal_of(&meta.doc_format),
                 name,
-                detect: meta.detect.clone(),
                 root: source.root.clone(),
+                namespace: meta.root_namespace().map(str::to_string),
+                identity: meta.identity.clone().unwrap_or_default(),
                 ir: ir.clone(),
                 source,
                 contract,
@@ -266,21 +270,32 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
         |spoke| &spoke.name,
     );
 
-    // Auto-detection markers from `[meta].detect`.
+    // The document identity every read checks and auto-detection matches.
     out.push_str(
-        "    /// Case-insensitive discriminator substrings from `[meta].detect`.\n\
-         \x20\x20\x20\x20///\n\
-         \x20\x20\x20\x20/// A document matching one of a spoke's markers is recognized as that\n\
-         \x20\x20\x20\x20/// format in preference to a base format that declares none.\n",
+        "    /// The identity a document must have to be read as this spoke: its\n\
+         \x20\x20\x20\x20/// root element's namespace URI and local name, and its\n\
+         \x20\x20\x20\x20/// `[meta.identity]` (profile, version, root attributes).\n",
     );
-    out.push_str("    pub fn detect_markers(self) -> &'static [&'static str] {\n");
+    out.push_str("    pub fn identity(self) -> &'static crate::identity::Identity {\n");
     out.push_str("        match self {\n");
     for spoke in spokes {
+        let id = &spoke.identity;
+        let attributes = id
+            .attributes
+            .iter()
+            .map(|(name, values)| format!("({name:?}, &[{}])", str_list(values)))
+            .collect::<Vec<_>>()
+            .join(", ");
         let _ = writeln!(
             out,
-            "            Spoke::{} => &[{}],",
+            "            Spoke::{} => &crate::identity::Identity {{ namespace: {:?}, root: {:?}, profile: {:?}, profiles: &[{}], version: {:?}, versions: &[{}], attributes: &[{attributes}] }},",
             spoke.variant,
-            str_list(&spoke.detect)
+            spoke.namespace,
+            spoke.root,
+            id.profile,
+            str_list(&id.profiles),
+            id.version,
+            str_list(&id.versions),
         );
     }
     out.push_str("        }\n");
@@ -294,8 +309,7 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
         "root",
         "The document's root XML element name, from `[meta].root`.\n\
          \n\
-         The primary discriminator for source auto-detection: a document is\n\
-         narrowed to the spokes sharing its root before markers disambiguate.",
+         Part of the spoke's `identity`, which every read checks.",
         |spoke| &spoke.root,
     );
 

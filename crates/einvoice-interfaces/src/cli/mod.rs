@@ -20,7 +20,7 @@
 //!   [`CliError::exit_code`].
 //! - [`parse`] — [`parse_args`], pure argv → [`Command`].
 //! - [`detect`] — [`resolve_spoke`] (format-name → [`Spoke`](crate::Spoke)) and
-//!   [`detect_source`] (auto-detection from the document signature).
+//!   [`detect_source`] (auto-detection from the document identity).
 //! - [`render`] — [`usage`], [`format_list`], and [`render_diagnostics`].
 //! - [`run`] — [`run`], the IO entry point used by the binary.
 //!
@@ -29,10 +29,12 @@
 //! `krab-cli <INPUT> <TARGET-FORMAT> [--from <SOURCE-FORMAT>] [--out <FILE>]`
 //! reads `INPUT` (or stdin when `-`), transforms it from its source format to
 //! `TARGET-FORMAT`, and writes the result to stdout (or `--out`). When `--from`
-//! is omitted the source format is auto-detected by matching the document's root
-//! element against the generated spoke registry (then disambiguating by
-//! `CustomizationID`); detection that is empty or ambiguous is a [`CliError`]
-//! asking for `--from`.
+//! is omitted the source format is auto-detected as the one spoke whose identity
+//! the document has (root namespace URI and local name, exact profile
+//! identifier, version, root attributes — see [`crate::identity`]); detection
+//! that finds none is a [`CliError`] naming why. With or without `--from`, the
+//! read checks that identity again, so a document is never read as a format it
+//! does not declare.
 //! Mapping diagnostics are rendered to stderr; an error-severity diagnostic makes
 //! the process exit non-zero without emitting partial output.
 //!

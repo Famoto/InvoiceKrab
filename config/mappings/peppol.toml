@@ -2,7 +2,7 @@
 #
 # Peppol BIS Billing documents are UBL `Invoice`s carrying the full EN 16931
 # semantic model, so this spoke *inherits* `ubl.toml` (`inherits =
-# "ubl-invoice:2.1"`) and adds its own identity and detection marker, pins its
+# "ubl-invoice:2.1"`) and adds its own identity, pins its
 # specification and process identifiers, and restates one delta: Peppol tags the seller's tax registration (BT-32) `PartyTaxScheme` with
 # `TaxScheme/ID` `TAX` where EN 16931 / XRechnung use `FC`. Everything else comes
 # from the UBL base unchanged, so Peppol documents round-trip through the shared
@@ -15,11 +15,6 @@ source_model = "peppol-bis-billing:3.0"
 canonical_model = "canonical-invoice:1.0"
 root = "Invoice"
 inherits = "ubl-invoice:2.1"
-# A Peppol BIS document is also valid UBL; this marker lets source
-# auto-detection prefer this CIUS over the base UBL format. Matched
-# case-insensitively against the document's CustomizationID (BT-24), which for
-# Peppol BIS Billing carries `...:peppol.eu:2017:poacc:billing:3.0`.
-detect = ["peppol"]
 
 # Peppol documents are UBL 2.1 Invoices. The table restates the inherited
 # schema whole (a child's `[meta.schema]` replaces its parent's) to document
@@ -33,6 +28,14 @@ refuses = [
     "testfiles/en16931-full-fatturapa.xml",
     "testfiles/UBL-Invoice-2.1.xml",
 ]
+
+# A Peppol BIS Billing 3.0 document declares exactly this CustomizationID
+# (BT-24). Restates the inherited table whole.
+[meta.identity]
+profile = "CustomizationID"
+profiles = ["urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0"]
+version = "UBLVersionID"
+versions = ["2.1"]
 
 # BT-32 seller tax registration: Peppol BIS Billing discriminates the second
 # `PartyTaxScheme` with `TaxScheme/ID` = `TAX`. Only the selector is restated;

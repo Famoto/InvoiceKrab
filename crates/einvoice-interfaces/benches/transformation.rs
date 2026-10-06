@@ -20,11 +20,12 @@ use einvoice_interfaces::{Engine, MainKey, Spoke};
 use std::hint::black_box;
 
 /// Builds an invoice document of `lines` lines under the shared UBL `Invoice`
-/// syntax. `extra_header` injects spoke-specific leading elements (e.g. the
-/// XRechnung `CustomizationID`) right after the root open tag.
-fn invoice(extra_header: &str, lines: usize) -> Vec<u8> {
+/// syntax, declaring `customization` as its `CustomizationID` (BT-24): the
+/// spoke-specific identifier its reader requires.
+fn invoice(customization: &str, lines: usize) -> Vec<u8> {
     let mut xml = format!(
-        "<Invoice>{extra_header}\
+        "<Invoice xmlns=\"urn:oasis:names:specification:ubl:schema:xsd:Invoice-2\">\
+         <CustomizationID>{customization}</CustomizationID>\
          <ID>INV-42</ID>\
          <IssueDate>2026-06-27</IssueDate>\
          <DocumentCurrencyCode>eur</DocumentCurrencyCode>\
@@ -44,15 +45,14 @@ fn invoice(extra_header: &str, lines: usize) -> Vec<u8> {
 
 /// A plain UBL invoice fixture with `lines` invoice lines.
 fn ubl_invoice(lines: usize) -> Vec<u8> {
-    invoice("", lines)
+    invoice("urn:cen.eu:en16931:2017", lines)
 }
 
-/// An XRechnung invoice fixture: UBL syntax plus the required CIUS
-/// `CustomizationID` (BT-24) so the XRechnung reader sees a complete document.
+/// An XRechnung invoice fixture: UBL syntax with the CIUS `CustomizationID`
+/// (BT-24) the XRechnung reader requires.
 fn xrechnung_invoice(lines: usize) -> Vec<u8> {
     invoice(
-        "<CustomizationID>urn:cen.eu:en16931:2017#compliant#\
-         urn:xoev-de:kosit:standard:xrechnung_3.0</CustomizationID>",
+        "urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0",
         lines,
     )
 }

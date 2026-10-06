@@ -226,6 +226,8 @@ mod tests {
             source_model = "{model_id}"
             canonical_model = "c:1"
             root = "Doc"
+            [meta.namespaces]
+            "" = "urn:{model_id}"
             {body}
         "#
         );

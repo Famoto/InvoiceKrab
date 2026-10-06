@@ -352,7 +352,7 @@ mod tests {
 
     fn mapping(id: &str, body: &str) -> ParsedMapping {
         parse_mapping(&format!(
-            "[meta]\ndoc_format = \"{id}\"\nformat_version = \"1\"\nmapping_version = \"1\"\ncanonical_model = \"c:1\"\nroot = \"Doc\"\n{body}"
+            "[meta]\ndoc_format = \"{id}\"\nformat_version = \"1\"\nmapping_version = \"1\"\ncanonical_model = \"c:1\"\nroot = \"Doc\"\n[meta.namespaces]\n\"\" = \"urn:{id}\"\n{body}"
         ))
         .expect("parses")
     }

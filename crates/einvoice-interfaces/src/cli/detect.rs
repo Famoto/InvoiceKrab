@@ -1,12 +1,13 @@
 //! Format resolution and source auto-detection.
 //!
 //! [`resolve_spoke`] maps a human-typed format name to a [`Spoke`]; when
-//! `--from` is omitted, [`detect_source`] identifies the source format from the
-//! document's own signature (root element, then `CustomizationID`) using only
-//! the compile-time spoke registry.
+//! `--from` is omitted, [`detect_source`] identifies the source format as the
+//! one spoke whose [`Spoke::identity`] the document has — the same check every
+//! read performs — using only the compile-time spoke registry.
 
 use super::CliError;
 use crate::Spoke;
+use crate::identity::IdentityError;
 
 /// Resolves a human-typed format name to a [`Spoke`], case-insensitively.
 ///
@@ -42,140 +43,70 @@ pub fn resolve_spoke(name: &str) -> Result<Spoke, CliError> {
 
 /// Detects the source spoke of `bytes` from the compile-time spoke registry.
 ///
-/// Identification is by *signature*, not by trial-parsing: it reads the
-/// document's root XML element once and narrows to the spokes whose registered
-/// [`Spoke::root`] (from each mapping's `[meta].root`) matches it. When several
-/// formats share that root (e.g. UBL, Peppol, and XRechnung are all rooted at
-/// `Invoice`), it disambiguates by *specificity*: a spoke whose
-/// [`Spoke::detect_markers`] appear in the document's `CustomizationID` (EN16931
-/// BT-24 — the field where an invoice declares the specification/CIUS it
-/// follows) wins over a base format that declares none. Both the roots and the
-/// markers come from the generated registry, so nothing about the formats is
-/// hardcoded here.
+/// Identification is by *identity*, not by trial-parsing or heuristics: a
+/// spoke matches when the document's root element has its namespace URI and
+/// local name and the document declares one of its exact profile identifiers,
+/// a supported version and its mandatory identity attributes
+/// ([`Identity::check`](crate::identity::Identity::check)) — the check
+/// [`Engine::to_hub`](crate::Engine::to_hub) repeats on every read. The build
+/// guarantees that spokes sharing a root accept disjoint profiles (`E121`), so
+/// at most one spoke matches.
 ///
 /// # Errors
 ///
-/// Returns [`CliError::AmbiguousSource`] when the document has no recognized
-/// root, or when detection cannot single one out; the caller should then pass
-/// `--from`.
+/// Returns [`CliError::AmbiguousSource`] when no spoke (or, against the build
+/// guarantee, more than one) matches; it names why the spokes sharing the
+/// document's root refused it.
 pub fn detect_source(bytes: &[u8]) -> Result<Spoke, CliError> {
-    let Some(root) = root_element(bytes) else {
-        return Err(CliError::AmbiguousSource(
-            "could not detect the source format; pass --from <FORMAT>".into(),
-        ));
-    };
-
-    // Narrow to the spokes whose registered root element matches the document's.
-    let candidates: Vec<Spoke> = Spoke::ALL
+    let checked: Vec<(Spoke, Result<(), IdentityError>)> = Spoke::ALL
         .iter()
-        .copied()
-        .filter(|s| s.root() == root)
+        .map(|&s| (s, s.identity().check(bytes)))
         .collect();
 
-    if let [only] = candidates.as_slice() {
-        return Ok(*only);
-    }
-    if candidates.is_empty() {
-        return Err(CliError::AmbiguousSource(format!(
-            "could not detect the source format for root <{root}>; pass --from <FORMAT>"
-        )));
+    let matching: Vec<Spoke> = checked
+        .iter()
+        .filter(|(_, r)| r.is_ok())
+        .map(|(s, _)| *s)
+        .collect();
+    match matching.as_slice() {
+        [only] => return Ok(*only),
+        [] => {}
+        many => {
+            return Err(CliError::AmbiguousSource(format!(
+                "source format is ambiguous ({}); pass --from <FORMAT>",
+                many.iter().map(|s| s.name()).collect::<Vec<_>>().join(", ")
+            )));
+        }
     }
 
-    // Several formats share this root: disambiguate by self-identification —
-    // prefer spokes whose declared markers appear in the document's
-    // CustomizationID; otherwise fall back to the base spokes that declare none.
-    let customization = customization_id(bytes)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let marks = |spoke: &Spoke| {
-        spoke
-            .detect_markers()
-            .iter()
-            .any(|m| customization.contains(&m.to_ascii_lowercase()))
-    };
-
-    let specific: Vec<Spoke> = candidates.iter().copied().filter(marks).collect();
-    let chosen: Vec<Spoke> = if specific.is_empty() {
-        candidates
-            .iter()
-            .copied()
-            .filter(|s| s.detect_markers().is_empty())
-            .collect()
+    // Nothing matched: explain through the spokes that share the document's
+    // root (they refused its profile, version or attributes), or else name the
+    // root no spoke reads.
+    let mut refusals = Vec::new();
+    let mut found_root = None;
+    for (spoke, result) in &checked {
+        match result {
+            Err(IdentityError::Root { found, .. }) => found_root = Some(found.clone()),
+            Err(IdentityError::NotXml(why)) => {
+                return Err(CliError::AmbiguousSource(format!(
+                    "could not detect the source format: not an XML document ({why})"
+                )));
+            }
+            Err(e) => refusals.push(format!("{}: {e}", spoke.name())),
+            Ok(()) => {}
+        }
+    }
+    Err(CliError::AmbiguousSource(if refusals.is_empty() {
+        format!(
+            "could not detect the source format: no supported format has the root element {}",
+            found_root.unwrap_or_default()
+        )
     } else {
-        specific
-    };
-
-    match chosen.as_slice() {
-        [only] => Ok(*only),
-        _ => Err(CliError::AmbiguousSource(format!(
-            "source format is ambiguous ({}); pass --from <FORMAT>",
-            candidates
-                .iter()
-                .map(|s| s.name())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
-    }
-}
-
-/// Extracts the text of the document's `CustomizationID` element, if present.
-///
-/// Matches the element by its XML *local* name, so it works regardless of
-/// namespace prefix (`cbc:CustomizationID`, `CustomizationID`, ...). Returns the
-/// trimmed, unescaped text of the first such element, or `None` when the document
-/// has none or cannot be scanned. This is the EN16931 BT-24 field used by
-/// [`detect_source`] to recognize a format.
-fn customization_id(bytes: &[u8]) -> Option<String> {
-    use quick_xml::Reader;
-    use quick_xml::events::Event;
-
-    let mut reader = Reader::from_reader(bytes);
-    let mut buf = Vec::new();
-    let mut in_customization = false;
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                in_customization = e.local_name().as_ref() == b"CustomizationID";
-            }
-            Ok(Event::Text(t)) if in_customization => {
-                let text = t.decode().ok()?.trim().to_string();
-                if !text.is_empty() {
-                    return Some(text);
-                }
-            }
-            Ok(Event::End(_)) => in_customization = false,
-            Ok(Event::Eof) | Err(_) => return None,
-            _ => {}
-        }
-        buf.clear();
-    }
-}
-
-/// Extracts the *local* name of the document's root element, if any.
-///
-/// Reads only up to the first start (or empty) tag and returns its name with any
-/// namespace prefix stripped (like [`customization_id`]), so `<rsm:Invoice>` and
-/// `<Invoice>` both yield `Invoice`. This is the document's primary signature:
-/// [`detect_source`] matches it against each spoke's [`Spoke::root`] from the
-/// compile-time registry. Returns `None` when the bytes hold no element or cannot
-/// be scanned.
-fn root_element(bytes: &[u8]) -> Option<String> {
-    use quick_xml::Reader;
-    use quick_xml::events::Event;
-
-    let mut reader = Reader::from_reader(bytes);
-    let mut buf = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e) | Event::Empty(e)) => {
-                return std::str::from_utf8(e.local_name().as_ref())
-                    .ok()
-                    .map(str::to_string);
-            }
-            Ok(Event::Eof) | Err(_) => return None,
-            _ => {}
-        }
-    }
+        format!(
+            "could not detect the source format: the document has no supported identity ({})",
+            refusals.join("; ")
+        )
+    }))
 }
 
 #[cfg(test)]
@@ -183,123 +114,134 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
-    /// A bare-name UBL invoice: valid under both spokes. Its CustomizationID is
-    /// the plain EN16931 id, so it carries no XRechnung marker.
-    const UBL: &[u8] = br#"<Invoice>
-        <CustomizationID>urn:cen.eu:en16931:2017</CustomizationID>
-        <ID>INV-1</ID>
-        <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
-        <LegalMonetaryTotal><PayableAmount currencyID="EUR">1.00</PayableAmount></LegalMonetaryTotal>
-        <InvoiceLine><ID>1</ID><InvoicedQuantity>1</InvoicedQuantity><Item><Name>X</Name></Item></InvoiceLine>
-    </Invoice>"#;
+    const UBL_NS: &str = "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2";
+    const EN16931: &str = "urn:cen.eu:en16931:2017";
+    const XRECHNUNG_ID: &str =
+        "urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0";
 
-    /// Same document carrying the XRechnung CustomizationID marker, plus the
-    /// `TaxTotal` element the XRechnung source model requires to be present.
-    const XRECHNUNG: &[u8] = br#"<Invoice>
-        <CustomizationID>urn:cen.eu:en16931:2017#compliant#urn:xoev-de:kosit:standard:xrechnung_3.0</CustomizationID>
-        <ID>INV-1</ID>
-        <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
-        <LegalMonetaryTotal><PayableAmount currencyID="EUR">1.00</PayableAmount></LegalMonetaryTotal>
-        <TaxTotal><TaxAmount currencyID="EUR">0.00</TaxAmount></TaxTotal>
-        <InvoiceLine><ID>1</ID><InvoicedQuantity>1</InvoicedQuantity><Item><Name>X</Name></Item></InvoiceLine>
-    </Invoice>"#;
+    /// A UBL invoice header in namespace `ns` declaring `customization`.
+    fn ubl(ns: &str, customization: &str) -> Vec<u8> {
+        format!(
+            r#"<Invoice xmlns="{ns}" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+                <cbc:CustomizationID>{customization}</cbc:CustomizationID>
+                <cbc:ID>INV-1</cbc:ID>
+            </Invoice>"#
+        )
+        .into_bytes()
+    }
 
     fn spoke_named(name: &str) -> Spoke {
         resolve_spoke(name).expect("bundled spoke")
     }
 
     #[test]
-    fn test_detect_source_prefers_marker_match() {
-        // The XRechnung marker is present → the CIUS wins over base UBL even
-        // though both spokes parse the document cleanly.
-        let detected = detect_source(XRECHNUNG).expect("detected");
-        assert_eq!(detected, spoke_named("xrechnung-invoice"));
-    }
-
-    #[test]
-    fn test_detect_source_falls_back_to_base_when_no_marker() {
-        // No XRechnung marker → the markerless base format (UBL) is chosen
-        // rather than reporting ambiguity.
-        let detected = detect_source(UBL).expect("detected");
-        assert_eq!(detected, spoke_named("ubl-invoice"));
-    }
-
-    #[test]
-    fn test_detect_markers_only_on_declaring_spoke() {
-        // Exactly the spokes that declare `[meta].detect` expose markers.
-        assert_eq!(spoke_named("ubl-invoice").detect_markers(), &[] as &[&str]);
-        assert!(
+    fn test_detect_source_by_exact_profile() {
+        assert_eq!(
+            detect_source(&ubl(UBL_NS, EN16931)).expect("detected"),
+            spoke_named("ubl-invoice")
+        );
+        assert_eq!(
+            detect_source(&ubl(UBL_NS, XRECHNUNG_ID)).expect("detected"),
             spoke_named("xrechnung-invoice")
-                .detect_markers()
-                .contains(&"xrechnung")
-        );
-    }
-
-    #[test]
-    fn test_customization_id_extracts_prefixed_and_bare() {
-        // Prefix-agnostic: matches by local name.
-        let prefixed = br#"<Invoice xmlns:cbc="x"><cbc:CustomizationID> urn:xrechnung_3.0 </cbc:CustomizationID></Invoice>"#;
-        assert_eq!(
-            customization_id(prefixed).as_deref(),
-            Some("urn:xrechnung_3.0")
         );
         assert_eq!(
-            customization_id(UBL).as_deref(),
-            Some("urn:cen.eu:en16931:2017")
+            detect_source(&ubl(
+                UBL_NS,
+                "urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0"
+            ))
+            .expect("detected"),
+            spoke_named("peppol-bis-billing")
         );
     }
 
     #[test]
-    fn test_customization_id_absent_is_none() {
-        assert_eq!(customization_id(b"<Invoice><ID>1</ID></Invoice>"), None);
-        assert_eq!(customization_id(b"not xml <<<"), None);
+    fn test_detect_source_rejects_substring_markers() {
+        // The old heuristic took any CustomizationID *containing* `xrechnung`
+        // (or `peppol`); an identifier that merely mentions one is no
+        // supported profile, so nothing is detected.
+        for spoofed in [
+            "urn:evil:xrechnung",
+            "URN:CEN.EU:EN16931:2017#COMPLIANT#URN:XEINKAUF.DE:KOSIT:XRECHNUNG_3.0",
+            "urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0#extra",
+            "urn:cen.eu:en16931:2017-peppol",
+        ] {
+            let err = detect_source(&ubl(UBL_NS, spoofed)).unwrap_err();
+            assert!(matches!(err, CliError::AmbiguousSource(_)), "{spoofed}");
+            assert!(err.to_string().contains("unsupported profile"), "{err}");
+        }
     }
 
     #[test]
-    fn test_detect_source_ignores_marker_outside_customization_id() {
-        // The word "xrechnung" appears only in other elements, not in the
-        // CustomizationID — it must NOT trip detection toward XRechnung.
-        let doc = br#"<Invoice>
-            <CustomizationID>urn:cen.eu:en16931:2017</CustomizationID>
-            <Note>generated by xrechnung-exporter</Note>
-            <ID>INV-1</ID>
-            <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
-            <LegalMonetaryTotal><PayableAmount currencyID="EUR">1.00</PayableAmount></LegalMonetaryTotal>
-            <InvoiceLine><ID>1</ID><InvoicedQuantity>1</InvoicedQuantity><Item><Name>X</Name></Item></InvoiceLine>
-        </Invoice>"#;
-        let detected = detect_source(doc).expect("detected");
-        assert_eq!(detected, spoke_named("ubl-invoice"));
+    fn test_detect_source_rejects_wrong_or_missing_root_namespace() {
+        // Correct local name and profile, but not the UBL Invoice namespace.
+        for ns in [
+            "urn:evil",
+            "urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2",
+        ] {
+            let err = detect_source(&ubl(ns, EN16931)).unwrap_err();
+            assert!(
+                err.to_string().contains("no supported format has the root"),
+                "{err}"
+            );
+        }
+        let bare = format!("<Invoice><CustomizationID>{EN16931}</CustomizationID></Invoice>");
+        assert!(detect_source(bare.as_bytes()).is_err());
     }
 
     #[test]
-    fn test_spoke_root_from_compiletime_registry() {
-        // The generated registry carries each spoke's root XML element, taken
-        // from `[meta].root`; no document parsing is needed to know it.
-        assert_eq!(spoke_named("ubl-invoice").root(), "Invoice");
+    fn test_detect_source_ignores_identifier_outside_the_profile_path() {
+        // A CustomizationID nested elsewhere is not the document's BT-24.
+        let doc = format!(
+            r#"<Invoice xmlns="{UBL_NS}"><Note><CustomizationID>{EN16931}</CustomizationID></Note></Invoice>"#
+        );
+        let err = detect_source(doc.as_bytes()).unwrap_err();
+        assert!(
+            err.to_string().contains("declares no profile identifier"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_detect_source_fatturapa_by_root_and_versione() {
+        let doc = |versione: &str| {
+            format!(
+                r#"<p:FatturaElettronica xmlns:p="http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2" {versione}/>"#
+            )
+        };
+        assert_eq!(
+            detect_source(doc(r#"versione="FPR12""#).as_bytes()).expect("detected"),
+            spoke_named("fatturapa")
+        );
+        for bad in ["", r#"versione="FPX99""#] {
+            let err = detect_source(doc(bad).as_bytes()).unwrap_err();
+            assert!(err.to_string().contains("versione"), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_spoke_identity_from_compiletime_registry() {
+        let ubl = spoke_named("ubl-invoice").identity();
+        assert_eq!(ubl.namespace, Some(UBL_NS));
+        assert_eq!(ubl.root, "Invoice");
+        assert_eq!(ubl.profile, Some("CustomizationID"));
+        assert_eq!(ubl.profiles, &[EN16931]);
         assert_eq!(spoke_named("fatturapa").root(), "FatturaElettronica");
         // `cii-invoice` is inherit-only (`disabled`); Factur-X inherits its tree
-        // and is the emitted spoke carrying the `CrossIndustryInvoice` root.
+        // and its root namespace.
+        let facturx = spoke_named("facturx-invoice").identity();
+        assert_eq!(facturx.root, "CrossIndustryInvoice");
         assert_eq!(
-            spoke_named("facturx-invoice").root(),
-            "CrossIndustryInvoice"
+            facturx.namespace,
+            Some("urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100")
         );
     }
 
     #[test]
-    fn test_detect_source_by_distinct_root() {
-        // FatturaPA declares no CustomizationID markers; its unique root element
-        // identifies it through the registry, even on a skeleton document that
-        // would not read cleanly under the old trial-parse detection.
-        let detected =
-            detect_source(b"<FatturaElettronica></FatturaElettronica>").expect("detected");
-        assert_eq!(detected, spoke_named("fatturapa"));
-    }
-
-    #[test]
-    fn test_detect_source_unknown_root_is_ambiguous() {
-        // A root element no spoke registers cannot be identified.
-        let err = detect_source(b"<Unknown/>").unwrap_err();
-        assert!(matches!(err, CliError::AmbiguousSource(_)));
+    fn test_detect_source_unknown_root_or_not_xml_is_ambiguous() {
+        for doc in [&b"<Unknown/>"[..], b"not xml <<<", b""] {
+            let err = detect_source(doc).unwrap_err();
+            assert!(matches!(err, CliError::AmbiguousSource(_)));
+        }
     }
 
     #[test]
