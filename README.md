@@ -51,6 +51,7 @@ deltas — XRechnung and Peppol are a handful of lines on top of UBL.
 - [Disclaimer](#disclaimer)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [Using KrabInvoice](#using-krabinvoice)
 - [Using your own mappings](#using-your-own-mappings)
 - [Bundled (demo) mappings](#bundled-demo-mappings)
 - [The `krab-cli` CLI](#the-krab-cli-cli)
@@ -115,6 +116,88 @@ krab-cli --analyze
 # Inspect the canonical key vocabulary while writing mappings
 krab-cli --keys
 ```
+
+---
+
+## Using KrabInvoice
+
+The recommended way to use KrabInvoice, in particular inside a company, is
+**the web API with your own configuration**: run `krab-server` as a service
+of its own, built with your mappings, and call it over HTTP from your
+systems.
+
+1. **Keep your configuration in your own repository.** Start from a copy of
+   [config/](config/) — it is CC0, no strings attached — and replace what you
+   need (see [Using your own mappings](#using-your-own-mappings)). Check it
+   with `cargo run -p einvoice-dsl -- check /path/to/my-project/my-config`.
+2. **Build the server with it.** Put the configuration directory into the
+   build context (for example a checkout of your mappings repository inside
+   the KrabInvoice checkout), pin a release tag, and name the directory:
+
+   ```bash
+   git checkout v1.0.0
+   docker build --target server --build-arg KRAB_CONFIG_DIR=my-config \
+       -t my-krab-server:1.0.0 .
+   ```
+
+3. **Run it in your private network**, behind a reverse proxy that
+   authenticates clients and terminates TLS (`krab-server` has neither):
+
+   ```bash
+   docker run --rm -p 8080:8080 --cpus 4 --memory 2g my-krab-server:1.0.0
+   ```
+
+4. **Call it from your systems** — ERP, accounting, inbound mail processing:
+
+   ```bash
+   curl -sS --data-binary @invoice.xml \
+       'krab.internal:8080/transform?to=xrechnung-invoice:3.0.2'
+   ```
+
+   `GET /formats` and `GET /version` show what the running build carries,
+   `GET /health` serves your monitoring, and
+   `GET /analyze?from=<format>&to=<format>&deny_lossy=1` makes a CI gate that
+   fails when a conversion you depend on would lose data (see
+   [The `krab-server` HTTP API](#the-krab-server-http-api)).
+
+Why this setup:
+
+- **Your systems stay separate from KrabInvoice.** They talk to it over HTTP
+  only, so the AGPL covers KrabInvoice, not the software that calls it.
+  Linking the crates into your own program instead
+  ([Library usage](#library-usage)) makes that program a work based on
+  KrabInvoice; choose that only if you are prepared to license it under the
+  AGPL.
+- **Your mappings are yours.** They live in your repository, start from CC0
+  templates, and you decide whether to share them.
+- **Upgrades are a rebuild.** Check out a newer tag, rebuild the image with
+  the same `KRAB_CONFIG_DIR`, and compare `GET /version` and the
+  `/analyze` report before you switch over.
+
+### Changes and bug fixes: upstream, or publish them
+
+KrabInvoice depends on fixes flowing back. If you change KrabInvoice itself
+— the engine, the server, the CLI, the build — whether a bug fix, a new
+feature or a performance improvement:
+
+- **Preferably, send it upstream:** open an issue or a pull request at
+  [github.com/Famoto/InvoiceKrab](https://github.com/Famoto/InvoiceKrab).
+  An upstreamed change is maintained with the project, so you do not carry a
+  patch set across every upgrade. The same goes for fixes to the demo
+  mappings in [config/](config/).
+- **Otherwise, publish it:** make the modified source public, for example as
+  a public fork, under AGPL-3.0-or-later.
+
+Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes,
+not in a public issue or fork.
+
+The AGPL already requires the source of a modified version to reach its
+users when you give the program to others (section 6) or let users interact
+with it over a network (section 13). We ask for it in every case, including
+changes you only run internally: a fix kept private helps nobody else, and
+you have to re-apply it on every upgrade. This concerns KrabInvoice's code;
+your own configuration directory is not affected — sharing a mapping is
+welcome, but entirely up to you.
 
 ---
 
@@ -714,5 +797,6 @@ What this means in practice (a summary, not legal advice): your mapping files
 are yours. The programs and libraries built from KrabInvoice (`krab-cli`,
 `krab-server`, a crate depending on `einvoice-interfaces`) are covered by the
 AGPL, including when you distribute them and, for modified versions, when you
-let others use them over a network (section 13). If that matters for your
-deployment, check it with your own counsel.
+let others use them over a network (section 13). The recommended deployment
+and what we ask of changes are in [Using KrabInvoice](#using-krabinvoice). If
+that matters for your deployment, check it with your own counsel.
