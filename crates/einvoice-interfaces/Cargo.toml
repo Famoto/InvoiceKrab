@@ -19,6 +19,7 @@ tower-http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 socket2 = { workspace = true }
+form_urlencoded = { workspace = true }
 # JSON for the server's capability endpoints (`GET /formats`).
 serde_json = { workspace = true }
 

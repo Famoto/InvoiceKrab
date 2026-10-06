@@ -14,8 +14,10 @@
 //! | Outcome                                          | Status |
 //! |--------------------------------------------------|--------|
 //! | transformed, no error diagnostics                | 200    |
-//! | missing/unknown `to` or `from`, failed detection | 400    |
+//! | missing/unknown/repeated `to` or `from`          | 400    |
+//! | failed source detection                          | 400    |
 //! | source bytes not well-formed for the spoke       | 400    |
+//! | source in an unsupported character encoding      | 400    |
 //! | error-severity mapping diagnostics               | 422    |
 //! | produced model unserializable (engine bug)       | 500    |
 //!
@@ -72,18 +74,20 @@ pub fn handle(query: &str, body: Vec<u8>) -> Reply {
 
 /// The fallible core of [`handle`]; errors are `(status, problem text)`.
 fn transform(query: &str, body: Vec<u8>) -> Result<Reply, (u16, String)> {
-    let Some(to) = param(query, "to") else {
+    let Some(to) = param(query, "to")? else {
         return Err((400, "missing required query parameter: to=<format>".into()));
     };
-    let to = resolve_spoke(to).map_err(|e| (400, e.to_string()))?;
-    let from = match param(query, "from") {
-        Some(name) => resolve_spoke(name).map_err(|e| (400, e.to_string()))?,
+    let to = resolve_spoke(&to).map_err(|e| (400, e.to_string()))?;
+    let from = match param(query, "from")? {
+        Some(name) => resolve_spoke(&name).map_err(|e| (400, e.to_string()))?,
         None => detect_source(&body).map_err(|e| (400, e.to_string()))?,
     };
 
     let status_of = |e: EngineError| match e {
         // The client sent a document of another format than `from`.
         e @ EngineError::Identity { .. } => (400, e.to_string()),
+        // The client sent a document in an encoding the engine cannot decode.
+        e @ EngineError::Encoding(_) => (400, e.to_string()),
         // The client sent bytes that are not a well-formed `from` document.
         EngineError::Deserialize(e) => (400, format!("source deserialization failed: {e}")),
         // The engine produced an unserializable model: our bug, not theirs.
@@ -127,14 +131,27 @@ fn transform(query: &str, body: Vec<u8>) -> Result<Reply, (u16, String)> {
     }
 }
 
-/// Returns the raw value of `name` in a `k=v&k=v` query string. Spoke names
-/// are plain `[a-z0-9-]`, so no percent-decoding is needed.
-fn param<'q>(query: &'q str, name: &str) -> Option<&'q str> {
-    query
-        .split('&')
-        .find_map(|kv| kv.split_once('=').filter(|(k, _)| *k == name))
-        .map(|(_, v)| v)
-        .filter(|v| !v.is_empty())
+/// Returns the decoded value of `name` in an `application/x-www-form-urlencoded`
+/// query string; `None` when absent or empty. Clients percent-encode the `:`
+/// of versioned format names (`xrechnung-invoice%3A3.0.2`), so values are
+/// always decoded.
+///
+/// # Errors
+///
+/// `(400, problem)` when `name` is given more than once: picking one of two
+/// conflicting formats silently would transform into the wrong one.
+fn param(query: &str, name: &str) -> Result<Option<String>, (u16, String)> {
+    let mut values = form_urlencoded::parse(query.as_bytes())
+        .filter(|(k, _)| k == name)
+        .map(|(_, v)| v.into_owned());
+    let value = values.next();
+    if values.next().is_some() {
+        return Err((
+            400,
+            format!("query parameter {name:?} given more than once"),
+        ));
+    }
+    Ok(value.filter(|v| !v.is_empty()))
 }
 
 /// The `GET /formats` body: a JSON array of every format name this build
@@ -154,8 +171,12 @@ pub fn formats() -> String {
 /// `(400, problem)` when `from` or `to` names no known format; `(422, report)`
 /// when `deny_lossy` is set and a reported transform is not lossless.
 pub fn analyze(query: &str) -> Result<String, (u16, String)> {
-    let deny_lossy = matches!(param(query, "deny_lossy"), Some("1" | "true" | "yes"));
-    crate::cli::analyze_output(param(query, "from"), param(query, "to"), deny_lossy).map_err(|e| {
+    let deny_lossy = matches!(
+        param(query, "deny_lossy")?.as_deref(),
+        Some("1" | "true" | "yes")
+    );
+    let (from, to) = (param(query, "from")?, param(query, "to")?);
+    crate::cli::analyze_output(from.as_deref(), to.as_deref(), deny_lossy).map_err(|e| {
         let status = match e {
             crate::cli::CliError::Lossy(_) => 422,
             _ => 400,
@@ -176,7 +197,7 @@ mod tests {
         <LegalMonetaryTotal>
             <LineExtensionAmount currencyID="EUR">100.00</LineExtensionAmount><TaxExclusiveAmount currencyID="EUR">100.00</TaxExclusiveAmount><TaxInclusiveAmount currencyID="EUR">119.00</TaxInclusiveAmount><PayableAmount currencyID="EUR">119.00</PayableAmount>
         </LegalMonetaryTotal>
-        <InvoiceLine><ID>1</ID><InvoicedQuantity unitCode="C62">2</InvoicedQuantity><LineExtensionAmount currencyID="EUR">50.00</LineExtensionAmount><Item><Name>Widget</Name><ClassifiedTaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></ClassifiedTaxCategory></Item><Price><PriceAmount currencyID="EUR">25.00</PriceAmount></Price></InvoiceLine>
+        <InvoiceLine><ID>1</ID><InvoicedQuantity unitCode="C62">4</InvoicedQuantity><LineExtensionAmount currencyID="EUR">100.00</LineExtensionAmount><Item><Name>Widget</Name><ClassifiedTaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></ClassifiedTaxCategory></Item><Price><PriceAmount currencyID="EUR">25.00</PriceAmount></Price></InvoiceLine>
     </Invoice>"#;
 
     #[test]
@@ -225,6 +246,19 @@ mod tests {
         let reply = handle("to=ubl-invoice&from=not-a-format", UBL.to_vec());
         assert_eq!(reply.status, 400);
         assert!(reply.body.contains("not-a-format"), "{}", reply.body);
+    }
+
+    #[test]
+    fn test_handle_percent_encoded_format_names_are_decoded() {
+        let reply = handle("to=ubl-invoice%3A2.1&from=ubl-invoice%3a2.1", UBL.to_vec());
+        assert_eq!(reply.status, 200, "{}", reply.body);
+    }
+
+    #[test]
+    fn test_handle_repeated_parameter_returns_400() {
+        let reply = handle("to=ubl-invoice&to=fatturapa", UBL.to_vec());
+        assert_eq!(reply.status, 400, "{}", reply.body);
+        assert!(reply.body.contains("more than once"), "{}", reply.body);
     }
 
     #[test]
@@ -278,6 +312,16 @@ mod tests {
         let (status, problem) = analyze("from=not-a-format").expect_err("unknown format");
         assert_eq!(status, 400);
         assert!(problem.contains("not-a-format"), "{problem}");
+    }
+
+    #[test]
+    fn test_analyze_percent_encoded_names_are_decoded() {
+        let text = analyze("from=ubl-invoice%3A2.1&to=xrechnung-invoice%3A3.0.2")
+            .expect("encoded names resolve");
+        assert!(
+            text.contains("ubl-invoice:2.1 -> xrechnung-invoice:3.0.2:"),
+            "{text}"
+        );
     }
 
     #[test]

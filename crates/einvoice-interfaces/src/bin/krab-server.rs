@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use einvoice_interfaces::server::{self, Config, MemGate};
+use einvoice_interfaces::server::{self, Config, MemGate, Timeouts};
 
 fn main() -> ExitCode {
     let config = match Config::from_env() {
@@ -57,12 +57,15 @@ fn main() -> ExitCode {
         }
     };
     eprintln!(
-        "krab-server listening on {} — {} workers, {} bytes memory budget, x{} reservation, {}s body timeout",
+        "krab-server listening on {} — {} workers, {} bytes memory budget, x{} reservation, \
+         {}s body timeout, {}s request timeout, {}s queue timeout",
         config.addr,
         config.workers,
         config.mem_budget_bytes,
         config.mem_blowup,
-        config.body_timeout_secs
+        config.body_timeout_secs,
+        config.request_timeout_secs,
+        config.queue_timeout_secs
     );
     runtime.block_on(serve(listener, &config))
 }
@@ -84,7 +87,11 @@ async fn serve(listener: std::net::TcpListener, config: &Config) -> ExitCode {
     let app = server::router(
         gate,
         config.mem_blowup,
-        Duration::from_secs(config.body_timeout_secs),
+        Timeouts {
+            body: Duration::from_secs(config.body_timeout_secs),
+            request: Duration::from_secs(config.request_timeout_secs),
+            queue: Duration::from_secs(config.queue_timeout_secs),
+        },
     );
     if let Err(e) = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -139,27 +146,26 @@ fn listen(addr: &str) -> Result<std::net::TcpListener, Box<dyn std::error::Error
     Ok(listener)
 }
 
-/// `--healthcheck`: connect to the configured port on loopback, `GET /health`,
-/// exit 0 on HTTP 200. The listen host (e.g. `0.0.0.0`) is not a connectable
-/// address, so only the port is taken from `addr`.
+/// `--healthcheck`: `GET /health` on the address the server listens on,
+/// exit 0 on HTTP 200. [`server::config::probe_addr`] picks it: the bound
+/// address, or its loopback when bound to all interfaces (`0.0.0.0`, `[::]`).
 fn healthcheck(addr: &str) -> ExitCode {
-    let port = addr.rsplit_once(':').map_or(addr, |(_, p)| p);
-    let ok = probe(&format!("127.0.0.1:{port}")).is_some();
-    if !ok {
-        eprintln!("krab-server: healthcheck failed for 127.0.0.1:{port}");
-    }
-    if ok {
+    let Some(target) = server::config::probe_addr(addr) else {
+        eprintln!("krab-server: healthcheck cannot resolve {addr:?}");
+        return ExitCode::FAILURE;
+    };
+    if probe(target).is_some() {
         ExitCode::SUCCESS
     } else {
+        eprintln!("krab-server: healthcheck failed for {target}");
         ExitCode::FAILURE
     }
 }
 
 /// Minimal HTTP/1.0 GET over a raw socket; `Some(())` when the status is 200.
-fn probe(target: &str) -> Option<()> {
+fn probe(addr: std::net::SocketAddr) -> Option<()> {
     use std::io::Write as _;
     let timeout = Duration::from_secs(3);
-    let addr = target.parse().ok()?;
     let mut stream = std::net::TcpStream::connect_timeout(&addr, timeout).ok()?;
     stream.set_read_timeout(Some(timeout)).ok()?;
     stream

@@ -19,6 +19,9 @@ No format is named in hand-written code.
   each spoke's embedded contract and its declared schema and samples).
 - `lib.rs` — [`Engine`] (`to_hub`, `from_hub`, `transform`), [`EngineError`], and
   the re-exported generated [`Spoke`] enum and [`MainKey`] hub.
+- `encoding.rs` — source character encodings: UTF-16, ISO-8859-1,
+  windows-1252 and US-ASCII documents are transcoded to UTF-8 (UTF-8 passes
+  through uncopied) before `Engine::to_hub` and auto-detection see them.
 - `identity.rs` — source document identity: the `Identity` `build.rs` embeds
   per spoke (`Spoke::identity()`: root namespace URI and local name, exact
   profile identifiers, versions, root attributes) and its `check`, run by

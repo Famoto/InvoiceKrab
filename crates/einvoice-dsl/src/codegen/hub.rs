@@ -9,7 +9,7 @@
 
 use std::fmt::Write as _;
 
-use crate::derive::{Derivation, DerivationKind};
+use crate::derive::{CheckLevel, Derivation, DerivationKind};
 use crate::hub::{CanonicalField, CanonicalModel, CanonicalScope};
 use crate::report::FieldKey;
 use crate::types::MappingType;
@@ -115,9 +115,9 @@ fn push_values_fn(out: &mut String, hub: &CanonicalModel, scope: &CanonicalScope
 }
 
 /// Emits `MainKey::DERIVATIONS` (each rule's target label, reference and the
-/// labels it needs) and `MainKey::derive_missing`, which applies the rules in
+/// labels it needs), `MainKey::derive_missing`, which applies the rules in
 /// order to the keys the hub lacks and returns `(label, rule)` per value it
-/// derived.
+/// derived, and `MainKey::check_derived` (see [`check_fn`]).
 fn derive_fns(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]) {
     out.push_str(
         "    /// The derivation rules (`config/derivations.toml`), in order: target\n\
@@ -247,6 +247,96 @@ fn derive_fns(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]
         }
     }
     out.push_str("        derived\n    }\n");
+    check_fn(out, hub, derivations);
+}
+
+/// Emits `MainKey::check_derived`: every checked `sum` / `add` rule whose
+/// target the hub carries is recomputed from its operands (under the same
+/// presence conditions as deriving it), and each mismatch is returned as
+/// `(label, rule, is_error, carried, computed)`.
+fn check_fn(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]) {
+    out.push_str(
+        "\n    /// Recomputes every checked rule whose target the hub carries and\n\
+         \x20\x20\x20\x20/// returns each mismatch as `(label, rule, is_error, carried, computed)`.\n\
+         \x20\x20\x20\x20/// Run after [`Self::derive_missing`], so derived operands take part.\n",
+    );
+    out.push_str(
+        "    pub fn check_derived(&self) -> Vec<(&'static str, &'static str, bool, Decimal, Decimal)> {\n",
+    );
+    out.push_str("        let mut mismatches = Vec::new();\n");
+    for d in derivations {
+        let is_error = match d.check {
+            CheckLevel::Off => continue,
+            CheckLevel::Warning => false,
+            CheckLevel::Error => true,
+        };
+        let target = snake_case(&d.key);
+        let push = format!(
+            "mismatches.push(({:?}, {:?}, {is_error}, carried, computed));",
+            d.key, d.rule
+        );
+        match &d.kind {
+            DerivationKind::Sum {
+                collection,
+                item,
+                filter,
+            } => {
+                let scope = CanonicalScope::Root.child(collection);
+                let _ = writeln!(out, "        // {} ({})", d.key, d.rule);
+                let _ = writeln!(out, "        if let Some(carried) = self.{target} {{");
+                out.push_str("            let mut sum: Option<Decimal> = None;\n");
+                let _ = writeln!(
+                    out,
+                    "            for item in &self.{} {{",
+                    snake_case(collection)
+                );
+                emit_filter(out, hub, &scope, filter, "item", "                ");
+                let _ = writeln!(
+                    out,
+                    "                if let Some(value) = item.{} {{\n                    sum = Some(sum.unwrap_or_default() + value);\n                }}",
+                    snake_case(item)
+                );
+                out.push_str("            }\n");
+                let _ = writeln!(
+                    out,
+                    "            if let Some(computed) = sum && computed != carried {{\n                {push}\n            }}"
+                );
+                out.push_str("        }\n");
+            }
+            DerivationKind::Arithmetic {
+                add,
+                subtract,
+                requires,
+                ..
+            } => {
+                let _ = writeln!(out, "        // {} ({})", d.key, d.rule);
+                let mut present = Vec::new();
+                for r in add.iter().take(1).chain(requires) {
+                    present.push(format!("self.{}.is_some()", snake_case(r)));
+                }
+                let _ = writeln!(
+                    out,
+                    "        if let Some(carried) = self.{target} && {} {{",
+                    present.join(" && ")
+                );
+                let mut expr = format!("self.{}.unwrap_or_default()", snake_case(&add[0]));
+                for a in &add[1..] {
+                    expr.push_str(&format!(" + self.{}.unwrap_or_default()", snake_case(a)));
+                }
+                for s in subtract {
+                    expr.push_str(&format!(" - self.{}.unwrap_or_default()", snake_case(s)));
+                }
+                let _ = writeln!(out, "            let computed: Decimal = {expr};");
+                let _ = writeln!(
+                    out,
+                    "            if computed != carried {{\n                {push}\n            }}"
+                );
+                out.push_str("        }\n");
+            }
+            DerivationKind::Value { .. } => {}
+        }
+    }
+    out.push_str("        mismatches\n    }\n");
 }
 
 /// Emits the `continue` guards of a rule's `where` filters on the item `var`

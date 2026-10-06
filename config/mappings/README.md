@@ -797,6 +797,22 @@ each canonical value [`config/derivations.toml`](../derivations.toml)
 defines and the hub lacks. A value the source carries is never replaced, and
 each derived value is reported as a `VALUE_DERIVED` info diagnostic.
 
+A value the source *does* carry is checked against its rule instead. After
+every rule has run, each `sum` / `add` rule whose target is present is
+recomputed from its operands, derived ones included, under the same presence
+conditions as deriving it. A mismatch is reported as `VALUE_INCONSISTENT`
+(`` `PayableAmount` is 999.99 but BR-CO-16 computes 119.00 ``), and the carried
+value is still written unchanged. `check` sets the severity per rule:
+`"warning"` (the default; the transform succeeds), `"error"` (it fails, a
+`422` on the server), or `"off"`. Values compare numerically, so `100.0` and
+`100.00` agree.
+
+Turn `check` off for a rule that restates another rule's equation. The bundled
+file does this for BR-CO-16 solved for the paid amount, which the
+`PayableAmount` rule already checks. That rule also limits what can be checked:
+a source stating an amount due but no paid amount gets the difference derived
+as its paid amount, so its amount due is consistent by construction.
+
 ```toml
 # BR-CO-10: sum of invoice line net amounts.
 [[derive]]
@@ -835,6 +851,7 @@ unless = ["LineAllowanceChargeReason"]
 | `add` / `subtract` | Root `decimal` keys: the first `add` operand must be present, any other absent operand counts as zero |
 | `requires` | Root keys that must be present for the rule to apply |
 | `skip_zero` | Derive nothing when the result is zero (default `false`) |
+| `check` | `sum` / `add` only: how a carried value that contradicts the rule is reported, `"warning"` (default), `"error"` or `"off"` |
 | `value` | A literal set on the target (on every item matching `where`) when neither it nor any `unless` key is present |
 | `where` | `{ Key = "literal" }`: an item filter on another key of the item |
 | `unless` | Keys whose presence (on the item) suppresses a `value` |
@@ -1238,6 +1255,6 @@ Validation reports **every** problem in one run, never just the first error.
 
 Runtime (per-document) diagnostics — missing required values, type validation
 failures, taken fallbacks, `CLONE_MISMATCH`, `CODEC_INVALID`,
-`CODEC_WIRE_MISMATCH`, `MATCH_MULTIPLE`, `VALUE_DERIVED` — are reported with severity and a
+`CODEC_WIRE_MISMATCH`, `MATCH_MULTIPLE`, `VALUE_DERIVED`, `VALUE_INCONSISTENT` — are reported with severity and a
 source-node reference when a document is transformed; they never silently
 vanish.

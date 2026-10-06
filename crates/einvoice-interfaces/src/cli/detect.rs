@@ -58,6 +58,11 @@ pub fn resolve_spoke(name: &str) -> Result<Spoke, CliError> {
 /// guarantee, more than one) matches; it names why the spokes sharing the
 /// document's root refused it.
 pub fn detect_source(bytes: &[u8]) -> Result<Spoke, CliError> {
+    // Identities are matched on UTF-8. An undecodable encoding is left as is:
+    // detection still works on ASCII-compatible bytes, and the read that
+    // follows reports the encoding error itself.
+    let decoded = crate::encoding::to_utf8(bytes);
+    let bytes = decoded.as_deref().unwrap_or(bytes);
     let checked: Vec<(Spoke, Result<(), IdentityError>)> = Spoke::ALL
         .iter()
         .map(|&s| (s, s.identity().check(bytes)))

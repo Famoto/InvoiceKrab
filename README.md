@@ -20,13 +20,37 @@ No Rust code names any format by hand. A CIUS (a national/sector profile of a
 base syntax) can *inherit* another mapping's whole tree and restate only its
 deltas — XRechnung and Peppol are a handful of lines on top of UBL.
 
+## Disclaimer
+
+> [!WARNING]
+> **The bundled mappings are demos, not a compliance product.**
+>
+> The mappings in [config/mappings/](config/mappings/) are **examples and
+> starting points** for writing your own: they show how the DSL expresses
+> real formats. They are **not certified, not complete, and not maintained
+> against regulatory changes**. They pin values that are wrong for many senders
+> (FatturaPA's tax regime and recipient code, for instance), they are checked
+> against their XSDs but not against the official business rules (EN 16931,
+> XRechnung or Peppol Schematron), and they cover only the document types and
+> profiles listed below.
+>
+> KrabInvoice is a **framework**: you write the mappings for the formats,
+> profiles and business rules you need, and compile them into your own build.
+> No release binaries or container images are published, on purpose. Electronic
+> invoices carry legal and tax obligations, and **you are responsible for
+> validating every document you produce or accept** with the official tools
+> of the networks and authorities you exchange invoices with. The software is
+> provided without warranty of any kind; see [LICENSE](LICENSE) (AGPL-3.0,
+> sections 15 and 16).
+
 ---
 
 ## Table of contents
 
+- [Disclaimer](#disclaimer)
 - [Installation](#installation)
 - [Quick start](#quick-start)
-- [Bundled mappings](#bundled-mappings)
+- [Bundled (demo) mappings](#bundled-demo-mappings)
 - [The `krab-cli` CLI](#the-krab-cli-cli)
 - [The `krab-server` HTTP API](#the-krab-server-http-api)
 - [Library usage](#library-usage)
@@ -80,23 +104,31 @@ krab-cli --keys
 
 ---
 
-## Bundled mappings
+## Bundled (demo) mappings
 
-The exact list is generated from [config/mappings/](config/mappings/) at build time and can be
-checked with `krab-cli --list`. This workspace currently ships:
+These mappings are **demos and templates** (see the
+[disclaimer](#disclaimer)): copy, adapt or replace them for your own formats.
+The exact list is generated from [config/mappings/](config/mappings/) at build
+time and can be checked with `krab-cli --list`. This workspace currently ships:
 
 | Display name | Mapping file | Inherits | Notes |
 |--------------|--------------|----------|-------|
-| `ubl-invoice:2.1` | [config/mappings/ubl.toml](config/mappings/ubl.toml) | — | Base UBL Invoice tree, full EN 16931 model; reads `CustomizationID` `urn:cen.eu:en16931:2017` |
+| `ubl-invoice:2.1` | [config/mappings/ubl.toml](config/mappings/ubl.toml) | — | Base UBL Invoice tree (no `CreditNote`), covering the EN 16931 business terms; reads `CustomizationID` `urn:cen.eu:en16931:2017` |
 | `xrechnung-invoice:3.0.2` | [config/mappings/xrechnung.toml](config/mappings/xrechnung.toml) | `ubl-invoice:2.1` | XRechnung CIUS, identified by its exact `CustomizationID` |
 | `peppol-bis-billing:3.0` | [config/mappings/peppol.toml](config/mappings/peppol.toml) | `ubl-invoice:2.1` | Peppol BIS Billing CIUS, identified by its exact `CustomizationID` |
 | `facturx-invoice:1.0` | [config/mappings/facturx.toml](config/mappings/facturx.toml) | `cii-invoice:en16931` | Factur-X / ZUGFeRD (EN 16931 and BASIC profiles), identified by its exact guideline id |
-| `fatturapa:1.2.2` | [config/mappings/fatturapa.toml](config/mappings/fatturapa.toml) | — | Italian FatturaPA (`FatturaElettronica` tree), identified by its `versione` attribute |
+| `fatturapa:1.2.2` | [config/mappings/fatturapa.toml](config/mappings/fatturapa.toml) | — | Italian FatturaPA (`FatturaElettronica` tree, one invoice per file, transmission data pinned), identified by its `versione` attribute |
 
 [config/mappings/cii.toml](config/mappings/cii.toml) carries the full UN/CEFACT CII tree but is
 an **inherit-only base** (`[meta].disabled = true`): it exists to be inherited by
 Factur-X/ZUGFeRD and emits no spoke of its own, so it does not appear in
 `--list`.
+
+To start your own set, replace or remove these files: the build compiles
+whatever `config/mappings/*.toml` contains, and the demo spokes are not needed
+by anything else. Keep [config/derivations.toml](config/derivations.toml) (the
+EN 16931 calculation rules) and [config/codecs/](config/codecs/) as long as
+your mappings use their keys and codecs.
 
 ---
 
@@ -147,6 +179,11 @@ cat in.xml | krab-cli - ubl-invoice > out.xml
 
 Format names are **case-insensitive** and accept either the full versioned
 display name (`ubl-invoice:2.1`) or the bare prefix (`ubl-invoice`).
+
+Input may be in any of UTF-8, UTF-16, ISO-8859-1, windows-1252 or US-ASCII,
+as the document's BOM or XML declaration says; it is transcoded to UTF-8
+before it is read. Output is always UTF-8. Any other declared encoding is an
+error (exit 65).
 
 The transformed XML is written to stdout (or `--out`). Mapping **diagnostics**
 (warnings, info, errors) are written to **stderr**, so they never corrupt the
@@ -241,24 +278,34 @@ processed concurrently across a worker pool:
 
 ```bash
 cargo run --release -p einvoice-interfaces --bin krab-server
-# krab-server listening on 0.0.0.0:8080 — 16 workers, ... bytes memory budget, x12 reservation, 30s body timeout
+# krab-server listening on 0.0.0.0:8080 — 16 workers, ... bytes memory budget, x12 reservation,
+#   30s body timeout, 300s request timeout, 60s queue timeout
 
 curl -sS --data-binary @invoice.xml \
     'localhost:8080/transform?to=xrechnung-invoice&from=ubl-invoice'
 ```
 
 `POST /transform?to=<format>[&from=<format>]` — body is the source XML;
-`from` is auto-detected when omitted. `200` returns the transformed XML
-(warning diagnostics in the `X-Krab-Warnings` header), `400` bad
-parameters/XML, `422` mapping errors (rendered diagnostics in the body),
-`411` missing Content-Length, `413` a request that could never fit the
-memory budget.
+`from` is auto-detected when omitted. Query values are URL-decoded, so
+`to=xrechnung-invoice%3A3.0.2` works like `to=xrechnung-invoice:3.0.2`; a
+parameter given twice is a `400`. `200` returns the transformed XML
+(warning diagnostics in the `X-Krab-Warnings` header), `400` bad or repeated
+parameters, malformed XML or an unsupported character encoding, `422` mapping
+errors (rendered diagnostics in the body), `411` missing Content-Length,
+`413` a request that could never fit the memory budget, `408` a body not
+received within the request timeout, `503` (with `Retry-After`) a request that
+waited longer than the queue timeout for memory.
 
 Capability and health endpoints: `GET /formats` (JSON array of accepted
 format names), `GET /analyze[?from=<format>[&to=<format>]][&deny_lossy=1]`
 (the CLI's `--analyze` report; `deny_lossy` answers `422` with the report when
 the result is not lossless), `GET /health` (`200 ok`; `krab-server --healthcheck` self-probes it for the
-Docker `HEALTHCHECK`).
+Docker `HEALTHCHECK`, on the bound address, or on loopback when bound to
+`0.0.0.0` / `[::]`).
+
+`krab-server` has **no authentication and no TLS**: run it in a private
+network or behind a reverse proxy that authenticates clients and terminates
+TLS.
 
 Configuration is environment variables; defaults derive from the actual
 hardware (cgroup-aware, so container limits are respected):
@@ -269,12 +316,18 @@ hardware (cgroup-aware, so container limits are respected):
 | `KRAB_WORKERS`          | available parallelism                         |
 | `KRAB_MEM_BUDGET_BYTES` | detected memory x 1/2 (cgroup v2 limit first) |
 | `KRAB_MEM_BLOWUP`       | `12` — reservation = Content-Length x blowup  |
+| `KRAB_BODY_TIMEOUT_SECS` | `30` — longest gap between body frames       |
+| `KRAB_REQUEST_TIMEOUT_SECS` | `300` — deadline for the whole request body |
+| `KRAB_QUEUE_TIMEOUT_SECS` | `60` — longest wait for a memory reservation |
 
 There is no per-document size limit. Instead, each request reserves
 `Content-Length x KRAB_MEM_BLOWUP` bytes from a global budget before its
 body is read; requests run in parallel while budget remains and queue when
 it is exhausted, so request traffic can never drive the process out of
-memory. The default blowup of 12 is the worst measured peak (a FatturaPA
+memory. A queued request is shed with `503` after `KRAB_QUEUE_TIMEOUT_SECS`,
+and an admitted one must deliver its whole body within
+`KRAB_REQUEST_TIMEOUT_SECS`, so a slow or stalled client cannot hold the
+budget indefinitely. The default blowup of 12 is the worst measured peak (a FatturaPA
 source written as Factur-X) rounded up; `KRAB_MEM_BLOWUP=9` is safe when
 FatturaPA is never an input. A request larger than budget / blowup is
 refused with `413` — with the defaults, about 1/24 of the memory limit (e.g.
@@ -360,6 +413,14 @@ an `EngineError` only means the XML could not be parsed or rendered at all.
 - **Diagnostics, not silent loss.** Missing required fields, type errors, and
   taken fallbacks are reported as structured diagnostics with severity and a
   source-node reference — they don't vanish.
+- **Calculation rules derive and check.** EN 16931 totals a source lacks are
+  derived by their calculation rules (`VALUE_DERIVED`); totals it carries are
+  recomputed, and a contradiction (a wrong amount due, a line sum that does
+  not match the lines) is reported as `VALUE_INCONSISTENT`, a warning or an
+  error as [config/derivations.toml](config/derivations.toml) declares.
+- **Character encodings.** UTF-8, UTF-16, ISO-8859-1, windows-1252 and
+  US-ASCII sources are read (transcoded by BOM or XML declaration); output is
+  UTF-8.
 - **Static conversion analysis.** Every format carries a transformation
   contract; `--analyze` compares two to show what a conversion would lose or
   fail to fill before you run it, and `--deny-lossy` gates CI on it.

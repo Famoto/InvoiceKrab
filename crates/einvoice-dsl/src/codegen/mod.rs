@@ -1876,6 +1876,19 @@ mod tests {
             out.contains("if self.payable_amount.is_none() && self.payable_amount.is_some() {"),
             "{out}"
         );
+        assert!(out.contains("pub fn check_derived(&self)"), "{out}");
+        assert!(
+            out.contains(
+                "if let Some(carried) = self.payable_amount && self.payable_amount.is_some() {"
+            ),
+            "a checked `add` rule recomputes its carried target: {out}"
+        );
+        assert!(
+            out.contains(
+                r#"mismatches.push(("PayableAmount", "BR-CO-16", false, carried, computed));"#
+            ),
+            "the default check level is a warning: {out}"
+        );
         // No rules: the table is empty and nothing is derived.
         let plain = generate_hub(&hub);
         assert!(plain.contains("pub const DERIVATIONS"), "{plain}");
@@ -1899,6 +1912,7 @@ mod tests {
             add = ["PayableAmount"]
             requires = ["PayableAmount"]
             skip_zero = true
+            check = "off"
             "#,
         )
         .unwrap();
@@ -1916,6 +1930,10 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("if !value.is_zero() {"), "{out}");
+        assert!(
+            !out.contains("mismatches.push("),
+            "neither a `value` rule nor a `check = \"off\"` rule is checked: {out}"
+        );
         syn::parse_file(&out).expect("valid Rust");
     }
 

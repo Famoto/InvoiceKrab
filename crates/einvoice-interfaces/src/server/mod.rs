@@ -23,11 +23,13 @@
 //! One request transforms one document (`POST /transform`). There is no
 //! per-document size limit: a request reserves `Content-Length x
 //! blowup` bytes from the gate before its body is read, runs in parallel
-//! with others while budget remains, and waits (FIFO) when it is exhausted.
-//! The only size-based rejection is a reservation larger than the whole
-//! budget. Requests without a Content-Length cannot be sized and are refused
-//! with 411. Body reads and writes carry a per-frame timeout, so a
-//! live-but-silent peer cannot pin a reservation indefinitely.
+//! with others while budget remains, and waits (FIFO) when it is exhausted —
+//! up to the queue timeout, after which it is shed with 503. The only
+//! size-based rejection is a reservation larger than the whole budget.
+//! Requests without a Content-Length cannot be sized and are refused with
+//! 411. Body reads and writes carry a per-frame timeout and the whole upload
+//! a deadline, so neither a silent nor a trickling peer can pin a
+//! reservation indefinitely.
 //!
 //! # Testing
 //!
@@ -45,4 +47,4 @@ pub use axum::Router;
 pub use config::{Config, ConfigError};
 pub use gate::{Guard, MemGate, NeverFits};
 pub use handle::{Reply, analyze, formats, handle};
-pub use router::router;
+pub use router::{Timeouts, router};

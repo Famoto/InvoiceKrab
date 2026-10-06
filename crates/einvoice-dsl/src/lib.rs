@@ -47,7 +47,7 @@ pub use contract::{
     Collapse, KeyContract, RequiredRoute, Route, Selector, SpokeContract, check_required_routes,
     render_contract, spoke_contract,
 };
-pub use derive::{Derivation, DerivationKind, check_derivations, parse_derivations};
+pub use derive::{CheckLevel, Derivation, DerivationKind, check_derivations, parse_derivations};
 pub use error::{ConfigError, Diagnostic, Severity};
 pub use hub::{CanonicalField, CanonicalModel, CanonicalScope, canonical_scope_of, derive_hub};
 pub use ir::{MappingIr, build_ir, build_ir_with};
