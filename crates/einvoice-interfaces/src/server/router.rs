@@ -188,7 +188,7 @@ async fn transform(State(state): State<AppState>, request: Request) -> Response 
     let read = read_body(request.into_body(), length);
     let body = match tokio::time::timeout(state.timeouts.request, read).await {
         Ok(Ok(body)) => body,
-        Ok(Err(response)) => return response,
+        Ok(Err(problem)) => return plain(StatusCode::BAD_REQUEST, problem).close(),
         Err(_elapsed) => {
             return plain(
                 StatusCode::REQUEST_TIMEOUT,
@@ -216,8 +216,9 @@ async fn transform(State(state): State<AppState>, request: Request) -> Response 
 }
 
 /// Reads exactly the body announced by `length` into one pre-sized buffer;
-/// `Err` carries the response for a body that overruns `length` or fails.
-async fn read_body(mut stream: Body, length: u64) -> Result<Vec<u8>, Response> {
+/// `Err` says why a body that overruns `length` or fails was not read (a
+/// `400`, answered with `Connection: close` by the caller).
+async fn read_body(mut stream: Body, length: u64) -> Result<Vec<u8>, String> {
     let mut body = Vec::with_capacity(length as usize);
     loop {
         match stream.frame().await {
@@ -229,21 +230,11 @@ async fn read_body(mut stream: Body, length: u64) -> Result<Vec<u8>, Response> {
                 // Hyper enforces Content-Length framing on a real socket;
                 // this keeps the reservation honest for any other transport.
                 if body.len() + data.len() > length as usize {
-                    return Err(plain(
-                        StatusCode::BAD_REQUEST,
-                        "request body exceeds Content-Length".into(),
-                    )
-                    .close());
+                    return Err("request body exceeds Content-Length".into());
                 }
                 body.extend_from_slice(&data);
             }
-            Some(Err(e)) => {
-                return Err(plain(
-                    StatusCode::BAD_REQUEST,
-                    format!("failed reading request body: {e}"),
-                )
-                .close());
-            }
+            Some(Err(e)) => return Err(format!("failed reading request body: {e}")),
         }
     }
 }

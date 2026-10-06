@@ -101,9 +101,9 @@ fn decode_utf16(bytes: &[u8], order: Utf16) -> Result<String, EncodingError> {
     if !bytes.len().is_multiple_of(2) {
         return Err(EncodingError::Malformed("UTF-16"));
     }
-    let units = bytes.chunks_exact(2).map(|pair| match order {
-        Utf16::Le => u16::from_le_bytes([pair[0], pair[1]]),
-        Utf16::Be => u16::from_be_bytes([pair[0], pair[1]]),
+    let units = bytes.as_chunks::<2>().0.iter().map(|&pair| match order {
+        Utf16::Le => u16::from_le_bytes(pair),
+        Utf16::Be => u16::from_be_bytes(pair),
     });
     char::decode_utf16(units)
         .collect::<Result<String, _>>()
