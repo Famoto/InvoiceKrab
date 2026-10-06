@@ -1,0 +1,97 @@
+# Codecs of the Italian FatturaPA format: its code lists, number formats and
+# character set, translated from and to the EN 16931 forms the hub holds.
+#
+# Code tables are `[canonical, wire]` pairs: writing takes the first pair for
+# the hub value, reading the first pair for the document value, so several
+# FatturaPA codes can read as one EN 16931 code. A hub value without a pair is
+# a CODEC_INVALID error on write, never silently replaced.
+
+# BT-3 invoice type code (UNTDID 1001) ⇄ TipoDocumento.
+[codec.fatturapa-tipo-documento]
+for_type = "string"
+values = [
+    ["380", "TD01"],   # commercial invoice → fattura
+    ["386", "TD02"],   # prepayment invoice → acconto/anticipo su fattura
+    ["381", "TD04"],   # credit note → nota di credito
+    ["383", "TD05"],   # debit note → nota di debito
+    # Read-only: further FatturaPA document kinds read as their EN 16931 kind.
+    ["386", "TD03"],   # acconto/anticipo su parcella
+    ["380", "TD06"],   # parcella
+    ["380", "TD24"],   # fattura differita (art. 21, 4 a)
+    ["380", "TD25"],   # fattura differita (art. 21, 4 b)
+]
+
+# BT-81 payment means type code (UNTDID 4461) ⇄ ModalitaPagamento.
+[codec.fatturapa-modalita-pagamento]
+for_type = "string"
+values = [
+    ["58", "MP05"],    # SEPA credit transfer → bonifico
+    ["30", "MP05"],    # credit transfer → bonifico
+    ["31", "MP05"],    # debit transfer → bonifico
+    ["42", "MP05"],    # payment to bank account → bonifico
+    ["10", "MP01"],    # cash → contanti
+    ["20", "MP02"],    # cheque → assegno
+    ["48", "MP08"],    # bank card → carta di pagamento
+    ["54", "MP08"],    # credit card
+    ["55", "MP08"],    # debit card
+    ["59", "MP19"],    # SEPA direct debit → SEPA Direct Debit
+    ["49", "MP19"],    # direct debit
+    # Read-only.
+    ["20", "MP03"],    # assegno circolare
+    ["59", "MP20"],    # SEPA Direct Debit CORE
+    ["59", "MP21"],    # SEPA Direct Debit B2B
+]
+
+# BT-118 / BT-151 VAT category code (UNTDID 5305) ⇄ Natura. A standard-rated
+# (S) amount carries no Natura, so `S` writes nothing; mappings read an absent
+# Natura as `S` with `default`.
+[codec.fatturapa-natura]
+for_type = "string"
+values = [
+    ["S", ""],
+    ["E", "N4"],       # exempt → esenti
+    ["G", "N3.1"],     # export → non imponibili, esportazioni
+    ["K", "N3.2"],     # intra-community supply → cessioni intracomunitarie
+    ["Z", "N3.6"],     # zero rated → non imponibili, altre operazioni
+    ["O", "N2.2"],     # outside the scope of VAT → non soggette, altri casi
+    ["AE", "N6.9"],    # reverse charge → inversione contabile, altri casi
+    # Read-only: the finer FatturaPA natures read as their EN 16931 category.
+    ["O", "N1"], ["O", "N2"], ["O", "N2.1"], ["O", "N7"],
+    ["Z", "N3"], ["Z", "N3.3"], ["Z", "N3.4"], ["Z", "N3.5"],
+    ["E", "N5"],
+    ["AE", "N6"], ["AE", "N6.1"], ["AE", "N6.2"], ["AE", "N6.3"], ["AE", "N6.4"],
+    ["AE", "N6.5"], ["AE", "N6.6"], ["AE", "N6.7"], ["AE", "N6.8"],
+]
+
+# BG-27 / BG-28 charge indicator ⇄ ScontoMaggiorazione/Tipo: a charge is a
+# maggiorazione (MG), an allowance a sconto (SC).
+[codec.fatturapa-sconto-maggiorazione]
+for_type = "boolean"
+lexical = "MG|SC"
+
+# Amount2DecimalType / RateType: exactly two fraction digits.
+[codec.fatturapa-amount-2]
+for_type = "decimal"
+fraction_digits = [2, 2]
+
+# Amount8DecimalType / QuantitaType: two to eight fraction digits.
+[codec.fatturapa-amount-8]
+for_type = "decimal"
+fraction_digits = [2, 8]
+
+# The ...LatinType strings: ISO 8859-1 text.
+[codec.fatturapa-text]
+for_type = "string"
+charset = "latin-1"
+
+# CAPType: an Italian postal code, five digits. A postal code of another form
+# (a foreign address) cannot be written: it is refused, never padded or cut.
+[codec.fatturapa-cap]
+for_type = "string"
+digits = 5
+
+# IdFiscaleType: a VAT identifier (BT-31, BT-48) as its two-letter country
+# prefix (IdPaese) and the number (IdCodice).
+[codec.fatturapa-id-fiscale]
+for_type = "identifier"
+split = { at = 2, into = ["IdPaese", "IdCodice"] }

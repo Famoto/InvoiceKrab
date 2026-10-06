@@ -24,6 +24,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use einvoice_dsl::compile::{CompileOutput, SpokeInput, compile};
+use einvoice_dsl::derive::check_derivations;
 use einvoice_dsl::error::Severity;
 use einvoice_dsl::loader::load_config;
 use einvoice_dsl::report::{coverage_matrix, gap_report, render_coverage_markdown};
@@ -100,7 +101,9 @@ fn with_spokes(
             chain: &s.chain,
         })
         .collect();
-    let out = compile(&spokes, &loaded.codecs);
+    let mut out = compile(&spokes, &loaded.codecs);
+    out.diagnostics
+        .extend(check_derivations(&out.hub, &loaded.derivations));
     render(out)
 }
 

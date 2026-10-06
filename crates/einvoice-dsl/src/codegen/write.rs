@@ -9,9 +9,9 @@
 //! deepest interior element on its path that other mapped nodes also write
 //! into — must be non-empty (so `PartyTaxScheme/TaxScheme/ID = "VAT"` appears
 //! exactly when the party has a `PartyTaxScheme/CompanyID`). A constant with
-//! no such owner is written unconditionally at root and, inside a collection,
-//! on every non-empty item, so a constant never resurrects an otherwise-empty
-//! element. Constants are written last in their scope, after everything that
+//! no such owner — or whose owner is an always-present element (below) — is
+//! written unconditionally at root and, inside a collection, on every
+//! non-empty item, so a constant never resurrects an otherwise-empty element. Constants are written last in their scope, after everything that
 //! could fill their owner.
 //!
 //! A structural node with `required = true` names an interior element the
@@ -48,7 +48,7 @@ use std::fmt::Write as _;
 
 use crate::codec::{Codec, Pattern};
 use crate::node::{DerivationScope, Scope, SourceNode};
-use crate::source_model::{FieldType, SourceModelMeta};
+use crate::source_model::{FieldType, SourceModelMeta, xml_field_name};
 use crate::types::MappingType;
 
 use super::access::{assign_target_expr, collection_item_struct, walk_segments};
@@ -431,7 +431,8 @@ fn write_collection_block(
 /// *owner* — the deepest interior element on its path that one of
 /// `scope_content` also writes into — the assignment is guarded on that owner
 /// being non-empty, so the constant completes real content instead of
-/// conjuring an element on its own.
+/// conjuring an element on its own — unless the owner is always present, in
+/// which case there is always a hole to fill.
 #[allow(clippy::too_many_arguments)]
 fn write_constant_block(
     out: &mut String,
@@ -458,7 +459,11 @@ fn write_constant_block(
 
     let pad = "    ".repeat(indent);
     let _ = writeln!(out, "{pad}// constant -> {path}");
-    match constant_owner(path, scope_content) {
+    // An always-present owner (a `required` structural element) exists in
+    // every document, so the constant fills a hole that is always there.
+    let owner = constant_owner(path, scope_content)
+        .filter(|owner| !always_present_paths(source, start_struct, "").contains(owner));
+    match owner {
         Some(owner) => {
             let owner_ref = struct_ref_expr(source, start_struct, &owner, src_var);
             let _ = writeln!(
@@ -631,6 +636,45 @@ fn write_scalar_block(
     } else {
         let _ = writeln!(out, "{pad}if let Some(value) = &{hub_var}.{field} {{");
     }
+    if let Some(Codec {
+        pattern: Pattern::Split { at, tail, .. },
+        ..
+    }) = codec
+    {
+        // The value's two parts go to the element's head and tail children.
+        let tail_path = match path.rsplit_once('.') {
+            Some((element, _)) => format!("{element}.{}", xml_field_name(tail)),
+            None => xml_field_name(tail),
+        };
+        let tail_target = assign_target_expr(source, start_struct, &tail_path, src_var);
+        let _ = writeln!(
+            out,
+            "{pad}    match codec::split_at(value.as_str(), {at}) {{"
+        );
+        let _ = writeln!(out, "{pad}        Some((head, tail)) => {{");
+        let _ = writeln!(out, "{pad}            {target} = Some(head);");
+        let _ = writeln!(out, "{pad}            {tail_target} = Some(tail);");
+        let _ = writeln!(out, "{pad}        }}");
+        let _ = writeln!(out, "{pad}        None => {{");
+        let msg = format!(
+            "format!(\"`{{value}}` cannot be encoded with codec `{}` ({})\")",
+            codec.map_or("", |c| c.id.as_str()),
+            codec.map_or("", |c| c.lexical.as_str())
+        );
+        DiagSpec::new("Severity::Error", "CODEC_INVALID", node.id.as_str(), &msg)
+            .key(key)
+            .path(path)
+            .index(index_var)
+            .emit(out, &format!("{pad}            "));
+        let _ = writeln!(out, "{pad}        }}");
+        let _ = writeln!(out, "{pad}    }}");
+        if node.required {
+            let _ = writeln!(out, "{pad}}} else {{");
+            emit_required_missing(out, node, key, path, index_var, &format!("{pad}    "));
+        }
+        let _ = writeln!(out, "{pad}}}");
+        return;
+    }
     match codec {
         Some(codec) => write_encoded(out, node, codec, key, index_var, &format!("{pad}    ")),
         None => {
@@ -732,6 +776,57 @@ fn write_encoded(
             let _ = writeln!(out, "{pad}    }}");
             let _ = writeln!(out, "{pad}}};");
         }
+        (Pattern::Values(pairs), _) => {
+            // First pair per canonical value; an unmapped value cannot be
+            // written.
+            let mut seen = std::collections::BTreeSet::new();
+            let _ = writeln!(out, "{pad}let rendered = match value.as_str() {{");
+            for (canonical, wire) in pairs {
+                if seen.insert(canonical.as_str()) {
+                    let _ = writeln!(
+                        out,
+                        "{pad}    {canonical:?} => CompactString::from({wire:?}),"
+                    );
+                }
+            }
+            let _ = writeln!(out, "{pad}    _ => {{");
+            encode_failure(out, node, codec, key, index_var, &format!("{pad}        "));
+            let _ = writeln!(out, "{pad}    }}");
+            let _ = writeln!(out, "{pad}}};");
+        }
+        (Pattern::Fraction { min, max }, MappingType::Decimal) => {
+            let _ = writeln!(
+                out,
+                "{pad}let rendered = match codec::format_fraction(&value.to_string(), {min}, {max}) {{"
+            );
+            let _ = writeln!(out, "{pad}    Some(s) => s,");
+            let _ = writeln!(out, "{pad}    None => {{");
+            encode_failure(out, node, codec, key, index_var, &format!("{pad}        "));
+            let _ = writeln!(out, "{pad}    }}");
+            let _ = writeln!(out, "{pad}}};");
+        }
+        (Pattern::Latin1, _) => {
+            let _ = writeln!(
+                out,
+                "{pad}let rendered = match codec::to_latin1(value.as_str()) {{"
+            );
+            let _ = writeln!(out, "{pad}    Some(s) => s,");
+            let _ = writeln!(out, "{pad}    None => {{");
+            encode_failure(out, node, codec, key, index_var, &format!("{pad}        "));
+            let _ = writeln!(out, "{pad}    }}");
+            let _ = writeln!(out, "{pad}}};");
+        }
+        (Pattern::Digits(n), _) => {
+            let _ = writeln!(
+                out,
+                "{pad}let rendered = match codec::exact_digits(value.as_str(), {n}) {{"
+            );
+            let _ = writeln!(out, "{pad}    Some(s) => s,");
+            let _ = writeln!(out, "{pad}    None => {{");
+            encode_failure(out, node, codec, key, index_var, &format!("{pad}        "));
+            let _ = writeln!(out, "{pad}    }}");
+            let _ = writeln!(out, "{pad}}};");
+        }
         _ => {
             let _ = writeln!(
                 out,
@@ -740,6 +835,28 @@ fn write_encoded(
             );
         }
     }
+}
+
+/// Emits the `CODEC_INVALID` diagnostic for a canonical value the node's codec
+/// cannot encode, and the empty rendering the writer's non-empty guard skips.
+fn encode_failure(
+    out: &mut String,
+    node: &SourceNode,
+    codec: &Codec,
+    key: &str,
+    index_var: Option<&str>,
+    pad: &str,
+) {
+    let msg = format!(
+        "format!(\"`{{value}}` cannot be encoded with codec `{}` ({})\")",
+        codec.id, codec.lexical
+    );
+    DiagSpec::new("Severity::Error", "CODEC_INVALID", node.id.as_str(), &msg)
+        .key(key)
+        .path(&node.source_path)
+        .index(index_var)
+        .emit(out, pad);
+    let _ = writeln!(out, "{pad}CompactString::new(\"\")");
 }
 
 /// Emits a writer-side missing-required diagnostic for a canonical field that

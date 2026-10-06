@@ -206,7 +206,8 @@ krab-cli --keys xrechnung-invoice
 reads it, and written by every format with a schema it validates against that
 format's XSD (up to its documented `known_gaps`) and reads back with the same
 value for every canonical key the format covers. Keys a format does not cover
-are reported, not failed. The declared paths are relative to ROOT, the
+are reported, not failed; so are the samples a format is documented to refuse
+because it cannot represent their data (`[meta.schema].refuses`). The declared paths are relative to ROOT, the
 workspace root (default: the current directory).
 
 ```bash

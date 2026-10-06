@@ -21,3 +21,12 @@ detect = ["factur-x", "zugferd"]
 # EN 16931 profile schema (CII D16B, restricted to the profile).
 [meta.schema]
 xsd = "testfiles/xsd/facturx-en16931/Factur-X_EN16931.xsd"
+
+# The full EN 16931 invoice (as testfiles/en16931-full-ubl.xml) in CII syntax.
+[[meta.samples]]
+file = "testfiles/en16931-full-cii.xml"
+
+# BT-24: a Factur-X EN 16931 profile document identifies itself by the plain
+# EN 16931 specification identifier, whatever the source said.
+[CrossIndustryInvoice.ExchangedDocumentContext.GuidelineSpecifiedDocumentContextParameter.ID]
+constant = "urn:cen.eu:en16931:2017"

@@ -5,11 +5,19 @@
 //! codegen and intentionally distinct from the XML-name/`doc_format` conversions
 //! elsewhere (canonical keys are PascalCase with no acronym/digit handling).
 
+use crate::ident::escape_keyword;
 use crate::types::MappingType;
 
 /// Converts a PascalCase/`mixed` canonical key to a `snake_case` Rust field name
 /// (e.g. `InvoiceNumber` → `invoice_number`, `LineId` → `line_id`).
 pub(crate) fn snake_case(s: &str) -> String {
+    escape_keyword(snake_case_raw(s))
+}
+
+/// [`snake_case`] before keyword escaping. A well-formed (E014) key is ASCII
+/// PascalCase, so its snake form can only clash with a keyword (`Type` →
+/// `type`), which [`escape_keyword`] turns into `type_`.
+fn snake_case_raw(s: &str) -> String {
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
         if c.is_ascii_uppercase() {
@@ -26,7 +34,7 @@ pub(crate) fn snake_case(s: &str) -> String {
 
 /// The generated item-struct name for a canonical collection key (e.g.
 /// `InvoiceLines` → `InvoiceLinesItem`).
-pub(super) fn item_struct_name(coll_key: &str) -> String {
+pub(crate) fn item_struct_name(coll_key: &str) -> String {
     format!("{coll_key}Item")
 }
 

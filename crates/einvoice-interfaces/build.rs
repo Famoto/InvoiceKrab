@@ -41,7 +41,8 @@ use einvoice_dsl::compile::{CompileOutput, SpokeInput};
 use einvoice_dsl::ir::MappingIr;
 use einvoice_dsl::{
     LoadedSpoke, SchemaMeta, Severity, SourceModelMeta, SpokeContract, SpokeDedupPlan, SpokeModule,
-    compile, generate_hub, load_config, plan_spoke_dedup, render_contract, spoke_contract,
+    check_derivations, compile, generate_hub_with, load_config, plan_spoke_dedup, render_contract,
+    spoke_contract,
 };
 
 /// One discovered spoke: its meta-derived names plus its compiled artifacts.
@@ -79,7 +80,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     // Re-run when codecs or spokes are added or removed, not only when one is
     // edited.
-    for dir in ["mappings", "codecs"] {
+    for dir in ["mappings", "codecs", "derivations.toml"] {
         println!("cargo:rerun-if-changed={}", config_dir.join(dir).display());
     }
 
@@ -101,13 +102,20 @@ fn main() {
             chain: &s.chain,
         })
         .collect();
-    let out = compile(&inputs, &loaded.codecs);
+    let mut out = compile(&inputs, &loaded.codecs);
+    // The derivation rules are checked against the hub the spokes derived.
+    out.diagnostics
+        .extend(check_derivations(&out.hub, &loaded.derivations));
     assert_clean(&out);
 
     let spokes = collect_spokes(&out, &loaded.spokes);
 
     // Emit the shared hub once (already derived + validated by `compile`).
-    std::fs::write(out_dir.join("hub.rs"), generate_hub(&out.hub)).expect("write hub.rs");
+    std::fs::write(
+        out_dir.join("hub.rs"),
+        generate_hub_with(&out.hub, &loaded.derivations),
+    )
+    .expect("write hub.rs");
 
     // Plan the deduplicated spoke modules (shared structs modules for spokes
     // with identical synthesized source models, aliases for byte-identical
@@ -324,13 +332,14 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
         let schema = match &spoke.schema {
             None => "None".to_string(),
             Some(schema) => format!(
-                "Some(&crate::conformance::Schema {{ xsd: {:?}, catalog: {}, known_gaps: &[{}] }})",
+                "Some(&crate::conformance::Schema {{ xsd: {:?}, catalog: {}, known_gaps: &[{}], refuses: &[{}] }})",
                 schema.xsd,
                 match &schema.catalog {
                     Some(catalog) => format!("Some({catalog:?})"),
                     None => "None".to_string(),
                 },
-                str_list(&schema.known_gaps)
+                str_list(&schema.known_gaps),
+                str_list(&schema.refuses)
             ),
         };
         let _ = writeln!(out, "            Spoke::{} => {schema},", spoke.variant);

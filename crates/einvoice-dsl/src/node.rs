@@ -181,6 +181,10 @@ pub struct RawNode {
     /// Fixed write-side value: the writer always emits this literal at the
     /// node's source path, ignoring the hub. Read side is unaffected.
     pub constant: Option<String>,
+    /// Read-side default: the canonical value the reader assigns when the
+    /// source carries none (after fallbacks). The counterpart of `constant`,
+    /// which fixes the write side; the writer is unaffected.
+    pub default: Option<String>,
     /// Canonical key this node mirrors: the writer fans the key's hub value out
     /// to this path too; the reader checks the copy against the canonical value
     /// (`CLONE_MISMATCH`). Mutually exclusive with `canonical_key`.
@@ -252,6 +256,7 @@ impl RawNode {
             || self.join_with.is_some()
             || self.normalize.is_some()
             || self.constant.is_some()
+            || self.default.is_some()
             || self.clone_of.is_some()
             || self.codec.is_some()
     }
@@ -297,6 +302,7 @@ impl RawNode {
                 join_with: child.join_with.clone().or_else(|| self.join_with.clone()),
                 normalize: child.normalize.clone().or_else(|| self.normalize.clone()),
                 constant: child.constant.clone().or_else(|| self.constant.clone()),
+                default: child.default.clone().or_else(|| self.default.clone()),
                 clone_of: child.clone_of.clone().or_else(|| self.clone_of.clone()),
                 disabled: child.disabled.or(self.disabled),
                 replace: None,
@@ -409,6 +415,8 @@ pub struct SourceNode {
     pub normalize: Vec<NormalizeOp>,
     /// Fixed write-side value (writer emits this literal, hub ignored on write).
     pub constant: Option<String>,
+    /// Read-side default (reader assigns it when the source has no value).
+    pub default: Option<String>,
     /// Canonical key this node mirrors (write fan-out + read consistency check).
     pub clone_of: Option<String>,
     /// Human description.

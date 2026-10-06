@@ -57,7 +57,7 @@ mod read;
 mod source;
 mod write;
 
-pub use hub::generate_hub;
+pub use hub::{generate_hub, generate_hub_with};
 
 use crate::codec::CodecTable;
 use crate::ir::MappingIr;
@@ -286,7 +286,7 @@ fn mapper_section(out: &mut String, ir: &MappingIr, source: &SourceModelMeta, co
 mod tests {
     use super::naming::snake_case;
     use super::source::serde_attr;
-    use super::{generate_hub, generate_spoke};
+    use super::{generate_hub, generate_hub_with, generate_spoke};
     use crate::codec::CodecTable;
     use crate::hub::{CanonicalModel, derive_hub};
     use crate::ir::{MappingIr, build_ir, build_ir_with};
@@ -1669,6 +1669,254 @@ mod tests {
             !out.contains("let _ = source.transaction.get_or_insert_default();\n"),
             "only the flagged element: {out}"
         );
+    }
+
+    #[test]
+    fn test_constant_in_an_always_present_element_is_written_unconditionally() {
+        // CII's document context: the guideline ID is pinned, the business
+        // process is mapped, and the context element is mandatory. With no
+        // business process the context still exists, so the pinned ID must be
+        // written there rather than waiting for content that never comes.
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.Context]
+            required = true
+
+            [Invoice.Context.Process.ID]
+            type = "identifier"
+            canonical_key = "BusinessProcessType"
+
+            [Invoice.Context.Guideline.ID]
+            type = "identifier"
+            constant = "urn:cen.eu:en16931:2017"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
+        let block = &out[out
+            .find("// constant -> context.guideline.id")
+            .expect("constant block")..];
+        let block = &block[..block.find("\n\n").unwrap_or(block.len())];
+        assert!(!block.contains("is_some_and"), "unguarded: {block}");
+    }
+
+    #[test]
+    fn test_default_fills_the_key_when_the_source_has_none() {
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.Natura]
+            type = "string"
+            canonical_key = "VatCategoryCode"
+            required = true
+            default = "S"
+
+            [Invoice.Rate]
+            type = "decimal"
+            canonical_key = "VatCategoryRate"
+            default = "0.00"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
+        let read = &out
+            [out.find("pub fn read(").expect("reader")..out.find("pub fn write(").expect("writer")];
+        assert!(
+            read.contains("main.vat_category_code = Some(CompactString::from(\"S\"));"),
+            "{read}"
+        );
+        assert!(
+            read.contains("main.vat_category_rate = Some(Decimal::from_str(\"0.00\")"),
+            "{read}"
+        );
+        assert!(
+            !read.contains("REQUIRED_MISSING"),
+            "a default always fills: {read}"
+        );
+    }
+
+    /// One codec of every non-pattern kind, as a FatturaPA-like spoke uses them.
+    fn fatturapa_like() -> (MappingIr, SourceModelMeta, CodecTable) {
+        let codecs: CodecTable = crate::codec::parse_codecs(
+            r#"
+            [codec.doc-type]
+            for_type = "string"
+            values = [["380", "TD01"], ["381", "TD04"], ["380", "TD06"], ["S", ""]]
+
+            [codec.amount-2]
+            for_type = "decimal"
+            fraction_digits = [2, 2]
+
+            [codec.text]
+            for_type = "string"
+            charset = "latin-1"
+
+            [codec.vat-split]
+            for_type = "identifier"
+            split = { at = 2, into = ["IdPaese", "IdCodice"] }
+            "#,
+        )
+        .expect("codecs parse")
+        .into_iter()
+        .map(|c| (c.id.clone(), c))
+        .collect();
+        let src = r#"[meta]
+            doc_format = "f"
+            format_version = "1"
+            mapping_version = "1"
+            canonical_model = "c:1"
+            root = "Invoice"
+
+            [Invoice.TipoDocumento]
+            type = "string"
+            canonical_key = "InvoiceTypeCode"
+            codec = "doc-type"
+
+            [Invoice.Importo]
+            type = "decimal"
+            canonical_key = "PayableAmount"
+            codec = "amount-2"
+
+            [Invoice.Descrizione]
+            type = "string"
+            canonical_key = "ItemName"
+            codec = "text"
+
+            [Invoice.Cedente.IdFiscaleIVA]
+            type = "identifier"
+            canonical_key = "SellerVatIdentifier"
+            codec = "vat-split"
+            required = true
+        "#;
+        let (ir, source, diags) = build_ir_with(&[parse_mapping(src).expect("parses")], &codecs);
+        assert!(diags.is_empty(), "{diags:?}");
+        (ir, source, codecs)
+    }
+
+    #[test]
+    fn test_split_codec_synthesizes_its_two_part_elements() {
+        let (ir, source, codecs) = fatturapa_like();
+        let out = generate_spoke(&ir, &source, &codecs, "super::hub");
+        let at = |needle: &str| {
+            out.find(needle)
+                .unwrap_or_else(|| panic!("{needle}: {out}"))
+        };
+        assert!(
+            at("rename = \"IdPaese\"") < at("rename = \"IdCodice\""),
+            "head before tail"
+        );
+        assert!(out.contains("rename = \"IdFiscaleIVA\""), "{out}");
+    }
+
+    #[test]
+    fn test_value_codecs_decode_on_read() {
+        let (ir, source, codecs) = fatturapa_like();
+        let out = generate_spoke(&ir, &source, &codecs, "super::hub");
+        let read = &out[out.find("pub fn read(").unwrap()..out.find("pub fn write(").unwrap()];
+        // Code table, first pair per wire value: TD06 reads as 380 too, and the
+        // empty wire value of `S` is never read.
+        assert!(read.contains(r#""TD01" => Some("380"),"#), "{read}");
+        assert!(read.contains(r#""TD06" => Some("380"),"#), "{read}");
+        assert!(!read.contains(r#""" => Some("S")"#), "{read}");
+        assert!(
+            read.contains("Decimal::from_str(raw.trim()).ok()"),
+            "{read}"
+        );
+        // The split value is read as its two parts joined.
+        assert!(read.contains("codec::join_parts("), "{read}");
+        assert!(
+            read.contains("id_paese") && read.contains("id_codice"),
+            "{read}"
+        );
+    }
+
+    #[test]
+    fn test_value_codecs_encode_on_write() {
+        let (ir, source, codecs) = fatturapa_like();
+        let out = generate_spoke(&ir, &source, &codecs, "super::hub");
+        let write = &out[out.find("pub fn write(").unwrap()..];
+        // First pair per canonical value: 380 writes TD01, never TD06.
+        assert!(
+            write.contains(r#""380" => CompactString::from("TD01"),"#),
+            "{write}"
+        );
+        assert!(!write.contains(r#"CompactString::from("TD06")"#), "{write}");
+        assert!(
+            write.contains(r#""S" => CompactString::from(""),"#),
+            "{write}"
+        );
+        assert!(write.contains("codec::format_fraction("), "{write}");
+        assert!(write.contains("codec::to_latin1("), "{write}");
+        assert!(
+            write.contains("codec::split_at(value.as_str(), 2)"),
+            "{write}"
+        );
+        assert!(
+            write.contains("REQUIRED_MISSING"),
+            "required split node: {write}"
+        );
+    }
+
+    #[test]
+    fn test_generate_hub_with_derivations_emits_the_rules() {
+        let (_, hub, _) = compiled();
+        let rules = crate::derive::parse_derivations(
+            r#"
+            [[derive]]
+            key = "PayableAmount"
+            rule = "BR-CO-16"
+            add = ["PayableAmount"]
+            "#,
+        )
+        .unwrap();
+        let out = generate_hub_with(&hub, &rules);
+        assert!(out.contains("pub fn derive_missing(&mut self)"), "{out}");
+        assert!(
+            out.contains(r#"("PayableAmount", "BR-CO-16", &["PayableAmount"]),"#),
+            "{out}"
+        );
+        assert!(
+            out.contains("if self.payable_amount.is_none() && self.payable_amount.is_some() {"),
+            "{out}"
+        );
+        // No rules: the table is empty and nothing is derived.
+        let plain = generate_hub(&hub);
+        assert!(plain.contains("pub const DERIVATIONS"), "{plain}");
+        assert!(!plain.contains("derived.push"), "{plain}");
+        syn::parse_file(&out).expect("valid Rust");
+    }
+
+    #[test]
+    fn test_generate_hub_value_rule_fills_nested_items_and_compiles() {
+        let (_, hub, _) = compiled();
+        let rules = crate::derive::parse_derivations(
+            r#"
+            [[derive]]
+            key = "InvoiceLines/Quantity"
+            rule = "TEST"
+            value = "1"
+
+            [[derive]]
+            key = "PayableAmount"
+            rule = "BR-CO-16"
+            add = ["PayableAmount"]
+            requires = ["PayableAmount"]
+            skip_zero = true
+            "#,
+        )
+        .unwrap();
+        // The second rule needs itself (E113), but both targets are valid.
+        assert!(
+            crate::derive::check_derivations(&hub, &rules)
+                .iter()
+                .all(|d| d.code != "E110" && d.code != "E114")
+        );
+        let out = generate_hub_with(&hub, &rules);
+        assert!(out.contains("for i0 in &mut self.invoice_lines {"), "{out}");
+        assert!(out.contains("if i0.quantity.is_none() {"), "{out}");
+        assert!(
+            out.contains("i0.quantity = Some(<Decimal as std::str::FromStr>::from_str(\"1\")"),
+            "{out}"
+        );
+        assert!(out.contains("if !value.is_zero() {"), "{out}");
+        syn::parse_file(&out).expect("valid Rust");
     }
 
     #[test]

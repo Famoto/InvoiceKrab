@@ -2,8 +2,8 @@
 #
 # Peppol BIS Billing documents are UBL `Invoice`s carrying the full EN 16931
 # semantic model, so this spoke *inherits* `ubl.toml` (`inherits =
-# "ubl-invoice:2.1"`) and adds its own identity and detection marker plus one
-# delta: Peppol tags the seller's tax registration (BT-32) `PartyTaxScheme` with
+# "ubl-invoice:2.1"`) and adds its own identity and detection marker, pins its
+# specification and process identifiers, and restates one delta: Peppol tags the seller's tax registration (BT-32) `PartyTaxScheme` with
 # `TaxScheme/ID` `TAX` where EN 16931 / XRechnung use `FC`. Everything else comes
 # from the UBL base unchanged, so Peppol documents round-trip through the shared
 # hub with every other spoke.
@@ -21,8 +21,46 @@ inherits = "ubl-invoice:2.1"
 # Peppol BIS Billing carries `...:peppol.eu:2017:poacc:billing:3.0`.
 detect = ["peppol"]
 
+# Peppol documents are UBL 2.1 Invoices. The table restates the inherited
+# schema whole (a child's `[meta.schema]` replaces its parent's) to document
+# refusals: the XRechnung example addresses its parties by e-mail (scheme
+# `EM`), which is no Peppol address scheme, and the FatturaPA sample and the
+# OASIS example have no electronic addresses (BT-34, BT-49) at all.
+[meta.schema]
+xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
+refuses = [
+    "testfiles/xrechnung-3.0.2-beispiel.xml",
+    "testfiles/en16931-full-fatturapa.xml",
+    "testfiles/UBL-Invoice-2.1.xml",
+]
+
 # BT-32 seller tax registration: Peppol BIS Billing discriminates the second
 # `PartyTaxScheme` with `TaxScheme/ID` = `TAX`. Only the selector is restated;
 # the inherited node keeps its `xml` alias and children.
 [Invoice.AccountingSupplierParty.Party.SellerTaxRegistration]
 match = { "TaxScheme.ID" = "TAX" }
+
+# Peppol BIS Billing 3.0 identifies itself (BT-24) and its one business process
+# (BT-23) by fixed URNs (PEPPOL-EN16931-R004 / R007), whatever the source said.
+[Invoice.CustomizationID]
+constant = "urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0"
+
+[Invoice.ProfileID]
+constant = "urn:fdc:peppol.eu:2017:poacc:billing:01:1.0"
+
+# Peppol routes every document by the parties' electronic addresses, so both
+# are mandatory with their scheme (PEPPOL-EN16931-R010 / R020), and the scheme
+# must be one Peppol accepts (CL008, `peppol-eas` in config/codecs/peppol.toml).
+[Invoice.AccountingSupplierParty.Party.EndpointID]
+required = true
+
+[Invoice.AccountingSupplierParty.Party.EndpointID.schemeID]
+required = true
+codec = "peppol-eas"
+
+[Invoice.AccountingCustomerParty.Party.EndpointID]
+required = true
+
+[Invoice.AccountingCustomerParty.Party.EndpointID.schemeID]
+required = true
+codec = "peppol-eas"

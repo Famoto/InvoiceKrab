@@ -1,0 +1,108 @@
+# EN 16931 calculation rules (BR-CO-10 … BR-CO-16): how the document totals
+# follow from the lines, allowances, charges and VAT breakdown.
+#
+# Before writing, the engine computes every total listed here that the hub
+# lacks — a format such as FatturaPA states no sum of line net amounts — so a
+# transform into a format that requires it still writes the value EN 16931
+# defines. A value the source carries is never replaced, and each derived value
+# is reported as a VALUE_DERIVED info diagnostic.
+#
+# The last rules fill in a reason code EN 16931 demands where a source has
+# none: an allowance or charge needs a reason or reason code (BR-33, BR-38,
+# BR-42, BR-44), and FatturaPA's ScontoMaggiorazione states only whether it is
+# a discount (sconto) or a surcharge (maggiorazione).
+#
+# Rules apply in file order; an operand derived by a rule must be derived
+# before the rule using it (E113). See crates/einvoice-dsl/src/derive.rs.
+
+# BR-CO-10: sum of invoice line net amounts = Σ invoice line net amount (BT-131).
+[[derive]]
+key = "SumOfInvoiceLineNetAmount"
+rule = "BR-CO-10"
+sum = "InvoiceLines/LineNetAmount"
+
+# BR-CO-11: sum of allowances on document level = Σ document level allowance
+# amount (BT-92).
+[[derive]]
+key = "SumOfAllowancesDocumentLevel"
+rule = "BR-CO-11"
+sum = "DocumentAllowanceCharges/AllowanceChargeAmount"
+where = { ChargeIndicator = "false" }
+
+# BR-CO-12: sum of charges on document level = Σ document level charge amount
+# (BT-99).
+[[derive]]
+key = "SumOfChargesDocumentLevel"
+rule = "BR-CO-12"
+sum = "DocumentAllowanceCharges/AllowanceChargeAmount"
+where = { ChargeIndicator = "true" }
+
+# BR-CO-13: invoice total amount without VAT = Σ line net amounts − Σ
+# allowances + Σ charges.
+[[derive]]
+key = "InvoiceTotalWithoutVat"
+rule = "BR-CO-13"
+add = ["SumOfInvoiceLineNetAmount", "SumOfChargesDocumentLevel"]
+subtract = ["SumOfAllowancesDocumentLevel"]
+
+# BR-CO-14: invoice total VAT amount = Σ VAT category tax amount (BT-117).
+[[derive]]
+key = "TaxTotalAmount"
+rule = "BR-CO-14"
+sum = "VatBreakdown/VatCategoryTaxAmount"
+
+# BR-CO-15: invoice total amount with VAT = total without VAT + total VAT.
+[[derive]]
+key = "InvoiceTotalWithVat"
+rule = "BR-CO-15"
+add = ["InvoiceTotalWithoutVat", "TaxTotalAmount"]
+
+# BR-CO-16: amount due for payment = total with VAT − paid amount + rounding.
+[[derive]]
+key = "PayableAmount"
+rule = "BR-CO-16"
+add = ["InvoiceTotalWithVat", "RoundingAmount"]
+subtract = ["PaidAmount"]
+
+# BR-CO-16 solved for the paid amount: a source stating the amount due and the
+# total with VAT but no prepayment (FatturaPA) carries it implicitly. Only a
+# non-zero prepayment is written.
+[[derive]]
+key = "PaidAmount"
+rule = "BR-CO-16"
+add = ["InvoiceTotalWithVat", "RoundingAmount"]
+subtract = ["PayableAmount"]
+requires = ["PayableAmount"]
+skip_zero = true
+
+# BR-33 / BR-42: an allowance without reason or reason code is a discount, code
+# 95 (UNTDID 5189).
+[[derive]]
+key = "DocumentAllowanceCharges/AllowanceChargeReasonCode"
+rule = "BR-33"
+value = "95"
+where = { ChargeIndicator = "false" }
+unless = ["AllowanceChargeReason"]
+
+[[derive]]
+key = "InvoiceLines/LineAllowanceCharges/LineAllowanceChargeReasonCode"
+rule = "BR-42"
+value = "95"
+where = { LineChargeIndicator = "false" }
+unless = ["LineAllowanceChargeReason"]
+
+# BR-38 / BR-44: a charge without reason or reason code gets the mutually
+# defined code ZZZ (UNTDID 7161).
+[[derive]]
+key = "DocumentAllowanceCharges/AllowanceChargeReasonCode"
+rule = "BR-38"
+value = "ZZZ"
+where = { ChargeIndicator = "true" }
+unless = ["AllowanceChargeReason"]
+
+[[derive]]
+key = "InvoiceLines/LineAllowanceCharges/LineAllowanceChargeReasonCode"
+rule = "BR-44"
+value = "ZZZ"
+where = { LineChargeIndicator = "true" }
+unless = ["LineAllowanceChargeReason"]

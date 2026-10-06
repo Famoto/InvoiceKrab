@@ -31,6 +31,8 @@ pointing at the offending node.
 - [Constants: pinning write-side values](#constants-pinning-write-side-values)
 - [Clones: one value, several places](#clones-one-value-several-places)
 - [Codecs](#codecs)
+- [Read defaults](#read-defaults)
+- [Derivations: EN 16931 calculation rules](#derivations-en-16931-calculation-rules)
 - [`required` and the transformation contract](#required-and-the-transformation-contract)
 - [Inheritance](#inheritance)
 - [Auto-detection](#auto-detection)
@@ -82,6 +84,22 @@ no hand-written path.
 Interior elements (`LegalMonetaryTotal` here) are *inferred* from the ids of
 their leaf descendants — you never declare them as their own table. On the read
 side, missing interior elements simply mean the leaves under them are missing.
+
+Every id segment and every `xml` binding must be an XML name (an `NCName`:
+a letter or `_`, then letters, digits, `-`, `.` or `_`; no prefix) — E026.
+The generated Rust absorbs the rest: `-` and `.` become `_` in field names, a
+Rust keyword gets a trailing `_` (`<type>` → `type_`, `<Ref>` → `ref_`), and an
+element whose struct name would clash with another path's (`A.BC` vs `AB.C`)
+or with a type the generated code uses (`Option`, `Decimal`, the root's own
+name) gets an `Element` suffix. One limitation remains: a segment spelled like
+a node field (`type`, `xml`, `match`, `ns`, …) is read as that field, so bind
+such an element under another id with `xml = "match"`. `[meta].root` names the
+root struct verbatim, so it must also be a plain Rust type name (E026).
+
+A node id may omit the root segment (`[InvoiceLine]` is
+`[Invoice.InvoiceLine]`), so `[ID]` and `[Invoice.ID]` are the *same* element:
+mapping it twice is E025, as is any second node bound to one element or
+attribute through `xml`.
 
 XML matching is **namespace-agnostic** on the read side: mappings bind XML
 *local* names, so the same mapping reads real namespaced UBL (`cbc:ID`,
@@ -224,8 +242,10 @@ file = "testfiles/xrechnung-3.0.2-beispiel.xml"
 | `[meta.schema]` | — | `xsd`, `catalog`, `known_gaps`: the schema the spoke's documents must satisfy; inherited — see [Schema conformance](#schema-conformance) |
 | `[[meta.samples]]` | — | `file`, `source`: sample documents every spoke with a schema must write validly and round-trip; not inherited |
 
-`source_model` is also an assertion: if it disagrees with the synthesized
-model's id, the build fails (E020). Duplicate mapping ids or slugs across
+`source_model` is the id other mappings name in `inherits`. (The synthesized
+model takes its id from it, so the E020 consistency check cannot fire from a
+mapping file; it guards callers that supply source metadata separately.)
+Duplicate mapping ids or slugs across
 files, and unknown or cyclic `inherits` targets, fail the load before
 compilation starts.
 
@@ -267,7 +287,8 @@ A node plays one of five roles, depending on which fields it declares:
 | `join_with` | string | Separator — required iff `multiple = "join"` (E040). |
 | `constant` | string | Fixed write-side literal (see [Constants](#constants-pinning-write-side-values)). |
 | `clone_of` | string | Canonical key this node mirrors (see [Clones](#clones-one-value-several-places)). |
-| `codec` | string | Id of a shared lexical codec for a `date`, `datetime` or `boolean` node (see [Codecs](#codecs)). |
+| `codec` | string | Id of a shared codec translating the hub value to the format's form: dates, booleans, code tables, number formats, character sets (see [Codecs](#codecs)). |
+| `default` | string | Value read into the node's canonical key when the document lacks the element (see [Read defaults](#read-defaults)). |
 | `description` | string | Human note, reports only. |
 | `disabled` | bool | Remove this node from the effective mapping (useful with [inheritance](#inheritance)). |
 | `ns` | string | Namespace prefix of this node's own element on write (see [Namespaces](#namespaces)). Alone on a `type`-less table it makes a structural node. |
@@ -383,7 +404,8 @@ join_with = "\n"
 is only valid on a plain scalar element leaf — not on collections, attributes,
 `$text` overrides, or valued containers — and cannot be combined with
 `fallbacks`: a multi-valued node collapses its own values, and a fallback
-chain on top has no defined order of application (E043).
+chain on top has no defined order of application (E043). `multiple` on a
+node of the wrong shape is E024.
 
 ---
 
@@ -511,12 +533,17 @@ Rules, all enforced at build time:
   `(scope, key)` may be mapped by only one primary node. If two source paths
   can carry the value, pick one primary and express read priority with
   `fallbacks`, or mirror the value with `clone_of` — never two primaries.
+- **Keys are PascalCase identifiers (E014).** An upper-case ASCII letter,
+  then ASCII letters and digits (not `Self`): the key names a hub field and,
+  for a collection, its `<Key>Item` struct.
 - **No orphan keys inside anonymous collections (E011).** A key inside a
   collection needs the collection itself to be keyed.
 - **No generated-name collisions (E012).** Two keys that collapse to the same
-  generated Rust field name (e.g. `InvoiceId` and `INVOICE_ID`), or a
+  generated Rust field name (e.g. `FooBar` and `Foo_bar`, both `foo_bar`), or a
   collection key reused in two different scopes, would break the generated
-  hub — rename one.
+  hub — rename one. So would a source struct that takes a generated hub
+  type's name (an element path camel-casing to `InvoiceLinesItem` beside the
+  `InvoiceLines` collection key).
 
 A node with **no** `canonical_key` is a *helper* node — it carries no hub
 value itself and exists only to be referenced as a fallback.
@@ -564,7 +591,10 @@ under `PartyTaxScheme` appears exactly when the party has a
 `PartyTaxScheme/CompanyID`, and `TypeCode = "VAT"` under CII's
 `ApplicableTradeTax` appears with each breakdown. A constant that shares no
 interior element with real content (`UBLVersionID` at the root) is written
-unconditionally; inside a collection, on every non-empty item.
+unconditionally; inside a collection, on every non-empty item. So is a
+constant whose owner is always written anyway (a structural node with
+`required = true`, such as Factur-X's `ExchangedDocumentContext`): an owner
+that is never empty needs no content to justify the constant.
 
 ```toml
 # Written only when PartyTaxScheme carries a CompanyID.
@@ -682,7 +712,18 @@ a different value is a `CODEC_WIRE_MISMATCH` warning). On write the canonical
 value is encoded and the `wire` attributes are emitted on the same element.
 Codecs are loaded before the mappings and shared by all of them.
 
-The pattern language is small and checked when the codec file loads:
+A codec declares exactly one kind, checked when the codec file loads:
+
+| Kind | `for_type` | Write | Read |
+|---|---|---|---|
+| `lexical` | `date`, `datetime`, `boolean` | the canonical value in the pattern | the pattern decoded |
+| `values = [[canonical, wire], …]` | `string`, `identifier`, `currency`, `unit_code` | the first pair's wire code for the hub value; a hub value without a pair is `CODEC_INVALID`; an empty wire code writes nothing | the first pair's canonical code for the wire value; several wire codes may read as one canonical code |
+| `fraction_digits = [min, max]` | `decimal` | zero-padded to `min` fraction digits, trailing zeros trimmed down to it; a value needing more than `max` is `CODEC_INVALID` (never rounded) | as a decimal |
+| `charset = "latin-1"` | `string`, `identifier` | the text in ISO 8859-1, typographic punctuation transliterated (`—` → `-`, `€` → `EUR`); any other character outside it is `CODEC_INVALID` | as is |
+| `digits = n` | `string`, `identifier` | the value when it is exactly `n` ASCII digits, else `CODEC_INVALID` (never padded or cut) | as is |
+| `split = { at = n, into = [head, tail] }` | `string`, `identifier` | the first `n` characters into child element `head`, the rest into `tail` | the two joined |
+
+The `lexical` pattern language is small:
 
 | `for_type` | `lexical` | Rules |
 |---|---|---|
@@ -690,13 +731,122 @@ The pattern language is small and checked when the codec file loads:
 | `datetime` | tokens `YYYY` `MM` `DD` `hh` `mm` `ss`, separators `-` `.` `/` `:` `T` space | `ss` optional, the rest exactly once |
 | `boolean` | `yes\|no` | the two literals, distinct and non-empty |
 
+A code table is how a format's own code list meets EN 16931's — FatturaPA's
+`TipoDocumento` for the UNTDID 1001 invoice type code:
+
+```toml
+[codec.fatturapa-tipo-documento]
+for_type = "string"
+values = [
+    ["380", "TD01"],   # commercial invoice → fattura
+    ["381", "TD04"],   # credit note → nota di credito
+    ["380", "TD06"],   # read-only: parcella reads as a commercial invoice
+]
+```
+
+Whatever cannot be represented is refused, never approximated: a write that
+fails a codec reports `CODEC_INVALID` naming the node and value, and the
+transform yields no document. A value a codec changes on the way (a
+transliteration, a many-to-one code) is reported as *recoded* by the
+[conformance check](#schema-conformance).
+
 Codec ids are globally unique and stable (`[a-zA-Z0-9_-]+`): changing a codec's
 behaviour means adding a new id. Rules on the node: the codec must exist (E084)
 and its `for_type` must equal the node's `type` (E085); a codec's wire
 attribute must not collide with an attribute node declared on the same element
 (E087); `constant` and `codec` are mutually exclusive (E062). A codec with wire
 attributes turns its element into a valued container (text plus attributes)
-exactly as an attribute child would.
+exactly as an attribute child would. A `split` codec turns its element into a
+container of the two named children and takes no `wire` attributes.
+
+---
+
+## Read defaults
+
+`default` names the value a node reads into its canonical key when the
+document lacks the element — for a format that expresses the common case by
+omission. FatturaPA writes no `Natura` for a standard-rated amount, so its
+mapping reads an absent `Natura` as EN 16931 category `S` (and the
+`fatturapa-natura` code table writes `S` as nothing):
+
+```toml
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DatiRiepilogo.Natura]
+type = "string"
+canonical_key = "VatCategoryCode"
+codec = "fatturapa-natura"
+default = "S"
+```
+
+A default is read-side only; the writer never emits it. It fills the node's
+own key, so it needs a `canonical_key` and is not valid on a collection or a
+`clone_of` node (E064), and its literal must parse under the node's `type`
+(E063). Inside a collection it applies to each item read.
+
+---
+
+## Derivations: EN 16931 calculation rules
+
+EN 16931 defines its document totals by calculation rules (BR-CO-10 to
+BR-CO-16), and some formats leave out what the others require: FatturaPA
+states no sum of line net amounts, no total without VAT. Rather than fail
+every transform out of such a format, the engine computes, before writing,
+each canonical value [`config/derivations.toml`](../derivations.toml)
+defines and the hub lacks. A value the source carries is never replaced, and
+each derived value is reported as a `VALUE_DERIVED` info diagnostic.
+
+```toml
+# BR-CO-10: sum of invoice line net amounts.
+[[derive]]
+key = "SumOfInvoiceLineNetAmount"
+rule = "BR-CO-10"
+sum = "InvoiceLines/LineNetAmount"
+
+# BR-CO-11: only the allowances (ChargeIndicator false) are summed.
+[[derive]]
+key = "SumOfAllowancesDocumentLevel"
+rule = "BR-CO-11"
+sum = "DocumentAllowanceCharges/AllowanceChargeAmount"
+where = { ChargeIndicator = "false" }
+
+# BR-CO-13: total without VAT = lines − allowances + charges.
+[[derive]]
+key = "InvoiceTotalWithoutVat"
+rule = "BR-CO-13"
+add = ["SumOfInvoiceLineNetAmount", "SumOfChargesDocumentLevel"]
+subtract = ["SumOfAllowancesDocumentLevel"]
+
+# BR-42: an allowance with neither reason nor reason code gets code 95.
+[[derive]]
+key = "InvoiceLines/LineAllowanceCharges/LineAllowanceChargeReasonCode"
+rule = "BR-42"
+value = "95"
+where = { LineChargeIndicator = "false" }
+unless = ["LineAllowanceChargeReason"]
+```
+
+| Field | Meaning |
+|-------|---------|
+| `key` | The canonical key derived: a root key, or for `value` also an item key by its label (`Collection/…/Key`) |
+| `rule` | The EN 16931 rule it implements, for reports |
+| `sum` | `Collection/Key`: the sum of a `decimal` item key over a root collection's items (those matching `where`); no contributing item derives nothing |
+| `add` / `subtract` | Root `decimal` keys: the first `add` operand must be present, any other absent operand counts as zero |
+| `requires` | Root keys that must be present for the rule to apply |
+| `skip_zero` | Derive nothing when the result is zero (default `false`) |
+| `value` | A literal set on the target (on every item matching `where`) when neither it nor any `unless` key is present |
+| `where` | `{ Key = "literal" }`: an item filter on another key of the item |
+| `unless` | Keys whose presence (on the item) suppresses a `value` |
+
+Rules apply in file order, so a rule may use a total an earlier rule derived.
+The build checks the file against the hub: a computed target must be a root
+`decimal` key computed by one rule only (several `value` rules may fill one
+key under different filters) (E110); a `sum` must name a `decimal` key of a
+root collection (E111); a `where` key must exist and its literal fit its type
+(E112); an operand must be a root `decimal` key, and a `requires` operand must
+not be derived by this or a later rule (E113); a `value` must fit its key's
+type (E114).
+
+[`krab-cli --analyze`](#checking-your-mapping) counts a key a target requires
+as available when a derivation can supply it.
 
 ---
 
@@ -816,9 +966,8 @@ no output test has to be written or kept in step with the TOML by hand.
 
 ```toml
 [meta.schema]
-xsd = "testfiles/xsd/fatturapa-1.2.2/Schema_del_file_xml_FatturaPA_v1.2.2.xsd"
-catalog = "testfiles/xsd/fatturapa-1.2.2/catalog.xml"
-known_gaps = ["Expected is ( FatturaElettronicaHeader )"]
+xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
+refuses = ["testfiles/en16931-full-fatturapa.xml"]
 
 [[meta.samples]]
 file = "testfiles/xrechnung-3.0.2-beispiel.xml"
@@ -830,6 +979,7 @@ source = "xrechnung-invoice"     # optional: the spoke that reads it
 | `schema.xsd` | ✅ | The root XSD |
 | `schema.catalog` | — | An XML catalog resolving the schema's remote imports offline (passed as `XML_CATALOG_FILES`) |
 | `schema.known_gaps` | — | Substring patterns of the schema errors the spoke's output is documented to still produce |
+| `schema.refuses` | — | Samples the spoke is documented to refuse: their data cannot be represented in its format |
 | `samples.file` | ✅ | A sample document |
 | `samples.source` | — | The spoke that reads the sample, as a mapping id or a bare `doc_format`; default: the declaring mapping |
 
@@ -838,10 +988,11 @@ path that names no file fails the build (E100), and so does a sample no
 spoke reads: a `source` naming no emitted spoke, or a sample on an
 inherit-only base without a `source` (E101).
 
-`[meta.schema]` is inherited like the namespace entries, so XRechnung and
-Peppol validate against the UBL 2.1 schema [ubl.toml](ubl.toml) declares; a
-child's own table replaces the parent's whole. Samples are never inherited:
-each runs once, read by its spoke.
+`[meta.schema]` is inherited like the namespace entries, so a CIUS validates
+against the schema its base declares; a child's own table replaces the
+parent's whole, which is how XRechnung and Peppol add their own refusals to
+the UBL 2.1 schema [ubl.toml](ubl.toml) declares. Samples are
+never inherited: each runs once, read by its spoke.
 
 ### What gets verified
 
@@ -849,18 +1000,23 @@ For every sample `D`, read by its spoke `R`, and every spoke `S` with a
 `[meta.schema]`:
 
 1. **Sample validity** — `D` validates against `R`'s XSD, and `R` reads it
-   without error diagnostics. A broken fixture fails here, at the fixture;
-   its pairs are not run.
+   without error diagnostics. A broken
+   fixture fails here, at the fixture; its pairs are not run.
 2. **Emitted validity** — `D` read by `R` and written by `S` validates against
-   `S`'s XSD, up to `S`'s `known_gaps`. Every schema error must match a gap
-   pattern, and every pattern must still match an error of some document `S`
-   wrote: a stale pattern fails, so the lists only ever shrink. A sample has
-   no gaps; it must validate outright.
+   `S`'s XSD, up to `S`'s `known_gaps`.
+   Every schema error must match a gap pattern, and every pattern must still
+   match an error of some document `S` wrote: a stale pattern fails, so the
+   lists only ever shrink. A sample has no gaps; it must validate outright.
+   When `D` is in `S`'s `refuses`, the write must instead end in error
+   diagnostics (`REQUIRED_MISSING` naming what the sample lacks,
+   `CODEC_INVALID` naming what the format cannot hold), which are reported;
+   a declared refusal that now writes cleanly fails as stale.
 3. **Round trip** — the document `S` wrote, read back by `S`, yields the
    same hub values as reading `D`, for every canonical key `S` covers.
-   Keys `D` carries that `S` does not cover (dropped), and keys `S` pins to a
-   [constant](#constants-pinning-write-side-values) on write, are reported,
-   never failed.
+   Keys `D` carries that `S` does not cover (dropped), keys `S` pins to a
+   [constant](#constants-pinning-write-side-values) on write, values a codec
+   recodes, and values [derived](#derivations-en-16931-calculation-rules) on
+   write are reported, never failed.
 
 Validation runs `xmllint --noout --nonet --schema <xsd>`. Without `xmllint`
 on `PATH` the schema checks are skipped with a notice and the round trips
@@ -870,17 +1026,20 @@ The checks run in `cargo test` (`crates/einvoice-interfaces/tests/xsd_validation
 and on demand, with the report, as `krab-cli --check [ROOT]`:
 
 ```text
-sample testfiles/xrechnung-3.0.2-beispiel.xml (read by xrechnung-invoice:3.0.2)
-  valid against testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd
-  -> facturx-invoice:1.0: ok (valid, 50 key(s) round-trip)
-  -> fatturapa:1.2.2: ok (valid up to 1 known-gap error(s), 10 key(s) round-trip)
-       known gap: Element 'FatturaElettronicaBody': This element is not expected. Expected is ( FatturaElettronicaHeader ).
-       dropped (40): BusinessProcessType, BuyerAddressLine1, …
+sample testfiles/en16931-full-fatturapa.xml (read by fatturapa:1.2.2)
+  valid against testfiles/xsd/fatturapa-1.2.2/Schema_del_file_xml_FatturaPA_v1.2.2.xsd
+  -> facturx-invoice:1.0: ok (valid, 45 key(s) round-trip)
+       derived: InvoiceTotalWithoutVat: written as ["200.00"]
+       …
+  -> xrechnung-invoice:3.0.2: ok (refused, as declared)
+       refused: [REQUIRED_MISSING] Invoice.BuyerReference: required value is missing
+       …
 ```
 
 The mapping stays the source of truth for element order and cardinalities;
-the schema is the oracle that checks them. Schematron business rules are
-not run.
+the schema is the oracle that checks them. Business rules (EN 16931
+Schematron and the CIUS rule sets) are not run by this check; validate with
+them as your own toolchain provides.
 
 ---
 
@@ -964,7 +1123,8 @@ cargo run -p einvoice-dsl -- report config
 ```
 
 `check` also verifies the files your `[meta.schema]` and `[[meta.samples]]`
-declare exist (E100) and that every sample has a reader (E101).
+declare exist (E100), that every sample has a reader (E101), and that
+`config/derivations.toml` fits the hub (E110–E114).
 
 Once it builds, the CLI offers two static authoring aids (no input document
 needed), and the schema verdict on your declared samples:
@@ -987,12 +1147,16 @@ Validation reports **every** problem in one run, never just the first error.
 | `E002` | Active node missing its `type` |
 | `E010` | Canonical key declared with conflicting types across spokes |
 | `E011` | Canonical key inside a collection that has no `canonical_key` itself |
-| `E012` | Two canonical keys collide in generated code (same Rust field name, or one collection key in two scopes) |
+| `E012` | Two canonical keys collide in generated code (same Rust field name, or one collection key in two scopes), or a source struct takes a generated hub type's name |
 | `E013` | Same canonical key mapped by two primary nodes in one spoke (use `fallbacks` or `clone_of`) |
+| `E014` | `canonical_key` (or the key a `clone_of` mirrors) is not a PascalCase identifier |
 | `E020` | `[meta].source_model` disagrees with the synthesized model id |
 | `E021` | Node id does not resolve to a source path |
 | `E022` | Collection node whose path is not a repeated field |
 | `E023` | Scalar node whose path resolves to a struct, not a leaf |
+| `E024` | Incompatible bindings of one element: a leaf, attribute, valued container or collection shape conflict; `multiple` on an attribute, `$text`, collection or valued container; logical nodes of one element disagreeing on `ns` |
+| `E025` | Two nodes bind one element, attribute or element text (e.g. `[ID]` and `[Invoice.ID]`, or a node renamed onto another's element with `xml`) |
+| `E026` | An id segment or `xml` binding is not an XML name, or `[meta].root` is not also a plain Rust type name |
 | `E030` | Fallback target does not exist or is disabled |
 | `E031` | Fallback target type incompatible with the primary |
 | `E032` | Fallback target in a different scope |
@@ -1002,6 +1166,8 @@ Validation reports **every** problem in one run, never just the first error.
 | `E060` | `constant` on a collection node |
 | `E061` | `constant` literal does not parse under the node's `type` |
 | `E062` | `constant` combined with `fallbacks`, `multiple` or `codec` |
+| `E063` | `default` literal does not parse under the node's `type` |
+| `E064` | `default` on a node without a `canonical_key`, a collection, or a `clone_of` node |
 | `E070` | `clone_of` on a collection, or combined with `canonical_key`, `constant`, `fallbacks` or `multiple` |
 | `E071` | `clone_of` target key not declared by a primary node in the referenced scope |
 | `E072` | `clone_of` node's `type` differs from its target's |
@@ -1016,11 +1182,16 @@ Validation reports **every** problem in one run, never just the first error.
 | `E092` | `match` key does not name a single scalar declared beneath the element's logical nodes (or the selector is empty) |
 | `E093` | Malformed `clone_of` derivation (`$sibling.Key`, `$root.A.B`), or `$parent` at root scope |
 | `W095` | A `required` node needs a hub key no other spoke maps (warning): no transform into this spoke, except from itself, can supply it |
-| `E100` | A `[meta.schema]` or `[[meta.samples]]` path is absolute or names no file under the workspace root |
+| `E100` | A `[meta.schema]` (`xsd`, `catalog`, `refuses`) or `[[meta.samples]]` path is absolute or names no file under the workspace root |
 | `E101` | A sample has no reader: its `source` names no emitted spoke, or it is declared on an inherit-only base without a `source` |
+| `E110` | A derivation target is no fitting canonical key (a computed total: a root `decimal`; a `value`: a scalar key), or a total is computed by more than one rule |
+| `E111` | A `sum` names no `decimal` key of a root collection |
+| `E112` | A `where` key is unknown, or its literal does not fit the key's type |
+| `E113` | An `add` / `subtract` / `requires` operand is no root `decimal` key, or a required operand is derived by this or a later rule |
+| `E114` | A `value` literal does not fit the target key's type |
 
 Runtime (per-document) diagnostics — missing required values, type validation
 failures, taken fallbacks, `CLONE_MISMATCH`, `CODEC_INVALID`,
-`CODEC_WIRE_MISMATCH`, `MATCH_MULTIPLE` — are reported with severity and a
+`CODEC_WIRE_MISMATCH`, `MATCH_MULTIPLE`, `VALUE_DERIVED` — are reported with severity and a
 source-node reference when a document is transformed; they never silently
 vanish.

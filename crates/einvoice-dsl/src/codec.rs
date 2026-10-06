@@ -32,10 +32,21 @@
 //! `mm`, `ss` and literal separators from `- . / : T` and space: a `date` uses
 //! `YYYY`, `MM` and `DD` exactly once and no time token; a `datetime` adds `hh`
 //! and `mm` exactly once and `ss` at most once. For `boolean` the pattern is
-//! `yes|no`: the two lexical literals, distinct and non-empty. There is no codec
-//! for the other types. The runtime
+//! `yes|no`: the two lexical literals, distinct and non-empty. The runtime
 //! (`einvoice_transformator::codec`) interprets the same strings; the compiler
 //! guarantees it only ever sees patterns that passed here.
+//!
+//! Four further kinds replace `lexical` (exactly one kind per codec):
+//!
+//! - `values = [["380", "TD01"], …]` — a code table for code-valued types;
+//!   encode takes the first pair with the canonical value, decode the first
+//!   with the wire value, and an empty wire value writes nothing.
+//! - `fraction_digits = [min, max]` — a `decimal` written with `min`..`max`
+//!   fraction digits (padded, trailing zeros trimmed, never rounded).
+//! - `charset = "latin-1"` — text restricted to ISO 8859-1.
+//! - `split = { at = 2, into = ["IdPaese", "IdCodice"] }` — one value written
+//!   as two child elements of the node's element and read as their
+//!   concatenation.
 //!
 //! # Behavior
 //!
@@ -61,7 +72,8 @@ pub struct Codec {
     pub id: String,
     /// The canonical type this codec translates.
     pub for_type: MappingType,
-    /// The lexical pattern as authored (handed to the runtime verbatim).
+    /// The lexical pattern as authored (handed to the runtime verbatim), or for
+    /// the other kinds a one-line summary used in diagnostics.
     pub lexical: String,
     /// The compiled pattern.
     pub pattern: Pattern,
@@ -83,6 +95,34 @@ pub enum Pattern {
         yes: String,
         /// The lexical form of `false`.
         no: String,
+    },
+    /// A code translation table, `(canonical, wire)` pairs in declared order:
+    /// encoding takes the first pair with the canonical value, decoding the
+    /// first with the wire value, so several codes may share one on either
+    /// side. An empty wire value writes nothing. For code-valued types.
+    Values(Vec<(String, String)>),
+    /// A decimal written with between `min` and `max` fraction digits
+    /// (zero-padded; trailing zeros trimmed; never rounded).
+    Fraction {
+        /// Fewest fraction digits written.
+        min: usize,
+        /// Most fraction digits a value may need.
+        max: usize,
+    },
+    /// Text restricted to ISO 8859-1 (typographic punctuation transliterated).
+    Latin1,
+    /// Exactly this many ASCII digits (an Italian CAP); any other value is
+    /// refused on write, never padded or cut.
+    Digits(usize),
+    /// One value written as two child elements: its first `at` characters
+    /// into `head`, the rest into `tail`; read back as their concatenation.
+    Split {
+        /// Characters in the head part.
+        at: usize,
+        /// Local name of the head element.
+        head: String,
+        /// Local name of the tail element.
+        tail: String,
     },
 }
 
@@ -117,11 +157,29 @@ const DATETIME_LITERALS: &[char] = &['-', '.', '/', ':', 'T', ' '];
 #[serde(deny_unknown_fields)]
 struct RawCodec {
     for_type: MappingType,
-    lexical: String,
+    #[serde(default)]
+    lexical: Option<String>,
+    #[serde(default)]
+    values: Option<Vec<(String, String)>>,
+    #[serde(default)]
+    fraction_digits: Option<(usize, usize)>,
+    #[serde(default)]
+    charset: Option<String>,
+    #[serde(default)]
+    digits: Option<usize>,
+    #[serde(default)]
+    split: Option<RawSplit>,
     #[serde(default)]
     wire: BTreeMap<String, String>,
     #[serde(default)]
     description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSplit {
+    at: usize,
+    into: (String, String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,7 +209,10 @@ pub fn parse_codecs(src: &str) -> Result<Vec<Codec>, ConfigError> {
 
 fn build_codec(id: &str, raw: RawCodec) -> Result<Codec, String> {
     validate_id(id)?;
-    let pattern = compile_pattern(raw.for_type, &raw.lexical)?;
+    let (lexical, pattern) = codec_kind(&raw)?;
+    if matches!(pattern, Pattern::Split { .. }) && !raw.wire.is_empty() {
+        return Err("a `split` codec writes elements, not wire attributes".to_string());
+    }
     let mut wire = BTreeMap::new();
     for (key, value) in raw.wire {
         let Some(name) = key.strip_prefix('@') else {
@@ -172,11 +233,108 @@ fn build_codec(id: &str, raw: RawCodec) -> Result<Codec, String> {
     Ok(Codec {
         id: id.to_string(),
         for_type: raw.for_type,
-        lexical: raw.lexical,
+        lexical,
         pattern,
         wire,
         description: raw.description,
     })
+}
+
+/// The one codec kind a raw codec declares — `lexical`, `values`,
+/// `fraction_digits`, `charset`, `digits` or `split` — validated against `for_type`,
+/// with the summary diagnostics quote it by.
+fn codec_kind(raw: &RawCodec) -> Result<(String, Pattern), String> {
+    let declared = [
+        raw.lexical.is_some(),
+        raw.values.is_some(),
+        raw.fraction_digits.is_some(),
+        raw.charset.is_some(),
+        raw.digits.is_some(),
+        raw.split.is_some(),
+    ];
+    if declared.iter().filter(|d| **d).count() != 1 {
+        return Err(
+            "declare exactly one of `lexical`, `values`, `fraction_digits`, `charset`, `digits`, `split`"
+                .to_string(),
+        );
+    }
+    let ty = raw.for_type;
+    let text_like = matches!(ty, MappingType::String | MappingType::Identifier);
+    let code_like = text_like || matches!(ty, MappingType::Currency | MappingType::UnitCode);
+    let need = |ok: bool, kind: &str, types: &str| {
+        if ok {
+            Ok(())
+        } else {
+            Err(format!("a `{kind}` codec is for {types}, not `{ty}`"))
+        }
+    };
+    if let Some(lexical) = &raw.lexical {
+        return Ok((lexical.clone(), compile_pattern(ty, lexical)?));
+    }
+    if let Some(values) = &raw.values {
+        need(
+            code_like,
+            "values",
+            "`string`, `identifier`, `currency` or `unit_code`",
+        )?;
+        if values.is_empty() {
+            return Err("`values` needs at least one `[canonical, wire]` pair".to_string());
+        }
+        if let Some((c, _)) = values.iter().find(|(c, _)| c.trim().is_empty()) {
+            return Err(format!("`values` has an empty canonical value `{c}`"));
+        }
+        return Ok(("values".to_string(), Pattern::Values(values.clone())));
+    }
+    if let Some((min, max)) = raw.fraction_digits {
+        need(ty == MappingType::Decimal, "fraction_digits", "`decimal`")?;
+        if min > max || max > 28 {
+            return Err(format!(
+                "`fraction_digits = [{min}, {max}]` needs min <= max <= 28"
+            ));
+        }
+        return Ok((
+            format!("fraction_digits [{min}, {max}]"),
+            Pattern::Fraction { min, max },
+        ));
+    }
+    if let Some(charset) = &raw.charset {
+        need(text_like, "charset", "`string` or `identifier`")?;
+        if charset != "latin-1" {
+            return Err(format!(
+                "unknown charset `{charset}` (supported: `latin-1`)"
+            ));
+        }
+        return Ok(("charset latin-1".to_string(), Pattern::Latin1));
+    }
+    if let Some(digits) = raw.digits {
+        need(text_like, "digits", "`string` or `identifier`")?;
+        if digits == 0 {
+            return Err("`digits` must be at least 1".to_string());
+        }
+        return Ok((format!("{digits} digits"), Pattern::Digits(digits)));
+    }
+    let split = raw.split.as_ref().expect("exactly one kind is declared");
+    need(text_like, "split", "`string` or `identifier`")?;
+    let (head, tail) = &split.into;
+    if split.at == 0 {
+        return Err("`split.at` must be at least 1".to_string());
+    }
+    for name in [head, tail] {
+        if !crate::ident::is_xml_name(name) {
+            return Err(format!("`split.into` element `{name}` is not an XML name"));
+        }
+    }
+    if head == tail {
+        return Err("`split.into` names two distinct elements".to_string());
+    }
+    Ok((
+        format!("split at {} into {head} + {tail}", split.at),
+        Pattern::Split {
+            at: split.at,
+            head: head.clone(),
+            tail: tail.clone(),
+        },
+    ))
 }
 
 fn validate_id(id: &str) -> Result<(), String> {
@@ -336,6 +494,88 @@ mod tests {
         );
         let iso = codecs.iter().find(|c| c.id == "date-iso").unwrap();
         assert!(iso.wire.is_empty());
+    }
+
+    #[test]
+    fn test_parse_codecs_reads_the_other_kinds() {
+        let codecs = parse_codecs(
+            r#"
+            [codec.doc-type]
+            for_type = "string"
+            values = [["380", "TD01"], ["381", "TD04"], ["380", "TD06"]]
+
+            [codec.amount-2]
+            for_type = "decimal"
+            fraction_digits = [2, 2]
+
+            [codec.text]
+            for_type = "string"
+            charset = "latin-1"
+
+            [codec.vat-split]
+            for_type = "identifier"
+            split = { at = 2, into = ["IdPaese", "IdCodice"] }
+
+            [codec.cap]
+            for_type = "string"
+            digits = 5
+            "#,
+        )
+        .expect("parses");
+        let by = |id: &str| codecs.iter().find(|c| c.id == id).unwrap().pattern.clone();
+        assert_eq!(
+            by("doc-type"),
+            Pattern::Values(vec![
+                ("380".into(), "TD01".into()),
+                ("381".into(), "TD04".into()),
+                ("380".into(), "TD06".into()),
+            ])
+        );
+        assert_eq!(by("amount-2"), Pattern::Fraction { min: 2, max: 2 });
+        assert_eq!(by("text"), Pattern::Latin1);
+        assert_eq!(by("cap"), Pattern::Digits(5));
+        assert_eq!(
+            by("vat-split"),
+            Pattern::Split {
+                at: 2,
+                head: "IdPaese".into(),
+                tail: "IdCodice".into()
+            }
+        );
+    }
+
+    #[rstest]
+    #[case::two_kinds(
+        "for_type = \"string\"\ncharset = \"latin-1\"\nvalues = [[\"a\", \"b\"]]",
+        "exactly one"
+    )]
+    #[case::no_kind("for_type = \"string\"", "exactly one")]
+    #[case::values_on_date("for_type = \"date\"\nvalues = [[\"a\", \"b\"]]", "not `date`")]
+    #[case::empty_values("for_type = \"string\"\nvalues = []", "at least one")]
+    #[case::fraction_on_string("for_type = \"string\"\nfraction_digits = [2, 2]", "not `string`")]
+    #[case::fraction_inverted("for_type = \"decimal\"\nfraction_digits = [3, 2]", "min <= max")]
+    #[case::unknown_charset("for_type = \"string\"\ncharset = \"ascii\"", "unknown charset")]
+    #[case::digits_zero("for_type = \"string\"\ndigits = 0", "at least 1")]
+    #[case::digits_on_decimal("for_type = \"decimal\"\ndigits = 5", "not `decimal`")]
+    #[case::split_at_zero(
+        "for_type = \"string\"\nsplit = { at = 0, into = [\"A\", \"B\"] }",
+        "at least 1"
+    )]
+    #[case::split_bad_name(
+        "for_type = \"string\"\nsplit = { at = 2, into = [\"a b\", \"B\"] }",
+        "XML name"
+    )]
+    #[case::split_same(
+        "for_type = \"string\"\nsplit = { at = 2, into = [\"A\", \"A\"] }",
+        "distinct"
+    )]
+    #[case::split_with_wire(
+        "for_type = \"string\"\nsplit = { at = 2, into = [\"A\", \"B\"] }\nwire = { \"@x\" = \"1\" }",
+        "wire"
+    )]
+    fn test_parse_codecs_rejects_bad_kinds(#[case] body: &str, #[case] needle: &str) {
+        let err = parse_codecs(&format!("[codec.x]\n{body}")).unwrap_err();
+        assert!(err.message.contains(needle), "{needle}: {}", err.message);
     }
 
     #[test]

@@ -29,6 +29,9 @@ serde_json = "1"
 # preserved through parsing.
 toml = { version = "1.1", features = ["preserve_order"] }
 thiserror = "2"
+# Dev-only: parses generated code in the DSL's tests, so "what `check` accepts,
+# the build accepts" is asserted without running rustc.
+syn = { version = "2", features = ["full"] }
 # Scale-preserving decimal for canonical decimal values.
 rust_decimal = "1"
 # Inline small strings (≤24 bytes stay on the stack) for the generated source

@@ -11,7 +11,8 @@
 #   * `[meta]` identity: its own doc_format/format_version/source_model, plus the
 #     `detect` marker (matched case-insensitively against CustomizationID, BT-24,
 #     which for the CIUS carries `...:xrechnung_3.0`).
-#   * `CustomizationID` (BT-24) is mandatory under the CIUS — `required = true`.
+#   * `CustomizationID` (BT-24) is pinned to the XRechnung 3.0 URN, and the
+#     business process type (BT-23) is mandatory — `required = true`.
 #
 # Everything else (BT-1…BT-163, BG-1…BG-32, all collections and nesting) comes
 # from `ubl.toml` unchanged; see it for the DSL conventions and per-node docs.
@@ -27,14 +28,76 @@ inherits = "ubl-invoice:2.1"
 # which for the CIUS carries `...:xrechnung_3.0`.
 detect = ["xrechnung"]
 
-# The XRechnung 3.0.2 example invoice: valid against the inherited UBL 2.1
-# schema, read by this spoke, written by every spoke with a schema, and read
-# back by each (`krab-cli --check`).
+# XRechnung documents are UBL 2.1 Invoices. The table restates the inherited
+# schema whole (a child's `[meta.schema]` replaces its parent's) to document
+# refusals: the FatturaPA sample has no electronic addresses (BT-34, BT-49),
+# seller contact (BG-6), buyer reference (BT-10) or business process (BT-23),
+# all of which XRechnung requires; nor has the OASIS example electronic
+# addresses or a buyer reference.
+[meta.schema]
+xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
+refuses = [
+    "testfiles/en16931-full-fatturapa.xml",
+    "testfiles/UBL-Invoice-2.1.xml",
+]
+
+# The XRechnung 3.0.2 example invoice: valid against the UBL 2.1 schema,
+# read by this spoke, written by every spoke with a
+# schema, and read back by each (`krab-cli --check`).
 [[meta.samples]]
 file = "testfiles/xrechnung-3.0.2-beispiel.xml"
 
-# Overrides the base UBL node: the CIUS makes CustomizationID mandatory. An
-# override merges over the inherited node, so only the delta is stated here;
-# type, canonical key and normalization come from ubl.toml.
+# Overrides the base UBL node: the CIUS writes its own specification
+# identifier (BT-24). An override merges over the inherited node, so only the
+# delta is stated here; type, canonical key and normalization come from ubl.toml.
 [Invoice.CustomizationID]
+constant = "urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0"
+
+# XRechnung 3.0 makes the business process type (BT-23) mandatory; the CIUS
+# leaves its value to the parties, so it must come from the source.
+[Invoice.ProfileID]
+required = true
+
+# The terms XRechnung 3.0 makes mandatory beyond EN 16931: the parties'
+# electronic addresses (BT-34 / BT-49, with scheme), the buyer reference
+# (BR-DE-15), the seller contact (BR-DE-2/5/6/7), seller and buyer city and
+# post code (BR-DE-3/4/8/9) and the payment means (BR-DE-1). A source lacking
+# one fails with REQUIRED_MISSING instead of yielding an invalid XRechnung.
+[Invoice.AccountingSupplierParty.Party.EndpointID]
+required = true
+
+[Invoice.AccountingSupplierParty.Party.EndpointID.schemeID]
+required = true
+
+[Invoice.AccountingCustomerParty.Party.EndpointID]
+required = true
+
+[Invoice.AccountingCustomerParty.Party.EndpointID.schemeID]
+required = true
+
+[Invoice.BuyerReference]
+required = true
+
+[Invoice.AccountingSupplierParty.Party.Contact.Name]
+required = true
+
+[Invoice.AccountingSupplierParty.Party.Contact.Telephone]
+required = true
+
+[Invoice.AccountingSupplierParty.Party.Contact.ElectronicMail]
+required = true
+
+[Invoice.AccountingSupplierParty.Party.PostalAddress.CityName]
+required = true
+
+[Invoice.AccountingSupplierParty.Party.PostalAddress.PostalZone]
+required = true
+
+[Invoice.AccountingCustomerParty.Party.PostalAddress.CityName]
+required = true
+
+[Invoice.AccountingCustomerParty.Party.PostalAddress.PostalZone]
+required = true
+
+[Invoice.PaymentMeans.PaymentMeansCode]
 required = true

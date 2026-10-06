@@ -40,6 +40,7 @@ codegen emits text that *targets* the runtime's API by name.
 | `resolve.rs` | inheritance merge → disabled removal → default materialization. |
 | `ir.rs` | `MappingIr` + `build_ir` (the normalized mapping + synthesized source model). |
 | `source_model/` | `SourceModelMeta` (metadata types, including each field's write prefix and the root's `NamespaceMeta`), path resolution (`resolve_path`), and `synthesize_source_model` (struct tree + source paths + prefixes from the nodes; E080/E081/E083 namespace diagnostics) — split into `meta.rs` / `resolve.rs` / `synth.rs`. |
+| `ident.rs` | Name rules shared by synthesis, validation and codegen: XML `NCName`s (E026), canonical-key shape (E014), Rust keyword escaping and the type names a synthesized struct must not take. |
 | `hub.rs` | `derive_hub` — the canonical model as the union of spoke `canonical_key`s. |
 | `validate.rs` | the compile-time validation pipeline (E020–E085). |
 | `contract.rs` | the transformation contract per spoke (keys, required write routes, collapses, selectors), its registry rendering, and W095. |
@@ -74,7 +75,8 @@ codecs ─► TOML mappings ─► parse ─► resolve(inherit, disabled)
    codecs (known id, matching type), constants,
    and `clone_of` mirrors (role exclusions, `$parent`/`$root` derivation
    paths, target key in the referenced scope, type agreement); the
-   synthesized source model is consistent by construction.
+   synthesized source model is consistent by construction (synthesis
+   itself reports E024–E026: incompatible, duplicate and invalid XML bindings).
 5. `compile` aggregates diagnostics from every stage in deterministic order,
    and checks the spokes' `required` write routes against each other
    (`contract`: W095 for a required key no other spoke maps).
@@ -83,6 +85,11 @@ codecs ─► TOML mappings ─► parse ─► resolve(inherit, disabled)
    (hub→source) as Rust source text.
 
 ## Testing
+
+`tests/compiler_assertions.rs` drives every documented diagnostic black-box
+through `load_config` + `compile`, and parses the code generated for every
+accepted case with `syn` (no duplicate structs, fields or XML bindings, no
+hub-type shadowing), so what `check` accepts is what the build accepts.
 
 Every module carries in-module `#[cfg(test)] mod tests` (strict TDD per the root
 `CLAUDE.md`). Parametrized cases use `rstest`; every E-code has an error-path

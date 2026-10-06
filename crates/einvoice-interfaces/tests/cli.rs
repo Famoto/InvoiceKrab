@@ -7,13 +7,14 @@
 
 use einvoice_interfaces::cli::run;
 
-/// A minimal but valid UBL invoice covering the required canonical keys.
+/// A minimal EN 16931 UBL invoice: every mandatory business term, nothing more.
 const UBL: &[u8] = br#"<Invoice>
     <ID>INV-42</ID>
-    <IssueDate>2026-06-27</IssueDate>
+    <IssueDate>2026-06-27</IssueDate><InvoiceTypeCode>380</InvoiceTypeCode>
     <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
-    <LegalMonetaryTotal><PayableAmount currencyID="EUR">119.00</PayableAmount></LegalMonetaryTotal>
-    <InvoiceLine><ID>1</ID><InvoicedQuantity>2</InvoicedQuantity><Item><Name>Widget</Name></Item></InvoiceLine>
+    <AccountingSupplierParty><Party><PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress><PartyLegalEntity><RegistrationName>Seller GmbH</RegistrationName></PartyLegalEntity></Party></AccountingSupplierParty><AccountingCustomerParty><Party><PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress><PartyLegalEntity><RegistrationName>Buyer AG</RegistrationName></PartyLegalEntity></Party></AccountingCustomerParty><TaxTotal><TaxAmount currencyID="EUR">19.00</TaxAmount><TaxSubtotal><TaxableAmount currencyID="EUR">100.00</TaxableAmount><TaxAmount currencyID="EUR">19.00</TaxAmount><TaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></TaxCategory></TaxSubtotal></TaxTotal>
+        <LegalMonetaryTotal><LineExtensionAmount currencyID="EUR">100.00</LineExtensionAmount><TaxExclusiveAmount currencyID="EUR">100.00</TaxExclusiveAmount><TaxInclusiveAmount currencyID="EUR">119.00</TaxInclusiveAmount><PayableAmount currencyID="EUR">119.00</PayableAmount></LegalMonetaryTotal>
+    <InvoiceLine><ID>1</ID><InvoicedQuantity unitCode="C62">2</InvoicedQuantity><LineExtensionAmount currencyID="EUR">50.00</LineExtensionAmount><Item><Name>Widget</Name><ClassifiedTaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></ClassifiedTaxCategory></Item><Price><PriceAmount currencyID="EUR">25.00</PriceAmount></Price></InvoiceLine>
 </Invoice>"#;
 
 fn invoke(args: &[&str], stdin: &[u8]) -> (i32, String, String) {
@@ -184,7 +185,7 @@ fn test_analyze_deny_lossy_exits_65_with_the_report_on_stderr() {
     assert_eq!(code, 65);
     assert!(out.is_empty(), "nothing on stdout when the gate fails");
     assert!(err.contains("! partial"), "stderr: {err}");
-    assert!(err.contains("SpecificationId"), "stderr: {err}");
+    assert!(err.contains("BuyerName"), "stderr: {err}");
     assert!(err.contains("not lossless (--deny-lossy)"), "stderr: {err}");
 
     let (code, out, err) = invoke(

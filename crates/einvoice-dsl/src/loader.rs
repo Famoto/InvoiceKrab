@@ -44,9 +44,10 @@
 //! path, over temp directories.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::codec::{CodecTable, parse_codecs};
+use crate::derive::{Derivation, parse_derivations};
 use crate::error::ConfigError;
 use crate::parse::{ParsedMapping, parse_mapping};
 
@@ -81,6 +82,9 @@ pub struct LoadOutput {
     pub declared_files: Vec<PathBuf>,
     /// The workspace root the declared paths are relative to.
     pub root: PathBuf,
+    /// The derivation rules of `<dir>/derivations.toml`, in file order
+    /// (empty without the file, and for [`load_dir`]).
+    pub derivations: Vec<Derivation>,
 }
 
 /// Loads a `config/` directory: the codecs from `<dir>/codecs/*.toml` (if the
@@ -129,9 +133,21 @@ pub fn load_config(dir: &Path) -> Result<LoadOutput, ConfigError> {
     let mappings = load_dir(&dir.join("mappings"), &root)?;
     let mut files = codec_files;
     files.extend(mappings.files);
+    let derivations_file = dir.join("derivations.toml");
+    let mut derivations = Vec::new();
+    if derivations_file.is_file() {
+        let src = std::fs::read_to_string(&derivations_file).map_err(|e| {
+            ConfigError::msg(format!("cannot read `{}`: {e}", derivations_file.display()))
+        })?;
+        derivations = parse_derivations(&src).map_err(|e| {
+            ConfigError::msg(format!("{}: {}", derivations_file.display(), e.message))
+        })?;
+        files.push(derivations_file);
+    }
     Ok(LoadOutput {
         codecs,
         files,
+        derivations,
         ..mappings
     })
 }
@@ -226,6 +242,9 @@ pub fn load_dir(dir: &Path, root: &Path) -> Result<LoadOutput, ConfigError> {
             if let Some(catalog) = &schema.catalog {
                 declared.push(("[meta.schema].catalog", catalog));
             }
+            for refused in &schema.refuses {
+                declared.push(("[meta.schema].refuses", refused));
+            }
         }
         for sample in &meta.samples {
             declared.push(("[[meta.samples]].file", &sample.file));
@@ -277,14 +296,20 @@ pub fn load_dir(dir: &Path, root: &Path) -> Result<LoadOutput, ConfigError> {
         files,
         declared_files,
         root: root.to_path_buf(),
+        derivations: Vec::new(),
     })
 }
 
 /// Resolves a declared workspace-relative `path` under `root`, or says why it
-/// cannot be used: it is absolute, or no file exists there.
+/// cannot be used: it is absolute, climbs out of `root` with `..`, or no file
+/// exists there.
 fn declared_file(root: &Path, path: &str) -> Result<PathBuf, String> {
-    if Path::new(path).is_absolute() {
+    let rel = Path::new(path);
+    if rel.is_absolute() || rel.has_root() {
         return Err("must be relative to the workspace root, not absolute".to_string());
+    }
+    if rel.components().any(|c| c == Component::ParentDir) {
+        return Err("must stay under the workspace root (no `..` components)".to_string());
     }
     let resolved = root.join(path);
     if resolved.is_file() {
@@ -652,6 +677,19 @@ mod tests {
         );
         assert!(lines[1].contains("not absolute"), "{}", lines[1]);
         assert!(lines[2].contains("[[meta.samples]].file"), "{}", lines[2]);
+    }
+
+    #[test]
+    fn test_load_dir_declared_file_escaping_the_root_is_e100() {
+        // The file exists (it is the mapping itself), but `..` reaches it from
+        // outside the root: still E100, so a declaration never leaves the workspace.
+        let dir = dir_with(&[(
+            "base",
+            &meta("base-fmt", "[meta.schema]\nxsd = \"../x/../base.toml\""),
+        )]);
+        let err = load_dir(&dir, &dir).unwrap_err();
+        assert!(err.message.contains("base.toml: E100:"), "{}", err.message);
+        assert!(err.message.contains("no `..`"), "{}", err.message);
     }
 
     #[test]

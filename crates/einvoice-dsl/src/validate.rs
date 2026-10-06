@@ -8,6 +8,7 @@
 //!
 //! # Checks
 //!
+//! - `E014` canonical key (declared, or mirrored by `clone_of`) not `PascalCase`.
 //! - `E020` source model id mismatch (`[meta].source_model` vs the metadata).
 //! - `E021` unresolvable source path.
 //! - `E022` collection node whose path is not a repeated (`Vec`) field.
@@ -23,6 +24,9 @@
 //! - `E062` `constant` combined with `fallbacks`, `multiple` or `codec` (the
 //!   constant is emitted verbatim on write; none of these apply to it —
 //!   `normalize` is read-side and may accompany it).
+//! - `E063` `default` literal does not parse under the node's `type`.
+//! - `E064` `default` on a node without a `canonical_key`, a collection, or a
+//!   `clone_of` node (it has no hub key of its own to fill).
 //! - `E070` `clone_of` on a collection node, or combined with `canonical_key`,
 //!   `constant`, `fallbacks` or `multiple`.
 //! - `E071` `clone_of` target key not declared by a primary node in the
@@ -44,6 +48,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::codec::CodecTable;
 use crate::error::{Diagnostic, Severity};
+use crate::ident::is_canonical_key;
 use crate::ir::MappingIr;
 use crate::node::{DerivationScope, NodeId, Scope, SourceNode};
 use crate::source_model::{PathError, SourceModelMeta, resolve_path_from};
@@ -66,10 +71,12 @@ pub fn validate(input: &ValidationInput) -> Vec<Diagnostic> {
     check_source_model_id(input, &mut diags);
     for node in input.ir.nodes.values() {
         check_path(node, input, &mut diags);
+        check_canonical_key(node, &mut diags);
         check_structural(node, &mut diags);
         check_fallbacks(node, input.ir, &mut diags);
         check_codec(node, input.codecs, &mut diags);
         check_constant(node, &mut diags);
+        check_default(node, &mut diags);
         check_clone_of(node, input.ir, &mut diags);
     }
     check_fallback_cycles(input.ir, &mut diags);
@@ -115,10 +122,43 @@ fn check_source_model_id(input: &ValidationInput, diags: &mut Vec<Diagnostic>) {
     }
 }
 
+/// `E014` when a node's canonical key — the one it declares, or the one its
+/// `clone_of` mirrors — is not a `PascalCase` identifier. The key names a hub
+/// field and, for a collection, the `<Key>Item` struct, so anything else would
+/// surface as a rustc error in the generated hub rather than here.
+fn check_canonical_key(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
+    let mirrored = match node.derivation() {
+        Some(Ok(derivation)) => Some(derivation.key),
+        _ => None, // absent, or malformed (E093)
+    };
+    for (field, key) in [
+        ("canonical_key", node.canonical_key.as_deref()),
+        ("clone_of", mirrored),
+    ] {
+        if let Some(key) = key
+            && !is_canonical_key(key)
+        {
+            diags.push(err(
+                "E014",
+                &node.id,
+                format!(
+                    "`{field}` names `{key}`, which is not a canonical key: use PascalCase — an \
+                     upper-case ASCII letter, then ASCII letters and digits (and not `Self`)"
+                ),
+            ));
+        }
+    }
+}
+
 fn check_path(node: &SourceNode, input: &ValidationInput, diags: &mut Vec<Diagnostic>) {
     // Skip path resolution when the model id is wrong (already reported); the
     // struct table would not be the right one to resolve against.
     if source_model_mismatch(input) {
+        return;
+    }
+    // A node synthesis could not place has no source path, and synthesis has
+    // already reported why (E024, E025, E026, E081, E087, …).
+    if node.source_path.is_empty() {
         return;
     }
     // Collection-child paths resolve against the collection's item struct, not
@@ -312,22 +352,15 @@ fn check_constant(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
 /// catching typos at compile time, not re-implementing the runtime validators.
 //  currency = 3 uppercase letters, date = digit/dash shape; wire the
 // runtime `validate` helpers in if a real code table is ever needed.
-fn constant_literal_error(ty: MappingType, value: &str) -> Option<String> {
+pub(crate) fn constant_literal_error(ty: MappingType, value: &str) -> Option<String> {
     if value.trim().is_empty() {
         return Some("it is empty".to_string());
     }
-    let date_shaped = |s: &str| {
-        s.len() == 10
-            && s.bytes().enumerate().all(|(i, b)| {
-                if i == 4 || i == 7 {
-                    b == b'-'
-                } else {
-                    b.is_ascii_digit()
-                }
-            })
-    };
     match ty {
-        MappingType::String | MappingType::Identifier | MappingType::UnitCode => None,
+        MappingType::String | MappingType::Identifier => None,
+        MappingType::UnitCode => (!(1..=3).contains(&value.len())
+            || !value.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .then(|| "expected 1–3 ASCII letters or digits".to_string()),
         MappingType::Boolean => {
             (value != "true" && value != "false").then(|| "expected `true` or `false`".to_string())
         }
@@ -341,13 +374,108 @@ fn constant_literal_error(ty: MappingType, value: &str) -> Option<String> {
             (!all_digits(int) || !all_digits(frac))
                 .then(|| "expected a plain decimal number".to_string())
         }
-        MappingType::Date => (!date_shaped(value)).then(|| "expected `YYYY-MM-DD`".to_string()),
-        MappingType::Datetime => (!matches!(
-            (value.get(..10), value.as_bytes().get(10)),
-            (Some(date), Some(b'T')) if date_shaped(date)
-        ))
-        .then(|| "expected `YYYY-MM-DDThh:mm:ss…`".to_string()),
+        MappingType::Date => (!is_iso_date(value))
+            .then(|| "expected `YYYY-MM-DD` with month 01–12 and day 01–31".to_string()),
+        MappingType::Datetime => (!is_iso_datetime(value)).then(|| {
+            "expected `YYYY-MM-DDThh:mm:ss` (in range, optional fraction/zone)".to_string()
+        }),
         MappingType::Collection => unreachable!("E060 rejects collections before this check"),
+    }
+}
+
+/// Two ASCII digits at `b[i..i + 2]` as a number, if both are digits.
+fn two_digits(b: &[u8], i: usize) -> Option<u8> {
+    match b.get(i..i + 2)? {
+        [hi, lo] if hi.is_ascii_digit() && lo.is_ascii_digit() => {
+            Some((hi - b'0') * 10 + (lo - b'0'))
+        }
+        _ => None,
+    }
+}
+
+/// A `YYYY-MM-DD` date with month 01–12 and day 01–31: the same shape check the
+/// runtime's `validate::is_date` applies to read values, so a constant the
+/// build accepts is one the runtime would accept too.
+fn is_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[..4].iter().all(u8::is_ascii_digit)
+        && two_digits(b, 5).is_some_and(|m| (1..=12).contains(&m))
+        && two_digits(b, 8).is_some_and(|d| (1..=31).contains(&d))
+}
+
+/// An [`is_iso_date`] date, `T`, an in-range `hh:mm:ss`, then an optional
+/// fraction (`.` and digits) and an optional zone (`Z` or `±hh:mm`). Every
+/// literal this accepts, the runtime's `validate::is_datetime` accepts too;
+/// a constant is written verbatim, so an incomplete suffix (`…:00+`) is
+/// refused here.
+fn is_iso_datetime(s: &str) -> bool {
+    let Some((date, time)) = s.split_once('T') else {
+        return false;
+    };
+    let b = time.as_bytes();
+    let in_range = |i: usize, max: u8| two_digits(b, i).is_some_and(|v| v <= max);
+    let hms = b.len() >= 8
+        && b[2] == b':'
+        && b[5] == b':'
+        && in_range(0, 23)
+        && in_range(3, 59)
+        && in_range(6, 59);
+    // `hms` guarantees bytes 0..8 are ASCII, so slicing at 8 is a char boundary.
+    is_iso_date(date) && hms && is_datetime_suffix(&time[8..])
+}
+
+/// The part of an ISO date-time after the seconds: `[.digits][Z|±hh:mm]`,
+/// each part optional, the offset at most 14 hours.
+fn is_datetime_suffix(tail: &str) -> bool {
+    let zone = match tail.strip_prefix('.') {
+        Some(rest) => {
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            if digits == 0 {
+                return false;
+            }
+            &rest[digits..]
+        }
+        None => tail,
+    };
+    let b = zone.as_bytes();
+    zone.is_empty()
+        || zone == "Z"
+        || (b.len() == 6
+            && matches!(b[0], b'+' | b'-')
+            && b[3] == b':'
+            && two_digits(b, 1).is_some_and(|h| h <= 14)
+            && two_digits(b, 4).is_some_and(|m| m <= 59))
+}
+
+/// Validates a node's read-side `default`: it fills the node's own hub key, so
+/// the node must have one and be neither a collection nor a clone (E064); the
+/// literal must parse under the node's `type` (E063).
+fn check_default(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
+    let Some(value) = &node.default else {
+        return;
+    };
+    if node.is_collection() || node.clone_of.is_some() || node.canonical_key.is_none() {
+        diags.push(err(
+            "E064",
+            &node.id,
+            "`default` fills the node's own canonical key on read, so it needs a \
+             `canonical_key` and is not valid on a collection or a `clone_of` node"
+                .to_string(),
+        ));
+        return;
+    }
+    if let Some(reason) = constant_literal_error(node.source_type, value) {
+        diags.push(err(
+            "E063",
+            &node.id,
+            format!(
+                "default `{value}` is not a valid `{}` literal: {reason}",
+                node.source_type
+            ),
+        ));
     }
 }
 
@@ -887,6 +1015,22 @@ mod tests {
     #[case::bad_date("date", "2024-1-1")]
     #[case::bad_datetime("datetime", "2024-01-01 10:00:00")]
     #[case::bad_datetime_literal("datetime", "é234-56-78T12:34:56")]
+    #[case::date_month_out_of_range("date", "2026-13-01")]
+    #[case::date_day_out_of_range("date", "2026-01-32")]
+    #[case::date_day_zero("date", "2026-01-00")]
+    #[case::datetime_bad_month("datetime", "2026-00-01T10:00:00")]
+    #[case::datetime_no_time("datetime", "2026-01-01T")]
+    #[case::datetime_garbage_time("datetime", "2026-01-01Tgarbage")]
+    #[case::datetime_hour_out_of_range("datetime", "2026-01-01T24:00:00")]
+    #[case::datetime_bad_tail("datetime", "2026-01-01T10:00:00X")]
+    #[case::datetime_bare_sign("datetime", "2024-01-01T12:00:00+")]
+    #[case::datetime_empty_fraction("datetime", "2024-01-01T12:00:00.")]
+    #[case::datetime_fraction_garbage("datetime", "2024-01-01T12:00:00.5x")]
+    #[case::datetime_short_offset("datetime", "2024-01-01T12:00:00+01")]
+    #[case::datetime_offset_no_colon("datetime", "2024-01-01T12:00:00+0100")]
+    #[case::datetime_offset_too_far("datetime", "2024-01-01T12:00:00+15:00")]
+    #[case::unit_code_too_long("unit_code", "ABCD")]
+    #[case::unit_code_symbol("unit_code", "m²")]
 
     fn test_invalid_constant_literal_is_e061(#[case] ty: &str, #[case] value: &str) {
         let diags = run(&format!(
@@ -896,12 +1040,50 @@ mod tests {
     }
 
     #[rstest]
+    #[case::bad_date("date", "2026-13-01")]
+    #[case::bad_currency("currency", "eur")]
+    #[case::empty("string", "")]
+    fn test_invalid_default_literal_is_e063(#[case] ty: &str, #[case] value: &str) {
+        let diags = run(&format!(
+            "[Invoice.X]\ntype = \"{ty}\"\ncanonical_key = \"K\"\ndefault = \"{value}\""
+        ));
+        assert_eq!(codes(&diags), ["E063"], "{ty} / {value:?}: {diags:?}");
+    }
+
+    #[test]
+    fn test_valid_default_is_clean() {
+        let diags = run(r#"[Invoice.X]
+            type = "string"
+            canonical_key = "VatCategoryCode"
+            default = "S""#);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[rstest]
+    #[case::helper("[Invoice.X]\ntype = \"string\"\ndefault = \"S\"")]
+    #[case::clone(
+        "[Invoice.ID]\ntype = \"identifier\"\ncanonical_key = \"InvoiceNumber\"\n[Invoice.X]\ntype = \"identifier\"\nclone_of = \"InvoiceNumber\"\ndefault = \"A\""
+    )]
+    #[case::collection(
+        "[Line]\ntype = \"collection\"\ncanonical_key = \"Lines\"\ndefault = \"x\"\n[Line.ID]\ntype = \"identifier\"\ncanonical_key = \"LineId\""
+    )]
+    fn test_default_without_a_key_to_fill_is_e064(#[case] body: &str) {
+        let diags = run(body);
+        assert!(codes(&diags).contains(&"E064"), "{diags:?}");
+    }
+
+    #[rstest]
     #[case::boolean("boolean", "false")]
     #[case::currency("currency", "EUR")]
     #[case::decimal_plain("decimal", "19")]
     #[case::decimal_signed("decimal", "-19.00")]
     #[case::date("date", "2024-01-01")]
     #[case::datetime("datetime", "2024-01-01T10:00:00")]
+    #[case::datetime_zulu("datetime", "2024-01-01T23:59:59Z")]
+    #[case::datetime_fraction_offset("datetime", "2024-01-01T10:00:00.5+01:00")]
+    #[case::datetime_fraction_zulu("datetime", "2024-01-01T10:00:00.123Z")]
+    #[case::datetime_negative_offset("datetime", "2024-01-01T10:00:00-05:30")]
+    #[case::date_day_31("date", "2024-12-31")]
     #[case::unit_code("unit_code", "C62")]
     fn test_valid_constant_literal_is_clean(#[case] ty: &str, #[case] value: &str) {
         let diags = run(&format!(
