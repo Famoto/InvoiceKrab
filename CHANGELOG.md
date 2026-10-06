@@ -8,6 +8,20 @@ Changes to the mapping DSL are listed under **DSL** in each release.
 
 ## [Unreleased]
 
+### Changed
+
+- Licensing: the KrabInvoice Configuration Exception (`LICENSE-EXCEPTION`),
+  an additional permission under section 7 of the AGPL. Building with your
+  own configuration directory is not a modification of KrabInvoice, and that
+  configuration and the code generated from it need not be part of the
+  Corresponding Source.
+
+### Documentation
+
+- README: "Using KrabInvoice" — the web API with your own configuration as
+  the recommended deployment, and changes to KrabInvoice go upstream or are
+  published.
+
 ## [1.0.0] — 2026-10-06
 
 The first stable release: the mapping DSL, the library API, the `krab-cli`

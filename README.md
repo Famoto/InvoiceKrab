@@ -169,7 +169,11 @@ Why this setup:
   KrabInvoice; choose that only if you are prepared to license it under the
   AGPL.
 - **Your mappings are yours.** They live in your repository, start from CC0
-  templates, and you decide whether to share them.
+  templates, and you decide whether to share them. The
+  [Configuration Exception](LICENSE-EXCEPTION) makes this hold for the built
+  server too: building with your own configuration is not a modification of
+  KrabInvoice, and when the AGPL requires you to provide its source, your
+  configuration and the code generated from it are not part of it.
 - **Upgrades are a rebuild.** Check out a newer tag, rebuild the image with
   the same `KRAB_CONFIG_DIR`, and compare `GET /version` and the
   `/analyze` report before you switch over.
@@ -789,12 +793,21 @@ the public domain under [CC0-1.0](config/LICENSE): copy and adapt them freely,
 with or without attribution, and license the mappings you write — whether from
 scratch or starting from the demos — however you like.
 
+**Additional permission: the
+[KrabInvoice Configuration Exception](LICENSE-EXCEPTION)** (under section 7
+of the AGPL). Building KrabInvoice with a configuration directory of your
+own (`KRAB_CONFIG_DIR`) is not by itself a modification of KrabInvoice, and
+the Corresponding Source you provide under the AGPL need not include that
+configuration or the code the build generates from it. Changes to
+KrabInvoice outside the configuration, and programs that link its crates as
+a library, remain fully covered by the AGPL.
+
 Third-party material is under its own terms: the XSD schemas and sample
 documents in [testfiles/](testfiles/) (see
 [testfiles/xsd/SOURCES.md](testfiles/xsd/SOURCES.md) for their origins).
 
 What this means in practice (a summary, not legal advice): your mapping files
-are yours. The programs and libraries built from KrabInvoice (`krab-cli`,
+are yours, in source form and compiled into a build. The programs and libraries built from KrabInvoice (`krab-cli`,
 `krab-server`, a crate depending on `einvoice-interfaces`) are covered by the
 AGPL, including when you distribute them and, for modified versions, when you
 let others use them over a network (section 13). The recommended deployment
