@@ -175,16 +175,15 @@ impl Identity {
                 _ => continue,
             };
             let namespace = match ns {
-                ResolveResult::Bound(ns) => Some(String::from_utf8_lossy(ns.as_ref()).into_owned()),
+                ResolveResult::Bound(ns) => Some(ns.as_ref().to_owned()),
                 ResolveResult::Unbound => None,
                 ResolveResult::Unknown(prefix) => {
                     return Err(IdentityError::NotXml(format!(
-                        "the root element's prefix `{}` is bound to no namespace",
-                        String::from_utf8_lossy(&prefix)
+                        "the root element's prefix `{prefix}` is bound to no namespace"
                     )));
                 }
             };
-            let local = String::from_utf8_lossy(start.local_name().as_ref()).into_owned();
+            let local = start.local_name().as_ref().to_owned();
             if namespace.as_deref() != self.namespace || local != self.root {
                 return Err(IdentityError::Root {
                     expected: self.qualified_root(),
@@ -278,8 +277,7 @@ impl Identity {
         // Scanning stops at the first top-level element after the profile
         // that lies on no identity path; with no profile, after the first.
         let mut profile_seen = wanted[0].path.is_empty();
-        let local =
-            |e: &BytesStart<'_>| String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+        let local = |e: &BytesStart<'_>| e.local_name().as_ref().to_owned();
         // Whether `name`, opened at `stack`, lies on some identity path.
         let on_path = |stack: &[String], name: &str, wanted: &[Wanted]| {
             wanted.iter().any(|w| {
@@ -340,12 +338,12 @@ impl Identity {
                 }
                 Event::Text(t) => {
                     if let Some(text) = own_text(&mut capturing, &stack, wanted) {
-                        text.push_str(&t.xml10_content().map_err(|e| not_xml(&e))?);
+                        text.push_str(&t.xml10_content());
                     }
                 }
                 Event::CData(t) => {
                     if let Some(text) = own_text(&mut capturing, &stack, wanted) {
-                        text.push_str(&t.decode().map_err(|e| not_xml(&e))?);
+                        text.push_str(&t.xml10_content());
                     }
                 }
                 Event::GeneralRef(r) => {
@@ -353,7 +351,7 @@ impl Identity {
                         if let Some(c) = r.resolve_char_ref().map_err(|e| not_xml(&e))? {
                             text.push(c);
                         } else {
-                            let name = r.decode().map_err(|e| not_xml(&e))?;
+                            let name = r.xml10_content();
                             let resolved = resolve_predefined_entity(&name).ok_or_else(|| {
                                 IdentityError::NotXml(format!("unknown entity `&{name};`"))
                             })?;
