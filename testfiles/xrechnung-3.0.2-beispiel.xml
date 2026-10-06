@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Based on an example of the KoSIT XRechnung test suite
+  (https://github.com/itplr-kosit/xrechnung-testsuite), licensed under the
+  Apache License, Version 2.0 (see LICENSES/Apache-2.0.txt).
+  Modified by the KrabInvoice authors; the changes are recorded in the
+  KrabInvoice git history.
+-->
 <Invoice
   xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
   xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"

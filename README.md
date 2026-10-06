@@ -51,6 +51,7 @@ deltas — XRechnung and Peppol are a handful of lines on top of UBL.
 - [Disclaimer](#disclaimer)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [Using KrabInvoice](#using-krabinvoice)
 - [Using your own mappings](#using-your-own-mappings)
 - [Bundled (demo) mappings](#bundled-demo-mappings)
 - [The `krab-cli` CLI](#the-krab-cli-cli)
@@ -115,6 +116,92 @@ krab-cli --analyze
 # Inspect the canonical key vocabulary while writing mappings
 krab-cli --keys
 ```
+
+---
+
+## Using KrabInvoice
+
+The recommended way to use KrabInvoice, in particular inside a company, is
+**the web API with your own configuration**: run `krab-server` as a service
+of its own, built with your mappings, and call it over HTTP from your
+systems.
+
+1. **Keep your configuration in your own repository.** Start from a copy of
+   [config/](config/) — it is CC0, no strings attached — and replace what you
+   need (see [Using your own mappings](#using-your-own-mappings)). Check it
+   with `cargo run -p einvoice-dsl -- check /path/to/my-project/my-config`.
+2. **Build the server with it.** Put the configuration directory into the
+   build context (for example a checkout of your mappings repository inside
+   the KrabInvoice checkout), pin a release tag, and name the directory:
+
+   ```bash
+   git checkout v1.0.0
+   docker build --target server --build-arg KRAB_CONFIG_DIR=my-config \
+       -t my-krab-server:1.0.0 .
+   ```
+
+3. **Run it in your private network**, behind a reverse proxy that
+   authenticates clients and terminates TLS (`krab-server` has neither):
+
+   ```bash
+   docker run --rm -p 8080:8080 --cpus 4 --memory 2g my-krab-server:1.0.0
+   ```
+
+4. **Call it from your systems** — ERP, accounting, inbound mail processing:
+
+   ```bash
+   curl -sS --data-binary @invoice.xml \
+       'krab.internal:8080/transform?to=xrechnung-invoice:3.0.2'
+   ```
+
+   `GET /formats` and `GET /version` show what the running build carries,
+   `GET /health` serves your monitoring, and
+   `GET /analyze?from=<format>&to=<format>&deny_lossy=1` makes a CI gate that
+   fails when a conversion you depend on would lose data (see
+   [The `krab-server` HTTP API](#the-krab-server-http-api)).
+
+Why this setup:
+
+- **Your systems stay separate from KrabInvoice.** They talk to it over HTTP
+  only, so the AGPL covers KrabInvoice, not the software that calls it.
+  Linking the crates into your own program instead
+  ([Library usage](#library-usage)) makes that program a work based on
+  KrabInvoice; choose that only if you are prepared to license it under the
+  AGPL.
+- **Your mappings are yours.** They live in your repository, start from CC0
+  templates, and you decide whether to share them. The
+  [Configuration Exception](LICENSE-EXCEPTION) makes this hold for the built
+  server too: building with your own configuration is not a modification of
+  KrabInvoice, and when the AGPL requires you to provide its source, your
+  configuration and the code generated from it are not part of it.
+- **Upgrades are a rebuild.** Check out a newer tag, rebuild the image with
+  the same `KRAB_CONFIG_DIR`, and compare `GET /version` and the
+  `/analyze` report before you switch over.
+
+### Changes and bug fixes: upstream, or publish them
+
+KrabInvoice depends on fixes flowing back. If you change KrabInvoice itself
+— the engine, the server, the CLI, the build — whether a bug fix, a new
+feature or a performance improvement:
+
+- **Preferably, send it upstream:** open an issue or a pull request at
+  [github.com/Famoto/InvoiceKrab](https://github.com/Famoto/InvoiceKrab).
+  An upstreamed change is maintained with the project, so you do not carry a
+  patch set across every upgrade. The same goes for fixes to the demo
+  mappings in [config/](config/).
+- **Otherwise, publish it:** make the modified source public, for example as
+  a public fork, under AGPL-3.0-or-later.
+
+Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes,
+not in a public issue or fork.
+
+The AGPL already requires the source of a modified version to reach its
+users when you give the program to others (section 6) or let users interact
+with it over a network (section 13). We ask for it in every case, including
+changes you only run internally: a fix kept private helps nobody else, and
+you have to re-apply it on every upgrade. This concerns KrabInvoice's code;
+your own configuration directory is not affected — sharing a mapping is
+welcome, but entirely up to you.
 
 ---
 
@@ -573,8 +660,10 @@ every diagnostic code — lives in
 2. Give it the same `canonical_key`s (with matching types) as the existing
    spokes for everything you want to round-trip; add new keys for fields unique
    to your format.
-3. Declare the format's XSD in `[meta.schema]` (vendor it under
-   [testfiles/xsd/](testfiles/xsd/)) and, ideally, a sample document in
+3. Declare the format's XSD in `[meta.schema]` (under
+   [testfiles/xsd/](testfiles/xsd/), fetched by `scripts/fetch-schemas.sh`:
+   add its checksum to `SHA256SUMS` and its source to the script and to
+   `SOURCES.md`) and, ideally, a sample document in
    `[[meta.samples]]`: every format's output is then validated against it
    and round-tripped — see
    [Schema conformance](config/mappings/README.md#schema-conformance).
@@ -623,9 +712,18 @@ executes only that generated code.
 
 ## Developer commands
 
-Emitted documents are validated against the vendored XSDs in
-[testfiles/xsd/](testfiles/xsd/) by `crates/einvoice-interfaces/tests/xsd_validation.rs`
-(it needs `xmllint` from libxml2 on `PATH`; CI installs it). The test names no
+Emitted documents are validated against the official XSDs by
+`crates/einvoice-interfaces/tests/xsd_validation.rs`. The XSDs are not in the
+repository; fetch them once into [testfiles/xsd/](testfiles/xsd/), pinned and
+checksummed (sources in [SOURCES.md](testfiles/xsd/SOURCES.md)):
+
+```bash
+scripts/fetch-schemas.sh
+```
+
+The test also needs `xmllint` from libxml2 on `PATH`. Without either, it skips
+schema validation with a notice and still runs the round trips; CI installs
+`xmllint` and fetches the XSDs, and fails without them. The test names no
 format: it runs the checks each mapping declares in `[meta.schema]` and
 `[[meta.samples]]`, the same ones `krab-cli --check` reports. A format's
 remaining schema errors are its `known_gaps`, and the check fails both on a
@@ -706,13 +804,32 @@ the public domain under [CC0-1.0](config/LICENSE): copy and adapt them freely,
 with or without attribution, and license the mappings you write — whether from
 scratch or starting from the demos — however you like.
 
-Third-party material is under its own terms: the XSD schemas and sample
-documents in [testfiles/](testfiles/) (see
-[testfiles/xsd/SOURCES.md](testfiles/xsd/SOURCES.md) for their origins).
+**Additional permission: the
+[KrabInvoice Configuration Exception](LICENSE-EXCEPTION)** (under section 7
+of the AGPL). Building KrabInvoice with a configuration directory of your
+own (`KRAB_CONFIG_DIR`) is not by itself a modification of KrabInvoice, and
+the Corresponding Source you provide under the AGPL need not include that
+configuration or the code the build generates from it. Changes to
+KrabInvoice outside the configuration, and programs that link its crates as
+a library, remain fully covered by the AGPL.
+
+Third-party schemas are not part of the repository: the XSDs the mappings
+validate against are fetched from their publishers' distributions by
+`scripts/fetch-schemas.sh` (see
+[testfiles/xsd/SOURCES.md](testfiles/xsd/SOURCES.md)) and are under their own
+terms. The sample invoices in [testfiles/](testfiles/) are based on examples
+of the
+[KoSIT XRechnung test suite](https://github.com/itplr-kosit/xrechnung-testsuite)
+and, like it, are under the [Apache License 2.0](LICENSES/Apache-2.0.txt).
+
+Every file's copyright and license are recorded in [REUSE.toml](REUSE.toml)
+([REUSE](https://reuse.software/) 3.3), with the license texts in
+[LICENSES/](LICENSES/); `reuse lint` checks the whole tree, and CI runs it.
 
 What this means in practice (a summary, not legal advice): your mapping files
-are yours. The programs and libraries built from KrabInvoice (`krab-cli`,
+are yours, in source form and compiled into a build. The programs and libraries built from KrabInvoice (`krab-cli`,
 `krab-server`, a crate depending on `einvoice-interfaces`) are covered by the
 AGPL, including when you distribute them and, for modified versions, when you
-let others use them over a network (section 13). If that matters for your
-deployment, check it with your own counsel.
+let others use them over a network (section 13). The recommended deployment
+and what we ask of changes are in [Using KrabInvoice](#using-krabinvoice). If
+that matters for your deployment, check it with your own counsel.

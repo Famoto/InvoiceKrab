@@ -97,11 +97,6 @@ xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
 [[meta.samples]]
 file = "testfiles/en16931-full-ubl.xml"
 
-# The OASIS UBL 2.1 example invoice (EN 16931 customization, as published by
-# the CEN BII project): a document written by another tool.
-[[meta.samples]]
-file = "testfiles/UBL-Invoice-2.1.xml"
-
 # ===========================================================================
 # PROCESS CONTROL (BG-2)
 # ===========================================================================

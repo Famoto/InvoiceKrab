@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Based on an example of the KoSIT XRechnung test suite
+  (https://github.com/itplr-kosit/xrechnung-testsuite), licensed under the
+  Apache License, Version 2.0 (see LICENSES/Apache-2.0.txt).
+  Modified by the KrabInvoice authors; the changes are recorded in the
+  KrabInvoice git history.
+-->
 <rsm:CrossIndustryInvoice xmlns:qdt="urn:un:unece:uncefact:data:standard:QualifiedDataType:100" xmlns:ram="urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100" xmlns:rsm="urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100" xmlns:udt="urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100">
   <rsm:ExchangedDocumentContext>
     <ram:BusinessProcessSpecifiedDocumentContextParameter>

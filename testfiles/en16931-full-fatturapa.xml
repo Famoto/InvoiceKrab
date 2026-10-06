@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The invoice of en16931-full-ubl.xml, itself based on an example of the
+  KoSIT XRechnung test suite (https://github.com/itplr-kosit/xrechnung-testsuite),
+  written in FatturaPA syntax by the KrabInvoice authors. Licensed under the
+  Apache License, Version 2.0 (see LICENSES/Apache-2.0.txt); the changes are
+  recorded in the KrabInvoice git history.
+-->
 <p:FatturaElettronica xmlns:p="http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2" versione="FPR12">
   <FatturaElettronicaHeader>
     <DatiTrasmissione>

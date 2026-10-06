@@ -8,6 +8,43 @@ Changes to the mapping DSL are listed under **DSL** in each release.
 
 ## [Unreleased]
 
+### DSL
+
+- **Changed** the schema files a mapping declares (`[meta.schema]` `xsd` and
+  `catalog`) need not exist at build time: nothing is built from them. Their
+  paths must still stay in the workspace (E100), and the samples
+  (`[[meta.samples]]`, `refuses`) must still exist. Without a declared schema
+  file, `krab-cli --check` and the XSD test skip schema validation with a
+  notice, as they do without `xmllint`.
+
+### Changed
+
+- The third-party XSDs are no longer in the repository:
+  `scripts/fetch-schemas.sh` downloads them, pinned to a commit and verified
+  against `testfiles/xsd/SHA256SUMS`, and CI runs it. The OASIS UBL 2.1
+  example invoice (`testfiles/UBL-Invoice-2.1.xml`) is removed;
+  `testfiles/en16931-full-ubl.xml` remains the UBL sample.
+
+- Licensing: the KrabInvoice Configuration Exception (`LICENSE-EXCEPTION`),
+  an additional permission under section 7 of the AGPL. Building with your
+  own configuration directory is not a modification of KrabInvoice, and that
+  configuration and the code generated from it need not be part of the
+  Corresponding Source.
+- Licensing: the repository is [REUSE](https://reuse.software/) 3.3
+  compliant. `REUSE.toml` records every file's copyright and license,
+  including the vendored third-party schemas, and `LICENSES/` holds the
+  license texts; CI and pre-commit run `reuse lint`.
+- Licensing: the sample invoices based on the KoSIT XRechnung test suite
+  (`testfiles/en16931-full-*.xml`, `testfiles/xrechnung-3.0.2-beispiel.xml`)
+  are marked Apache-2.0, as their source is, and note that KrabInvoice
+  modified them.
+
+### Documentation
+
+- README: "Using KrabInvoice" — the web API with your own configuration as
+  the recommended deployment, and changes to KrabInvoice go upstream or are
+  published.
+
 ## [1.0.0] — 2026-10-06
 
 The first stable release: the mapping DSL, the library API, the `krab-cli`

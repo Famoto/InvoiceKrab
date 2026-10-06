@@ -34,7 +34,10 @@
 //!
 //! The paths in `[meta.schema]` and `[[meta.samples]]` are relative to the
 //! workspace root — for [`load_config`], the parent of the `config/` directory.
-//! Every one must name an existing file (E100), and every sample must resolve
+//! Every one must stay under the root (E100). The sample documents (`samples`,
+//! `refuses`) must exist; the schema files (`xsd`, `catalog`) need not, since
+//! nothing is built from them: they are third-party files fetched for the
+//! conformance checks, which skip schema validation without them. Every sample must resolve
 //! to the emitted spoke that reads it (E101): its `source` (a mapping id, or a
 //! bare `doc_format` with a single emitted version), else the declaring mapping, which must then not be an
 //! inherit-only base. These checks report every problem at once, as one
@@ -81,9 +84,10 @@ pub struct LoadOutput {
     pub spokes: Vec<LoadedSpoke>,
     /// Every `*.toml` file scanned, sorted (for build-script change tracking).
     pub files: Vec<PathBuf>,
-    /// Every file a `[meta.schema]` or `[[meta.samples]]` entry declares,
-    /// resolved under [`Self::root`], sorted and de-duplicated (for
-    /// build-script change tracking).
+    /// Every sample document a `[meta.schema].refuses` or `[[meta.samples]]`
+    /// entry declares, resolved under [`Self::root`], sorted and
+    /// de-duplicated (for build-script change tracking). The schema files are
+    /// not listed: nothing is built from them.
     pub declared_files: Vec<PathBuf>,
     /// The workspace root the declared paths are relative to.
     pub root: PathBuf,
@@ -181,8 +185,8 @@ fn toml_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
 /// Fails on an unreadable directory or file, a TOML parse error, two mappings
 /// sharing an id or slug, an `inherits` reference to an unknown mapping, or an
 /// inheritance cycle. Then, all reported together: a declared schema or
-/// sample path that is absolute or names no file under `root` (E100), and a
-/// sample no emitted spoke reads (E101).
+/// sample path that is absolute or leaves `root`, or a sample path that names
+/// no file under it (E100), and a sample no emitted spoke reads (E101).
 pub fn load_dir(dir: &Path, root: &Path) -> Result<LoadOutput, ConfigError> {
     let files = toml_files(dir)?;
 
@@ -238,8 +242,9 @@ pub fn load_dir(dir: &Path, root: &Path) -> Result<LoadOutput, ConfigError> {
     }
     spokes.sort_by(|a, b| a.slug.cmp(&b.slug));
 
-    // The conformance declarations: every declared file must exist, every
-    // sample must have a reader. All problems are reported together.
+    // The conformance declarations: every declared path stays under the root,
+    // every sample document exists and has a reader. All problems are
+    // reported together.
     let mut problems: Vec<String> = Vec::new();
     let mut declared_files: Vec<PathBuf> = Vec::new();
     for (id, mapping) in &by_id {
@@ -247,9 +252,14 @@ pub fn load_dir(dir: &Path, root: &Path) -> Result<LoadOutput, ConfigError> {
         let meta = &mapping.meta;
         let mut declared: Vec<(&str, &str)> = Vec::new();
         if let Some(schema) = &meta.schema {
-            declared.push(("[meta.schema].xsd", &schema.xsd));
+            let mut schema_files = vec![("[meta.schema].xsd", schema.xsd.as_str())];
             if let Some(catalog) = &schema.catalog {
-                declared.push(("[meta.schema].catalog", catalog));
+                schema_files.push(("[meta.schema].catalog", catalog));
+            }
+            for (field, path) in schema_files {
+                if let Err(why) = declared_path(root, path) {
+                    problems.push(format!("{file}: E100: {field} `{path}` {why}"));
+                }
             }
             for refused in &schema.refuses {
                 declared.push(("[meta.schema].refuses", refused));
@@ -307,9 +317,8 @@ pub fn load_dir(dir: &Path, root: &Path) -> Result<LoadOutput, ConfigError> {
 }
 
 /// Resolves a declared workspace-relative `path` under `root`, or says why it
-/// cannot be used: it is absolute, climbs out of `root` with `..`, or no file
-/// exists there.
-fn declared_file(root: &Path, path: &str) -> Result<PathBuf, String> {
+/// cannot be used: it is absolute, or climbs out of `root` with `..`.
+fn declared_path(root: &Path, path: &str) -> Result<PathBuf, String> {
     let rel = Path::new(path);
     if rel.is_absolute() || rel.has_root() {
         return Err("must be relative to the workspace root, not absolute".to_string());
@@ -317,7 +326,13 @@ fn declared_file(root: &Path, path: &str) -> Result<PathBuf, String> {
     if rel.components().any(|c| c == Component::ParentDir) {
         return Err("must stay under the workspace root (no `..` components)".to_string());
     }
-    let resolved = root.join(path);
+    Ok(root.join(path))
+}
+
+/// Resolves a declared workspace-relative `path` under `root` like
+/// [`declared_path`], which must also name an existing file.
+fn declared_file(root: &Path, path: &str) -> Result<PathBuf, String> {
+    let resolved = declared_path(root, path)?;
     if resolved.is_file() {
         Ok(resolved)
     } else {
@@ -638,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_dir_attributes_samples_to_their_reader_and_lists_declared_files() {
+    fn test_load_dir_attributes_samples_to_their_reader_and_lists_declared_samples() {
         let dir = dir_with(&[
             (
                 "base",
@@ -655,13 +670,8 @@ mod tests {
                 ),
             ),
         ]);
-        for rel in [
-            "xsd/base.xsd",
-            "xsd/catalog.xml",
-            "docs/base.xml",
-            "docs/child.xml",
-            "docs/other.xml",
-        ] {
+        // The schema files are not fetched: they need not exist.
+        for rel in ["docs/base.xml", "docs/child.xml", "docs/other.xml"] {
             touch(&dir, rel, "<x/>");
         }
         let out = load_dir(&dir, &dir).expect("loads");
@@ -687,14 +697,8 @@ mod tests {
             .collect();
         assert_eq!(
             declared,
-            [
-                "docs/base.xml",
-                "docs/child.xml",
-                "docs/other.xml",
-                "xsd/base.xsd",
-                "xsd/catalog.xml"
-            ],
-            "sorted, de-duplicated, resolved under the root"
+            ["docs/base.xml", "docs/child.xml", "docs/other.xml"],
+            "sorted, de-duplicated, resolved under the root; no schema files"
         );
     }
 
@@ -717,27 +721,51 @@ mod tests {
     }
 
     #[test]
-    fn test_load_dir_missing_or_absolute_declared_file_is_e100_naming_the_mapping() {
+    fn test_load_dir_missing_sample_or_absolute_declared_path_is_e100_naming_the_mapping() {
         let dir = dir_with(&[(
             "base",
             &meta(
                 "base-fmt",
-                "[meta.schema]\nxsd = \"xsd/missing.xsd\"\ncatalog = \"/abs/catalog.xml\"\n[[meta.samples]]\nfile = \"docs/missing.xml\"",
+                "[meta.schema]\nxsd = \"/abs/base.xsd\"\ncatalog = \"/abs/catalog.xml\"\nrefuses = [\"docs/refused.xml\"]\n[[meta.samples]]\nfile = \"docs/missing.xml\"",
             ),
         )]);
         let err = load_dir(&dir, &dir).unwrap_err();
         let lines: Vec<&str> = err.message.lines().collect();
-        assert_eq!(lines.len(), 3, "every problem at once: {}", err.message);
+        assert_eq!(lines.len(), 4, "every problem at once: {}", err.message);
         for line in &lines {
             assert!(line.contains("base.toml: E100:"), "{line}");
         }
         assert!(
-            lines[0].contains("[meta.schema].xsd `xsd/missing.xsd` does not exist"),
+            lines[0].contains("[meta.schema].xsd") && lines[0].contains("not absolute"),
             "{}",
             lines[0]
         );
-        assert!(lines[1].contains("not absolute"), "{}", lines[1]);
-        assert!(lines[2].contains("[[meta.samples]].file"), "{}", lines[2]);
+        assert!(
+            lines[1].contains("[meta.schema].catalog") && lines[1].contains("not absolute"),
+            "{}",
+            lines[1]
+        );
+        assert!(
+            lines[2].contains("[meta.schema].refuses `docs/refused.xml` does not exist"),
+            "{}",
+            lines[2]
+        );
+        assert!(lines[3].contains("[[meta.samples]].file"), "{}", lines[3]);
+    }
+
+    #[test]
+    fn test_load_dir_missing_schema_files_load() {
+        // The schema files are fetched for the conformance checks, not built
+        // from: a configuration without them still loads.
+        let dir = dir_with(&[(
+            "base",
+            &meta(
+                "base-fmt",
+                "[meta.schema]\nxsd = \"xsd/missing.xsd\"\ncatalog = \"xsd/missing-catalog.xml\"",
+            ),
+        )]);
+        let out = load_dir(&dir, &dir).expect("loads without its schema files");
+        assert!(out.declared_files.is_empty());
     }
 
     #[test]
@@ -799,15 +827,18 @@ mod tests {
         std::fs::create_dir_all(config.join("mappings")).unwrap();
         std::fs::write(
             config.join("mappings/base.toml"),
-            meta("base-fmt", "[meta.schema]\nxsd = \"testfiles/base.xsd\""),
+            meta(
+                "base-fmt",
+                "[[meta.samples]]\nfile = \"testfiles/base.xml\"",
+            ),
         )
         .unwrap();
-        touch(&workspace, "testfiles/base.xsd", "<xs:schema/>");
+        touch(&workspace, "testfiles/base.xml", "<x/>");
         let out = load_config(&config).expect("loads");
         assert_eq!(out.root, workspace.canonicalize().unwrap());
         assert_eq!(
             out.declared_files,
-            [workspace.canonicalize().unwrap().join("testfiles/base.xsd")]
+            [workspace.canonicalize().unwrap().join("testfiles/base.xml")]
         );
     }
 

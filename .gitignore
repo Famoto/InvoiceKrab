@@ -149,3 +149,5 @@ rustc-ice-*.txt
 
 *claude*
 CLAUDE.md
+# Third-party XSDs, fetched by scripts/fetch-schemas.sh
+/testfiles/xsd/**/*.xsd

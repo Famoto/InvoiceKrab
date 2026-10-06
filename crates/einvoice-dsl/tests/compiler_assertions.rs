@@ -629,7 +629,11 @@ fn test_w095_required_key_no_other_spoke_maps() {
     "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.T]\ntype=\"string\"\n[Doc.R2]\nxml=\"Ref\"\nmatch={\"T\"=5}\n[Doc.R2.X]\ntype=\"string\"\ncanonical_key=\"X\"\n".to_string(),
     "match"
 )]
-#[case::e100_missing_xsd(format!("[meta.schema]\nxsd = \"nope.xsd\"\n{KEY}"), "E100")]
+#[case::e100_missing_sample(format!("[[meta.samples]]\nfile = \"nope.xml\"\n{KEY}"), "E100")]
+#[case::e100_missing_refused_sample(
+    format!("[meta.schema]\nxsd = \"nope.xsd\"\nrefuses = [\"nope.xml\"]\n{KEY}"),
+    "E100"
+)]
 #[case::e100_absolute(format!("[meta.schema]\nxsd = \"/etc/passwd\"\n{KEY}"), "E100")]
 #[case::e100_escapes_root(format!("[meta.schema]\nxsd = \"../../../../../../etc/passwd\"\n{KEY}"), "E100")]
 #[case::e101_unknown_sample_source(
@@ -638,6 +642,15 @@ fn test_w095_required_key_no_other_spoke_maps() {
 )]
 fn test_load_error(#[case] body: String, #[case] needle: &str) {
     assert_load_error(&one(&body), needle);
+}
+
+/// The schema files are fetched for the conformance checks, not built from:
+/// a configuration whose `xsd` and `catalog` do not exist (yet) compiles.
+#[test]
+fn test_missing_schema_files_are_accepted() {
+    assert_accepted(&one(&format!(
+        "[meta.schema]\nxsd = \"nope.xsd\"\ncatalog = \"nope.xml\"\n{KEY}"
+    )));
 }
 
 /// An id segment named like a node field (`match`, `type`, `xml`, …) is read as

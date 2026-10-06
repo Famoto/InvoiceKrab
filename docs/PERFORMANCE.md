@@ -214,7 +214,7 @@ time-sensitive small ones, route the large ones to a separate instance.
 | Build | optimized release build; memory per format also measured on the musl build used by the Docker image |
 | Service settings | defaults (4 workers, memory budget half of RAM) unless stated |
 | Test tool | [`oha`](https://github.com/hatoo/oha) HTTP load generator, 8–32 parallel connections, on the same machine (results are conservative) |
-| Invoices | the bundled UBL sample ([testfiles/UBL-Invoice-2.1.xml](../testfiles/UBL-Invoice-2.1.xml)) and copies with 100 to 100,000 invoice lines; the XRechnung sample gave the same picture. For memory per format, those invoices were converted into every supported format and each was sent back through every route |
+| Invoices | the OASIS UBL 2.1 example invoice (bundled as `testfiles/UBL-Invoice-2.1.xml` until it was removed for licensing reasons; it is in the git history) and copies with 100 to 100,000 invoice lines; the XRechnung sample gave the same picture. For memory per format, those invoices were converted into every supported format and each was sent back through every route |
 
 Results depend on hardware and on how many fields your invoices use;
 measure with your own invoices before final sizing:

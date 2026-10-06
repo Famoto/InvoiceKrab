@@ -28,14 +28,10 @@ inherits = "ubl-invoice:2.1"
 # schema whole (a child's `[meta.schema]` replaces its parent's) to document
 # refusals: the FatturaPA sample has no electronic addresses (BT-34, BT-49),
 # seller contact (BG-6), buyer reference (BT-10) or business process (BT-23),
-# all of which XRechnung requires; nor has the OASIS example electronic
-# addresses or a buyer reference.
+# all of which XRechnung requires.
 [meta.schema]
 xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
-refuses = [
-    "testfiles/en16931-full-fatturapa.xml",
-    "testfiles/UBL-Invoice-2.1.xml",
-]
+refuses = ["testfiles/en16931-full-fatturapa.xml"]
 
 # The exact CustomizationID (BT-24) values of XRechnung 3.0: the KoSIT
 # identifier XRechnung 3.0 specifies (and this spoke writes), and the

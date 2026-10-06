@@ -11,9 +11,10 @@
 //! `known_gaps`, none of which may be stale) and round-trips every canonical
 //! key the spoke covers. `krab-cli --check` runs the same checks.
 //!
-//! Without `xmllint` on `PATH` the schema checks are skipped with a notice and
-//! the round trips still run; CI installs `libxml2-utils`, so there the schema
-//! checks always run.
+//! Without `xmllint` on `PATH`, or before `scripts/fetch-schemas.sh` fetched
+//! the XSDs, the schema checks are skipped with a notice and the round trips
+//! still run; CI installs `libxml2-utils` and fetches the XSDs, so there the
+//! schema checks always run.
 
 use std::path::Path;
 
@@ -36,6 +37,14 @@ fn test_bundled_mappings_satisfy_their_declared_schemas_and_samples() {
     let report = conformance::check(&root, xmllint);
     // The full report (known gaps, dropped keys) shows with `--nocapture`.
     eprintln!("{}", report.render());
+    // Likewise the schemas: locally they may not be fetched yet, on CI a
+    // missing fetch step must fail loudly.
+    if std::env::var_os("CI").is_some() {
+        assert_eq!(
+            report.schema_skipped, None,
+            "CI must fetch the XSDs (scripts/fetch-schemas.sh)"
+        );
+    }
 
     // The matrix is derived, so make sure it is not vacuous: the mappings
     // declare samples, and every sample reaches every spoke with a schema.

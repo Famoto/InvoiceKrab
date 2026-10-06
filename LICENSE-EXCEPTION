@@ -1,0 +1,76 @@
+                  KrabInvoice Configuration Exception
+
+        Additional permission under section 7 of the GNU Affero
+                General Public License, version 3
+
+Copyright (C) The KrabInvoice authors.
+
+KrabInvoice is licensed under the GNU Affero General Public License, version
+3 or (at your option) any later version (the "License"; see LICENSE). As an
+additional permission under section 7 of the License, the copyright holders
+of KrabInvoice grant you the following. Where you use KrabInvoice under a
+later version of the License, this permission applies in the same way to the
+provisions of that version that correspond to the sections named here.
+
+0. Definitions
+
+"The Program" means KrabInvoice as distributed by its copyright holders,
+covered by the License.
+
+A "Configuration" is the configuration directory a build of the Program
+compiles: the directory named by the KRAB_CONFIG_DIR environment variable or
+the KRAB_CONFIG_DIR argument of the Program's Dockerfile, or, when none is
+named, the Program's config/ directory. It consists of the mapping files
+(mappings/*.toml), codec files (codecs/*.toml) and calculation rules
+(derivations.toml) that the Program's build reads as input in its mapping
+language, together with the schema, sample and other data files those files
+declare. Files the build does not read as such input are not part of a
+Configuration.
+
+"Generated Code" is the code the Program's build generates from a
+Configuration, in source and in compiled form.
+
+A "Configured Work" is a work built from the Program, modified or not, with
+a Configuration.
+
+1. Using a Configuration is not a modification
+
+Building the Program with a Configuration of your choice, in place of or in
+addition to the one in its config/ directory, does not by itself modify the
+Program for the purposes of the License, including sections 5 and 13. A
+Configured Work built from an otherwise unmodified Program is, for those
+purposes, the unmodified Program.
+
+2. Configurations need not be disclosed
+
+When you convey a Configured Work in object code form, or when section 13 of
+the License requires you to offer the Corresponding Source of a Configured
+Work, the Corresponding Source need not include the Configuration or the
+Generated Code. Everything else the License requires remains required: in
+particular the complete source code of the Program and of every modification
+you made to it outside the Configuration, and the scripts used to control
+its compilation, which are sufficient when your recipients can build the
+work from them with a Configuration of their own.
+
+3. Configurations are yours
+
+The License imposes no conditions on a Configuration, in source form,
+merely because it is built with the Program. You may license it on any
+terms you choose, or keep it confidential. Its Generated Code, conveyed as
+part of a Configured Work in object code form, is conveyed under the License
+like the rest of that work, subject to sections 1 and 2.
+
+4. Scope
+
+This permission covers Configurations only. It does not apply to any other
+work that is based on the Program, in particular a program that links to,
+includes or depends on a library of the Program: such a program is covered
+by the License without this permission, except for a Configuration it is
+built with. Nothing here limits any permission the License itself grants.
+
+5. Removing this permission
+
+As section 7 of the License provides, when you convey a copy of the Program
+or a work based on it, you may remove this additional permission from that
+copy, or from any part of it. If you modify the Program, you may extend this
+permission to your modified version, but you are not obliged to do so.
