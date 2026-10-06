@@ -1063,10 +1063,14 @@ source = "xrechnung-invoice"     # optional: the spoke that reads it
 | `samples.file` | ✅ | A sample document |
 | `samples.source` | — | The spoke that reads the sample, as a mapping id or a bare `doc_format`; default: the declaring mapping |
 
-Every path is relative to the workspace root (the parent of `config/`). A
-path that names no file fails the build (E100), and so does a sample no
-spoke reads: a `source` naming no emitted spoke, or a sample on an
-inherit-only base without a `source` (E101).
+Every path is relative to the workspace root (the parent of `config/`) and
+must stay under it (E100). A sample (`samples.file`, `schema.refuses`) that
+names no file fails the build (E100), and so does a sample no spoke reads: a
+`source` naming no emitted spoke, or a sample on an inherit-only base without
+a `source` (E101). The schema files (`xsd`, `catalog`) need not exist at build
+time: nothing is built from them, and the bundled mappings' XSDs are not in
+the repository — `scripts/fetch-schemas.sh` downloads them, pinned and
+checksummed.
 
 `[meta.schema]` is inherited like the namespace entries, so a CIUS validates
 against the schema its base declares; a child's own table replaces the
@@ -1099,8 +1103,10 @@ For every sample `D`, read by its spoke `R`, and every spoke `S` with a
    write are reported, never failed.
 
 Validation runs `xmllint --noout --nonet --schema <xsd>`. Without `xmllint`
-on `PATH` the schema checks are skipped with a notice and the round trips
-still run; CI installs `libxml2-utils`, so there they always run.
+on `PATH`, or while a declared schema file is missing (run
+`scripts/fetch-schemas.sh` for the bundled ones), the schema checks are
+skipped with a notice and the round trips still run; CI installs
+`libxml2-utils` and fetches the schemas, so there they always run.
 
 The checks run in `cargo test` (`crates/einvoice-interfaces/tests/xsd_validation.rs`)
 and on demand, with the report, as `krab-cli --check [ROOT]`:
@@ -1202,8 +1208,9 @@ cargo run -p einvoice-dsl -- check config
 cargo run -p einvoice-dsl -- report config
 ```
 
-`check` also verifies the files your `[meta.schema]` and `[[meta.samples]]`
-declare exist (E100), that every sample has a reader (E101), and that
+`check` also verifies the samples your `[meta.schema]` and `[[meta.samples]]`
+declare exist and every declared path stays in the workspace (E100), that
+every sample has a reader (E101), and that
 `config/derivations.toml` fits the hub (E110–E114).
 
 Once it builds, the CLI offers two static authoring aids (no input document
@@ -1262,7 +1269,7 @@ Validation reports **every** problem in one run, never just the first error.
 | `E092` | `match` key does not name a single scalar declared beneath the element's logical nodes (or the selector is empty) |
 | `E093` | Malformed `clone_of` derivation (`$sibling.Key`, `$root.A.B`), or `$parent` at root scope |
 | `W095` | A `required` node needs a hub key no other spoke maps (warning): no transform into this spoke, except from itself, can supply it |
-| `E100` | A `[meta.schema]` (`xsd`, `catalog`, `refuses`) or `[[meta.samples]]` path is absolute or names no file under the workspace root |
+| `E100` | A `[meta.schema]` (`xsd`, `catalog`, `refuses`) or `[[meta.samples]]` path is absolute or leaves the workspace root, or a sample path (`refuses`, `samples.file`) names no file there |
 | `E101` | A sample has no reader: its `source` names no emitted spoke, or it is declared on an inherit-only base without a `source` |
 | `E120` | A malformed `[meta.identity]`: `profile` without `profiles` (or the reverse), `version` without `versions` (or the reverse), an attribute with no accepted value, a path segment or attribute that is no XML name, or an empty or whitespace-padded value |
 | `E121` | Two emitted spokes share a root (namespace URI and local name) without the same `profile` element and disjoint `profiles`: a document could be read as either |

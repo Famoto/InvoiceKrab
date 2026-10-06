@@ -54,12 +54,10 @@ versione = ["FPA12", "FPR12"]
 
 # Schema conformance: written documents must validate against the FatturaPA
 # 1.2.2 schema. It imports xmldsig by absolute URL; the catalog maps that to
-# the vendored copy, so validation runs offline.
+# the fetched copy (scripts/fetch-schemas.sh), so validation runs offline.
 [meta.schema]
 xsd = "testfiles/xsd/fatturapa-1.2.2/Schema_del_file_xml_FatturaPA_v1.2.2.xsd"
 catalog = "testfiles/xsd/fatturapa-1.2.2/catalog.xml"
-# The OASIS example's Dutch postal codes (`9876 YZ`) are no five-digit CAP.
-refuses = ["testfiles/UBL-Invoice-2.1.xml"]
 
 # The full EN 16931 invoice (as testfiles/en16931-full-ubl.xml) as FatturaPA
 # states it: written into the other formats, the totals FatturaPA does not

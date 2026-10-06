@@ -22,8 +22,10 @@
 //!    to a constant on write, are reported, never failed.
 //!
 //! Validation runs `xmllint --noout --nonet --schema <xsd>`, with
-//! `XML_CATALOG_FILES` pointing at the declared catalog. Without `xmllint`
-//! the schema checks are skipped with a notice; the round trip still runs.
+//! `XML_CATALOG_FILES` pointing at the declared catalog. Without `xmllint`,
+//! or without a declared schema file (the bundled mappings' XSDs are not in
+//! the repository: `scripts/fetch-schemas.sh` downloads them), the schema
+//! checks are skipped with a notice; the round trip still runs.
 //!
 //! # Structure
 //!
@@ -439,13 +441,19 @@ fn wrap_list(out: &mut String, lead: &str, items: &[&str]) {
 
 /// Runs every schema-conformance check the bundled mappings declare (see the
 /// module docs), against the files under `root`, the workspace root their
-/// paths are relative to. With `xmllint` = `None` the schema checks are
-/// skipped and the report says so; the round trips still run.
+/// paths are relative to. With `xmllint` = `None`, or when a declared schema
+/// file is missing under `root`, the schema checks are skipped and the report
+/// says why; the round trips still run.
 pub fn check(root: &Path, xmllint: Option<Xmllint>) -> ConformanceReport {
     let targets: Vec<(Spoke, &'static Schema)> = Spoke::ALL
         .iter()
         .filter_map(|&spoke| spoke.schema().map(|schema| (spoke, schema)))
         .collect();
+    let schema_skipped = match xmllint {
+        None => Some("xmllint not found on PATH".to_string()),
+        Some(_) => missing_schema_files(root, &targets),
+    };
+    let xmllint = xmllint.filter(|_| schema_skipped.is_none());
     // Per target, every schema error its emitted documents produced: the
     // evidence a known gap is still live.
     let mut target_errors: Vec<Vec<String>> = vec![Vec::new(); targets.len()];
@@ -474,13 +482,26 @@ pub fn check(root: &Path, xmllint: Option<Xmllint>) -> ConformanceReport {
     }
 
     ConformanceReport {
-        schema_skipped: xmllint
-            .is_none()
-            .then(|| "xmllint not found on PATH".to_string()),
+        schema_skipped,
         targets: targets.iter().map(|(spoke, _)| *spoke).collect(),
         samples,
         stale_gaps,
     }
+}
+
+/// Why the schema checks cannot run under `root`, when a declared schema file
+/// (an `xsd` or `catalog`) of a target is missing there.
+fn missing_schema_files(root: &Path, targets: &[(Spoke, &'static Schema)]) -> Option<String> {
+    let missing: BTreeSet<&str> = targets
+        .iter()
+        .flat_map(|(_, schema)| std::iter::once(schema.xsd).chain(schema.catalog))
+        .filter(|path| !root.join(path).is_file())
+        .collect();
+    let first = missing.first()?;
+    Some(format!(
+        "{} declared schema file(s) not found, e.g. `{first}` (the bundled mappings' schemas are fetched by scripts/fetch-schemas.sh)",
+        missing.len()
+    ))
 }
 
 /// Checks one sample, then writes it through every target.
@@ -941,6 +962,45 @@ mod tests {
         let text = report.render();
         assert!(text.contains("notice: xmllint not found on PATH"), "{text}");
         assert!(text.contains("result: every check passed"), "{text}");
+    }
+
+    #[test]
+    fn test_check_without_the_schema_files_runs_the_round_trips_and_notes_the_skip() {
+        // A workspace holding the samples but not the fetched schemas: with a
+        // validator at hand, the schema checks are still skipped, not failed.
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = std::env::temp_dir().join(format!("krab-no-schemas-{}", std::process::id()));
+        let samples = Spoke::ALL
+            .iter()
+            .flat_map(|spoke| {
+                spoke
+                    .samples()
+                    .iter()
+                    .chain(spoke.schema().into_iter().flat_map(|s| s.refuses))
+            })
+            .collect::<BTreeSet<_>>();
+        for file in samples {
+            let to = root.join(file);
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::copy(repo.join(file), to).unwrap();
+        }
+        let report = check(&root, Some(Xmllint));
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(report.is_ok(), "{}", report.render());
+        assert!(
+            report
+                .samples
+                .iter()
+                .flat_map(|s| &s.pairs)
+                .all(|p| !p.validated)
+        );
+        let text = report.render();
+        assert!(
+            text.contains("declared schema file(s) not found")
+                && text.contains("scripts/fetch-schemas.sh"),
+            "{text}"
+        );
     }
 
     #[test]

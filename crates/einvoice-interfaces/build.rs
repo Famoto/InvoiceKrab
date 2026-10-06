@@ -103,8 +103,8 @@ fn main() {
     // check` uses.
     let loaded = load_config(&config_dir)
         .unwrap_or_else(|e| panic!("loading {}: {e}", config_dir.display()));
-    // The declared schema and sample files too: the loader checked they
-    // exist, and a deleted one must fail the next build (E100).
+    // The declared sample documents too: the loader checked they exist, and
+    // a deleted one must fail the next build (E100).
     for path in loaded.files.iter().chain(&loaded.declared_files) {
         println!("cargo:rerun-if-changed={}", path.display());
     }

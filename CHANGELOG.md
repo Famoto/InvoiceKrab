@@ -8,7 +8,22 @@ Changes to the mapping DSL are listed under **DSL** in each release.
 
 ## [Unreleased]
 
+### DSL
+
+- **Changed** the schema files a mapping declares (`[meta.schema]` `xsd` and
+  `catalog`) need not exist at build time: nothing is built from them. Their
+  paths must still stay in the workspace (E100), and the samples
+  (`[[meta.samples]]`, `refuses`) must still exist. Without a declared schema
+  file, `krab-cli --check` and the XSD test skip schema validation with a
+  notice, as they do without `xmllint`.
+
 ### Changed
+
+- The third-party XSDs are no longer in the repository:
+  `scripts/fetch-schemas.sh` downloads them, pinned to a commit and verified
+  against `testfiles/xsd/SHA256SUMS`, and CI runs it. The OASIS UBL 2.1
+  example invoice (`testfiles/UBL-Invoice-2.1.xml`) is removed;
+  `testfiles/en16931-full-ubl.xml` remains the UBL sample.
 
 - Licensing: the KrabInvoice Configuration Exception (`LICENSE-EXCEPTION`),
   an additional permission under section 7 of the AGPL. Building with your

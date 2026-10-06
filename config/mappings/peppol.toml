@@ -19,14 +19,13 @@ inherits = "ubl-invoice:2.1"
 # Peppol documents are UBL 2.1 Invoices. The table restates the inherited
 # schema whole (a child's `[meta.schema]` replaces its parent's) to document
 # refusals: the XRechnung example addresses its parties by e-mail (scheme
-# `EM`), which is no Peppol address scheme, and the FatturaPA sample and the
-# OASIS example have no electronic addresses (BT-34, BT-49) at all.
+# `EM`), which is no Peppol address scheme, and the FatturaPA sample has no
+# electronic addresses (BT-34, BT-49) at all.
 [meta.schema]
 xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
 refuses = [
     "testfiles/xrechnung-3.0.2-beispiel.xml",
     "testfiles/en16931-full-fatturapa.xml",
-    "testfiles/UBL-Invoice-2.1.xml",
 ]
 
 # A Peppol BIS Billing 3.0 document declares exactly this CustomizationID

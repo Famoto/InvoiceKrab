@@ -1,7 +1,11 @@
-# Vendored XSD schemas
+# XSD schemas
 
-Fetched 2026-10-04 from GitHub mirrors (the official hosts were unreachable).
-Files are byte-for-byte as found in the mirror; nothing was edited.
+The schemas are not part of the repository: their publishers' terms are
+their own. `scripts/fetch-schemas.sh` downloads them into this directory from
+the GitHub mirrors below, pinned to a commit (the official hosts were
+unreachable when they were chosen, 2026-10-04), and verifies every file
+against `SHA256SUMS`. Files are byte-for-byte as found in the mirror; nothing
+is edited.
 
 | Directory | Content | Mirror | Commit |
 |---|---|---|---|
@@ -23,3 +27,7 @@ Notes:
   `XML_CATALOG_FILES`, and `xmllint --nonet` then validates offline.
 - Not yet compared against the official downloads; SHA256SUMS lets you do that.
 - Only Invoice and CreditNote were taken from the UBL maindoc set.
+- Terms, as the files state them: the UBL modules carry the OASIS copyright
+  notice (the CCTS module the UN/CEFACT one), the xmldsig schemas the W3C
+  Software License (1998-07-20); the XAdES (ETSI), Factur-X and FatturaPA
+  schemas state none. None of them is licensed by KrabInvoice.

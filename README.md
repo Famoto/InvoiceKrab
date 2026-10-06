@@ -660,8 +660,10 @@ every diagnostic code — lives in
 2. Give it the same `canonical_key`s (with matching types) as the existing
    spokes for everything you want to round-trip; add new keys for fields unique
    to your format.
-3. Declare the format's XSD in `[meta.schema]` (vendor it under
-   [testfiles/xsd/](testfiles/xsd/)) and, ideally, a sample document in
+3. Declare the format's XSD in `[meta.schema]` (under
+   [testfiles/xsd/](testfiles/xsd/), fetched by `scripts/fetch-schemas.sh`:
+   add its checksum to `SHA256SUMS` and its source to the script and to
+   `SOURCES.md`) and, ideally, a sample document in
    `[[meta.samples]]`: every format's output is then validated against it
    and round-tripped — see
    [Schema conformance](config/mappings/README.md#schema-conformance).
@@ -710,9 +712,18 @@ executes only that generated code.
 
 ## Developer commands
 
-Emitted documents are validated against the vendored XSDs in
-[testfiles/xsd/](testfiles/xsd/) by `crates/einvoice-interfaces/tests/xsd_validation.rs`
-(it needs `xmllint` from libxml2 on `PATH`; CI installs it). The test names no
+Emitted documents are validated against the official XSDs by
+`crates/einvoice-interfaces/tests/xsd_validation.rs`. The XSDs are not in the
+repository; fetch them once into [testfiles/xsd/](testfiles/xsd/), pinned and
+checksummed (sources in [SOURCES.md](testfiles/xsd/SOURCES.md)):
+
+```bash
+scripts/fetch-schemas.sh
+```
+
+The test also needs `xmllint` from libxml2 on `PATH`. Without either, it skips
+schema validation with a notice and still runs the round trips; CI installs
+`xmllint` and fetches the XSDs, and fails without them. The test names no
 format: it runs the checks each mapping declares in `[meta.schema]` and
 `[[meta.samples]]`, the same ones `krab-cli --check` reports. A format's
 remaining schema errors are its `known_gaps`, and the check fails both on a
@@ -802,12 +813,12 @@ configuration or the code the build generates from it. Changes to
 KrabInvoice outside the configuration, and programs that link its crates as
 a library, remain fully covered by the AGPL.
 
-Third-party material is under its own terms: the XSD schemas in
-[testfiles/xsd/](testfiles/xsd/) (see
-[testfiles/xsd/SOURCES.md](testfiles/xsd/SOURCES.md) for their origins) and
-the OASIS UBL 2.1 example invoice
-([testfiles/UBL-Invoice-2.1.xml](testfiles/UBL-Invoice-2.1.xml)). The other
-sample invoices in [testfiles/](testfiles/) are based on examples of the
+Third-party schemas are not part of the repository: the XSDs the mappings
+validate against are fetched from their publishers' distributions by
+`scripts/fetch-schemas.sh` (see
+[testfiles/xsd/SOURCES.md](testfiles/xsd/SOURCES.md)) and are under their own
+terms. The sample invoices in [testfiles/](testfiles/) are based on examples
+of the
 [KoSIT XRechnung test suite](https://github.com/itplr-kosit/xrechnung-testsuite)
 and, like it, are under the [Apache License 2.0](LICENSES/Apache-2.0.txt).
 
