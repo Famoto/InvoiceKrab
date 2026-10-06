@@ -51,7 +51,7 @@ pub use derive::{CheckLevel, Derivation, DerivationKind, check_derivations, pars
 pub use error::{ConfigError, Diagnostic, Severity};
 pub use hub::{CanonicalField, CanonicalModel, CanonicalScope, canonical_scope_of, derive_hub};
 pub use ir::{MappingIr, build_ir, build_ir_with};
-pub use loader::{LoadOutput, LoadedSpoke, load_config, load_dir, slug_of};
+pub use loader::{LoadOutput, LoadedSpoke, load_config, load_dir, slug_of, spoke_slug};
 pub use meta::{IdentityMeta, MappingMeta, SampleMeta, SchemaMeta};
 pub use multiple::MultiplePolicy;
 pub use node::{NodeId, RawNode, Scope, SourceNode};

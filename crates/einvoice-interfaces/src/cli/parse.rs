@@ -34,6 +34,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, CliError> {
         let arg = &args[i];
         match arg.as_str() {
             "-h" | "--help" => return Ok(Command::Help),
+            "-V" | "--version" => return Ok(Command::Version),
             "--list" => return Ok(Command::ListFormats),
             "--analyze" => {
                 analyze = true;
@@ -391,6 +392,8 @@ mod tests {
     fn test_parse_args_help_flag() {
         assert_eq!(parse_args(&[s("--help")]).expect("ok"), Command::Help);
         assert_eq!(parse_args(&[s("-h")]).expect("ok"), Command::Help);
+        assert_eq!(parse_args(&[s("--version")]).expect("ok"), Command::Version);
+        assert_eq!(parse_args(&[s("-V")]).expect("ok"), Command::Version);
     }
 
     #[test]

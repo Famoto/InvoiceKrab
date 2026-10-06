@@ -50,6 +50,7 @@ deltas — XRechnung and Peppol are a handful of lines on top of UBL.
 - [Disclaimer](#disclaimer)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [Using your own mappings](#using-your-own-mappings)
 - [Bundled (demo) mappings](#bundled-demo-mappings)
 - [The `krab-cli` CLI](#the-krab-cli-cli)
 - [The `krab-server` HTTP API](#the-krab-server-http-api)
@@ -60,20 +61,31 @@ deltas — XRechnung and Peppol are a handful of lines on top of UBL.
 - [Performance](#performance)
 - [Workspace layout](#workspace-layout)
 - [Developer commands](#developer-commands)
+- [Versioning and stability](#versioning-and-stability)
 
 ---
 
 ## Installation
 
-KrabInvoice is a Rust workspace. You need a recent stable Rust toolchain
-(edition 2024).
+KrabInvoice is a Rust workspace, built from source: no binaries or images are
+published, because a build compiles the mappings it is given (see
+[Using your own mappings](#using-your-own-mappings)). You need Rust 1.88 or
+newer (the `rust-version` in [Cargo.toml](Cargo.toml), checked in CI). Pin a
+release tag rather than tracking `main`:
 
 ```bash
-# Build the optimized CLI binary
-cargo build --release -p einvoice-interfaces
+git clone --branch v1.0.0 https://github.com/Famoto/InvoiceKrab
+cd InvoiceKrab
 
-# The binary lands at:
+# Build the optimized CLI and server binaries
+cargo build --release --locked -p einvoice-interfaces
+
+# The binaries land at:
 ./target/release/krab-cli
+./target/release/krab-server
+
+# What a build carries: the engine version and every compiled mapping
+./target/release/krab-cli --version
 ```
 
 Or run it straight from the workspace without installing:
@@ -104,6 +116,78 @@ krab-cli --keys
 
 ---
 
+## Using your own mappings
+
+The build compiles one *configuration directory*:
+
+```text
+my-config/
+├── mappings/          # one *.toml per format (required)
+├── codecs/            # shared lexical codecs (optional)
+└── derivations.toml   # EN 16931 calculation rules (optional)
+```
+
+By default that is this repository's [config/](config/), the demo mappings.
+To compile your own, keep them in your own repository and point the build at
+them with `KRAB_CONFIG_DIR`, an **absolute** path:
+
+```bash
+KRAB_CONFIG_DIR=/path/to/my-project/my-config \
+    cargo build --release --locked -p einvoice-interfaces
+```
+
+Or once per project, in `.cargo/config.toml` (here `relative = true` makes a
+project-relative path absolute):
+
+```toml
+[env]
+KRAB_CONFIG_DIR = { value = "my-config", relative = true }
+```
+
+Start from a copy of [config/](config/) and replace what you need: the demo
+mappings are templates, not dependencies. Paths the mappings declare
+(`[meta.schema]` XSDs, `[[meta.samples]]`) are relative to the parent of the
+configuration directory, so your XSDs and samples live in your repository
+too, and `krab-cli --check /path/to/my-project` verifies them. Check a
+configuration without building with
+`cargo run -p einvoice-dsl -- check /path/to/my-project/my-config`.
+
+KrabInvoice can also be a git dependency of your own Rust crate: depend on
+`einvoice-interfaces` by tag and set `KRAB_CONFIG_DIR` in your project's
+`.cargo/config.toml`:
+
+```toml
+[dependencies]
+einvoice-interfaces = { git = "https://github.com/Famoto/InvoiceKrab", tag = "v1.0.0" }
+```
+
+The generated `Spoke` enum then carries your formats.
+
+To build the Docker images with your own mappings, keep them in the build
+context and name the directory, relative to the context root, with a build
+argument:
+
+```bash
+docker build --build-arg KRAB_CONFIG_DIR=my-config -t my-krab-server .
+```
+
+### Several versions of a format
+
+Mappings that share a `doc_format` with different `format_version`s are all
+compiled, e.g. `xrechnung-invoice:3.0.2` next to `xrechnung-invoice:3.1`
+while senders migrate. Their documents must be distinguishable by their
+identity (a different profile identifier, as here; the build refuses two
+mappings a document could match, E121), so auto-detection still picks the
+right one. A bare name like `xrechnung-invoice` then names no single format
+and is refused with the list of versions (exit 64, or a 400 from the
+server). Always name the version you write: which version an invoice is
+written as must not change when you add a mapping for a newer one. In the
+library, such spokes get version-qualified variants
+(`Spoke::XrechnungInvoiceV3_0_2`); a format with one version keeps its plain
+name (`Spoke::XrechnungInvoice`).
+
+---
+
 ## Bundled (demo) mappings
 
 These mappings are **demos and templates** (see the
@@ -124,11 +208,12 @@ an **inherit-only base** (`[meta].disabled = true`): it exists to be inherited b
 Factur-X/ZUGFeRD and emits no spoke of its own, so it does not appear in
 `--list`.
 
-To start your own set, replace or remove these files: the build compiles
-whatever `config/mappings/*.toml` contains, and the demo spokes are not needed
-by anything else. Keep [config/derivations.toml](config/derivations.toml) (the
-EN 16931 calculation rules) and [config/codecs/](config/codecs/) as long as
-your mappings use their keys and codecs.
+To start your own set, see [Using your own mappings](#using-your-own-mappings):
+copy [config/](config/), replace what you need, and point `KRAB_CONFIG_DIR` at
+the copy. The demo spokes are not needed by anything else. Keep
+[config/derivations.toml](config/derivations.toml) (the EN 16931 calculation
+rules) and [config/codecs/](config/codecs/) as long as your mappings use their
+keys and codecs.
 
 ---
 
@@ -297,7 +382,8 @@ received within the request timeout, `503` (with `Retry-After`) a request that
 waited longer than the queue timeout for memory.
 
 Capability and health endpoints: `GET /formats` (JSON array of accepted
-format names), `GET /analyze[?from=<format>[&to=<format>]][&deny_lossy=1]`
+format names), `GET /version` (the engine version and the compiled mappings,
+as `krab-cli --version` prints them), `GET /analyze[?from=<format>[&to=<format>]][&deny_lossy=1]`
 (the CLI's `--analyze` report; `deny_lossy` answers `422` with the report when
 the result is not lossless), `GET /health` (`200 ok`; `krab-server --healthcheck` self-probes it for the
 Docker `HEALTHCHECK`, on the bound address, or on loopback when bound to
@@ -336,7 +422,11 @@ refused with `413` — with the defaults, about 1/24 of the memory limit (e.g.
 and the measurements in [docs/PERFORMANCE.md](docs/PERFORMANCE.md#memory).
 
 The Dockerfile ships both programs: `docker build --target server` for the
-HTTP service (default), `--target cli` for the CLI image. All knobs are
+HTTP service (default), `--target cli` for the CLI image, as static binaries in
+`scratch` images (`docker buildx build --platform linux/amd64,linux/arm64`
+for both architectures). The image compiles the mappings of `config/`, or
+your own with `--build-arg KRAB_CONFIG_DIR=<dir>` (see
+[Using your own mappings](#using-your-own-mappings)). All server knobs are
 runtime environment variables — set them per container, never at build time:
 
 ```bash
@@ -471,7 +561,9 @@ every diagnostic code — lives in
 
 ## Adding a new format
 
-1. Write a new `config/mappings/<your-format>.toml` with a `[meta]` table and your
+1. Write a new `mappings/<your-format>.toml` in your configuration directory
+   (`config/` or your own, see [Using your own mappings](#using-your-own-mappings))
+   with a `[meta]` table and your
    nodes — the DSL reference is [config/mappings/README.md](config/mappings/README.md), and
    the reference spokes make good templates. If your format is a profile
    of an existing syntax, `inherits` its mapping and declare only the deltas —
@@ -490,7 +582,7 @@ every diagnostic code — lives in
    cargo build --release -p einvoice-interfaces
    ```
 
-The build scans `config/mappings/`, compiles your file through the DSL pipeline,
+The build scans the `mappings/` directory, compiles your file through the DSL pipeline,
 derives the shared hub, and generates the mapper. Your format then appears in
 `--list` and is usable as a source or target — no Rust changes required.
 
@@ -564,3 +656,30 @@ cargo run -p einvoice-dsl -- report config
 `check` exits non-zero when any error-severity diagnostic is produced. `report`
 is a static authoring report over the TOML spokes; it does not require an input
 invoice.
+
+---
+
+## Versioning and stability
+
+KrabInvoice follows [Semantic Versioning](https://semver.org/). Its public
+contract, which a 1.x release does not break, is:
+
+- **The mapping DSL**: every mapping, codec and `derivations.toml` field and
+  its meaning, and the build-time configuration (`KRAB_CONFIG_DIR`). A
+  configuration that builds with 1.x keeps building, with the same behavior,
+  in every later 1.y. New optional fields and new diagnostics may be added.
+- **The library API** of `einvoice-interfaces` (`Engine`, `EngineError`,
+  `Spoke`'s methods, `MainKey`), except the variants of `Spoke` and the fields
+  of `MainKey`, which your mappings define.
+- **`krab-cli`**: its flags, its output formats and its exit codes.
+- **`krab-server`**: its routes, query parameters, status codes, headers and
+  environment variables.
+
+Not covered: the bundled demo mappings (see the [disclaimer](#disclaimer)),
+which may change in any release, and the error and diagnostic message texts
+(their codes, such as `REQUIRED_MISSING` or `E110`, are covered). Raising the
+minimum supported Rust version is not a breaking change; it is announced in
+the changelog.
+
+Every change is listed in [CHANGELOG.md](CHANGELOG.md), DSL changes in a
+section of their own. To report a vulnerability, see [SECURITY.md](SECURITY.md).

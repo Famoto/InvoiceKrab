@@ -9,6 +9,12 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# Minimum supported Rust version, checked in CI.
+rust-version = "1.88"
+repository = "https://github.com/Famoto/InvoiceKrab"
+# Built from source with the user's own mappings (see README); never
+# published to a registry.
+publish = false
 
 [profile.release]
 # fat LTO + 1 codegen unit = best runtime speed (~10% over thin LTO on the

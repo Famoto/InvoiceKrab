@@ -230,7 +230,7 @@ file = "testfiles/xrechnung-3.0.2-beispiel.xml"
 | Field | Required | Purpose |
 |-------|----------|---------|
 | `doc_format` | ✅ | Logical id; becomes the `Spoke` name and module slug |
-| `format_version` | ✅ | Format version string |
+| `format_version` | ✅ | Format version string; also qualifies the `Spoke` name and slug when several versions share a `doc_format` |
 | `mapping_version` | ✅ | Version of this mapping file |
 | `canonical_model` | ✅ | Canonical model id this mapping targets |
 | `root` | — | Root element/struct name (default `Root`) |
@@ -251,6 +251,17 @@ mapping file; it guards callers that supply source metadata separately.)
 Duplicate mapping ids or slugs across
 files, and unknown or cyclic `inherits` targets, fail the load before
 compilation starts.
+
+Several mappings may share a `doc_format` with different `format_version`s,
+one per version of the format (`xrechnung-invoice` 3.0.2 and 3.1). Each is a
+spoke of its own: the slug and `Spoke` variant then carry the version
+(`xrechnung_invoice_v3_0_2`, `XrechnungInvoiceV3_0_2`); a `doc_format` with
+one emitted version keeps the plain ones. Their documents must differ in
+[identity](#document-identity--auto-detection) (E121), and a newer version
+can `inherits` the older one and restate only what changed. Where a mapping
+names another by bare `doc_format` (a sample's `source`), that name must then
+be a full mapping id (`xrechnung-invoice:3.1`), since the bare one is
+ambiguous (E101); so must format names given to `krab-cli` and `krab-server`.
 
 ---
 

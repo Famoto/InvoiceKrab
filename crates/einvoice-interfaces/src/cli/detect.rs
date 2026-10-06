@@ -12,33 +12,53 @@ use crate::identity::IdentityError;
 /// Resolves a human-typed format name to a [`Spoke`], case-insensitively.
 ///
 /// Matches either the full display name (`ubl-invoice:2.1`) or the bare
-/// `doc_format` prefix before the version colon (`ubl-invoice`).
+/// `doc_format` prefix before the version colon (`ubl-invoice`). A bare
+/// prefix shared by several compiled versions of a format is refused rather
+/// than guessed: which version an invoice is written as must not change when
+/// a mapping for a newer one is added.
 ///
 /// # Errors
 ///
 /// Returns [`CliError::UnknownFormat`] (listing the known names) when `name`
-/// matches no spoke.
+/// matches no spoke, and [`CliError::Usage`] (listing the versions) when it is
+/// a bare prefix of several.
 pub fn resolve_spoke(name: &str) -> Result<Spoke, CliError> {
-    let matches = |full: &str| {
-        full.eq_ignore_ascii_case(name)
-            || full
-                .split_once(':')
-                .is_some_and(|(prefix, _)| prefix.eq_ignore_ascii_case(name))
-    };
-    Spoke::ALL
+    let names: Vec<&str> = Spoke::ALL.iter().map(|s| s.name()).collect();
+    resolve_name(name, &names).map(|index| Spoke::ALL[index])
+}
+
+/// The index in `names` of the display name `name` selects (see
+/// [`resolve_spoke`]).
+fn resolve_name(name: &str, names: &[&str]) -> Result<usize, CliError> {
+    if let Some(index) = names
         .iter()
-        .copied()
-        .find(|s| matches(s.name()))
-        .ok_or_else(|| {
-            CliError::UnknownFormat(format!(
-                "{name:?} (known formats: {})",
-                Spoke::ALL
-                    .iter()
-                    .map(|s| s.name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ))
+        .position(|full| full.eq_ignore_ascii_case(name))
+    {
+        return Ok(index);
+    }
+    let versions: Vec<usize> = names
+        .iter()
+        .enumerate()
+        .filter(|(_, full)| {
+            full.split_once(':')
+                .is_some_and(|(prefix, _)| prefix.eq_ignore_ascii_case(name))
         })
+        .map(|(index, _)| index)
+        .collect();
+    match versions.as_slice() {
+        [only] => Ok(*only),
+        [] => Err(CliError::UnknownFormat(format!(
+            "{name:?} (known formats: {})",
+            names.join(", ")
+        ))),
+        many => Err(CliError::Usage(format!(
+            "format {name:?} has several versions; name one: {}",
+            many.iter()
+                .map(|&index| names[index])
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
 }
 
 /// Detects the source spoke of `bytes` from the compile-time spoke registry.
@@ -272,6 +292,35 @@ mod tests {
                 assert_eq!(resolve_spoke(prefix).expect("prefix resolves"), *spoke);
             }
         }
+    }
+
+    const VERSIONS: [&str; 3] = [
+        "xrechnung-invoice:3.0.2",
+        "xrechnung-invoice:3.1",
+        "ubl-invoice:2.1",
+    ];
+
+    #[test]
+    fn test_resolve_name_full_name_selects_one_of_several_versions() {
+        assert_eq!(
+            resolve_name("XRECHNUNG-invoice:3.1", &VERSIONS).expect("full"),
+            1
+        );
+        assert_eq!(
+            resolve_name("ubl-invoice", &VERSIONS).expect("one version"),
+            2
+        );
+    }
+
+    #[test]
+    fn test_resolve_name_bare_prefix_of_several_versions_is_ambiguous() {
+        let err = resolve_name("xrechnung-invoice", &VERSIONS).expect_err("ambiguous");
+        assert_eq!(err.exit_code(), 64);
+        let text = err.to_string();
+        assert!(
+            text.contains("xrechnung-invoice:3.0.2, xrechnung-invoice:3.1"),
+            "lists the versions: {text}"
+        );
     }
 
     #[test]

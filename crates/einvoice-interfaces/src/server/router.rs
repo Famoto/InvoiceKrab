@@ -88,7 +88,7 @@ struct AppState {
 }
 
 /// The usage text served on unknown routes.
-const USAGE: &str = "POST /transform?to=<format>[&from=<format>] | GET /formats | GET /analyze[?from=<format>[&to=<format>]][&deny_lossy=1] | GET /health";
+const USAGE: &str = "POST /transform?to=<format>[&from=<format>] | GET /formats | GET /analyze[?from=<format>[&to=<format>]][&deny_lossy=1] | GET /version | GET /health";
 
 /// Builds the complete `krab-server` service. `blowup` is the reservation
 /// multiplier (`Content-Length x blowup` bytes are reserved per transform);
@@ -97,6 +97,10 @@ pub fn router(gate: Arc<MemGate>, blowup: u64, timeouts: Timeouts) -> Router {
     Router::new()
         .route("/health", get(async || "ok"))
         .route("/formats", get(formats))
+        .route(
+            "/version",
+            get(async || crate::cli::version_text("krab-server")),
+        )
         .route("/analyze", get(analyze))
         .route("/transform", post(transform))
         .fallback(async || (StatusCode::NOT_FOUND, USAGE))
@@ -465,6 +469,25 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let text = body_text(response).await;
         assert!(text.contains("BuyerName"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn test_version_names_the_engine_and_the_mappings() {
+        let response = app(BIG_BUDGET)
+            .oneshot(
+                HttpRequest::get("/version")
+                    .body(Body::empty())
+                    .expect("ok"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
+        let text = body_text(response).await;
+        assert!(
+            text.starts_with(&format!("krab-server {}\n", env!("CARGO_PKG_VERSION"))),
+            "{text}"
+        );
+        assert!(text.contains("mappings:"), "{text}");
     }
 
     #[tokio::test]

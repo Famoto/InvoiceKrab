@@ -22,6 +22,10 @@ use std::time::Duration;
 use einvoice_interfaces::server::{self, Config, MemGate, Timeouts};
 
 fn main() -> ExitCode {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        print!("{}", einvoice_interfaces::cli::version_text("krab-server"));
+        return ExitCode::SUCCESS;
+    }
     let config = match Config::from_env() {
         Ok(c) => c,
         Err(e) => {
@@ -56,6 +60,7 @@ fn main() -> ExitCode {
             return ExitCode::from(74); // EX_IOERR
         }
     };
+    eprint!("{}", einvoice_interfaces::cli::version_text("krab-server"));
     eprintln!(
         "krab-server listening on {} — {} workers, {} bytes memory budget, x{} reservation, \
          {}s body timeout, {}s request timeout, {}s queue timeout",

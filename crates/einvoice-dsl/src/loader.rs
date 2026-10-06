@@ -8,7 +8,8 @@
 //! loading so the two can never diverge: scanning `*.toml`, parsing, resolving
 //! each spoke's `[meta].inherits` chain (ancestor-first), skipping
 //! `disabled = true` inherit-only bases, deriving each spoke's slug from
-//! `[meta].doc_format`, and checking the files the mappings declare for their
+//! `[meta].doc_format` (plus `format_version` when several versions of one
+//! format are emitted, see [`spoke_slug`]), and checking the files the mappings declare for their
 //! schema conformance checks.
 //!
 //! # Structure
@@ -21,6 +22,8 @@
 //! - [`load_config`] — load a `config/` directory: codecs, then mappings.
 //! - [`load_dir`] — scan + parse + chain-resolve one mappings directory.
 //! - [`slug_of`] — `doc_format` → `snake_case` Rust module id.
+//! - [`spoke_slug`] — a spoke's module id, version-qualified when its
+//!   `doc_format` has several emitted versions.
 //!
 //! # Behavior
 //!
@@ -32,8 +35,8 @@
 //! The paths in `[meta.schema]` and `[[meta.samples]]` are relative to the
 //! workspace root — for [`load_config`], the parent of the `config/` directory.
 //! Every one must name an existing file (E100), and every sample must resolve
-//! to the emitted spoke that reads it (E101): its `source` (a mapping id or a
-//! bare `doc_format`), else the declaring mapping, which must then not be an
+//! to the emitted spoke that reads it (E101): its `source` (a mapping id, or a
+//! bare `doc_format` with a single emitted version), else the declaring mapping, which must then not be an
 //! inherit-only base. These checks report every problem at once, as one
 //! [`ConfigError`] with a line per problem naming the mapping file.
 //!
@@ -56,7 +59,9 @@ use crate::parse::{ParsedMapping, parse_mapping};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedSpoke {
     /// `snake_case` module id derived from `[meta].doc_format` (e.g.
-    /// `ubl_invoice`). Keys the compile output and names the generated module.
+    /// `ubl_invoice`), version-qualified (`xrechnung_invoice_v3_0_2`) when
+    /// several versions of the format are emitted ([`spoke_slug`]). Keys the
+    /// compile output and names the generated module.
     pub slug: String,
     /// The mapping chain, ancestor-first and leaf-last.
     pub chain: Vec<ParsedMapping>,
@@ -206,6 +211,10 @@ pub fn load_dir(dir: &Path, root: &Path) -> Result<LoadOutput, ConfigError> {
         )));
     }
 
+    // Several emitted versions of one format each get a version-qualified
+    // slug; a format with one version keeps the bare one.
+    let slug_by_id = emitted_slugs(&by_id)?;
+
     // Assemble each spoke's ancestor-first chain by following `inherits`. A
     // disabled mapping stays in `by_id` as a resolvable parent but emits no
     // spoke of its own (inherit-only base syntax).
@@ -214,11 +223,11 @@ pub fn load_dir(dir: &Path, root: &Path) -> Result<LoadOutput, ConfigError> {
         if mapping.meta.disabled {
             continue;
         }
-        let slug = slug_of(&mapping.meta.doc_format)?;
+        let slug = slug_by_id[id].clone();
         if spokes.iter().any(|s| s.slug == slug) {
             return Err(ConfigError::msg(format!(
-                "two spokes derive the same name `{slug}` from doc_format `{}`",
-                mapping.meta.doc_format
+                "two spokes derive the same name `{slug}` from doc_format `{}` (version `{}`)",
+                mapping.meta.doc_format, mapping.meta.format_version
             )));
         }
         spokes.push(LoadedSpoke {
@@ -258,17 +267,14 @@ pub fn load_dir(dir: &Path, root: &Path) -> Result<LoadOutput, ConfigError> {
 
         for sample in &meta.samples {
             let reader = match &sample.source {
-                Some(source) => emitted_spoke(source, &by_id).ok_or_else(|| {
-                    format!(
-                        "sample `{}` names source `{source}`, which is no emitted spoke (a mapping id or a `doc_format` of a mapping that is not `disabled`)",
-                        sample.file
-                    )
+                Some(source) => emitted_spoke(source, &by_id, &slug_by_id).map_err(|why| {
+                    format!("sample `{}` names source `{source}`, {why}", sample.file)
                 }),
                 None if meta.disabled => Err(format!(
                     "sample `{}` is declared on an inherit-only base, which reads nothing: name the spoke that reads it with `source`",
                     sample.file
                 )),
-                None => slug_of(&meta.doc_format).map_err(|e| e.message),
+                None => Ok(slug_by_id[id].clone()),
             };
             match reader {
                 Ok(slug) => {
@@ -322,14 +328,49 @@ fn declared_file(root: &Path, path: &str) -> Result<PathBuf, String> {
     }
 }
 
-/// The slug of the emitted (not `disabled`) mapping `name` identifies: its
-/// mapping id, or its bare `doc_format`.
-fn emitted_spoke(name: &str, by_id: &BTreeMap<String, ParsedMapping>) -> Option<String> {
-    by_id
+/// The slug of every emitted (not `disabled`) mapping, by mapping id: see
+/// [`spoke_slug`].
+fn emitted_slugs(
+    by_id: &BTreeMap<String, ParsedMapping>,
+) -> Result<BTreeMap<String, String>, ConfigError> {
+    let emitted = || by_id.iter().filter(|(_, m)| !m.meta.disabled);
+    let mut versions: BTreeMap<&str, usize> = BTreeMap::new();
+    for (_, m) in emitted() {
+        *versions.entry(m.meta.doc_format.as_str()).or_default() += 1;
+    }
+    emitted()
+        .map(|(id, m)| {
+            let versioned = versions[m.meta.doc_format.as_str()] > 1;
+            let slug = spoke_slug(&m.meta.doc_format, &m.meta.format_version, versioned)?;
+            Ok((id.clone(), slug))
+        })
+        .collect()
+}
+
+/// The slug of the emitted mapping `name` identifies: by its mapping id, or
+/// by its bare `doc_format` when exactly one emitted version has it. `Err`
+/// says why it identifies none.
+fn emitted_spoke(
+    name: &str,
+    by_id: &BTreeMap<String, ParsedMapping>,
+    slug_by_id: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    if let Some(slug) = slug_by_id.get(name) {
+        return Ok(slug.clone());
+    }
+    let versions: Vec<&String> = by_id
         .iter()
-        .filter(|(_, m)| !m.meta.disabled)
-        .find(|(id, m)| id.as_str() == name || m.meta.doc_format == name)
-        .and_then(|(_, m)| slug_of(&m.meta.doc_format).ok())
+        .filter(|(id, m)| slug_by_id.contains_key(*id) && m.meta.doc_format == name)
+        .map(|(id, _)| id)
+        .collect();
+    match versions.as_slice() {
+        [only] => Ok(slug_by_id[*only].clone()),
+        [] => Err("which is no emitted spoke (a mapping id or a `doc_format` of a mapping that is not `disabled`)".to_string()),
+        many => Err(format!(
+            "which several versions share; name one by its mapping id: {}",
+            many.iter().map(|id| format!("`{id}`")).collect::<Vec<_>>().join(", ")
+        )),
+    }
 }
 
 /// A mapping's identity, mirroring `build_ir`'s `source_model` fallback: the
@@ -366,6 +407,26 @@ fn resolve_chain(
         }
     }
     Ok(ids.iter().rev().map(|id| by_id[id].clone()).collect())
+}
+
+/// A spoke's `snake_case` module id: [`slug_of`] its `doc_format`, or, when
+/// `versioned` (several emitted mappings share the `doc_format`), of
+/// `<doc_format>_v<format_version>` (`xrechnung-invoice` 3.0.2 →
+/// `xrechnung_invoice_v3_0_2`).
+///
+/// # Errors
+///
+/// As [`slug_of`].
+pub fn spoke_slug(
+    doc_format: &str,
+    format_version: &str,
+    versioned: bool,
+) -> Result<String, ConfigError> {
+    if versioned {
+        slug_of(&format!("{doc_format}_v{format_version}"))
+    } else {
+        slug_of(doc_format)
+    }
 }
 
 /// `snake_case` Rust module id from a meta `doc_format` (e.g. `ubl-invoice` →
@@ -747,6 +808,91 @@ mod tests {
         assert_eq!(
             out.declared_files,
             [workspace.canonicalize().unwrap().join("testfiles/base.xsd")]
+        );
+    }
+
+    /// A mapping of `doc_format` at `version`, with extra `[meta]` lines.
+    fn versioned(doc_format: &str, version: &str, extra: &str) -> String {
+        meta(doc_format, extra).replace(
+            "format_version = \"1\"",
+            &format!("format_version = \"{version}\""),
+        )
+    }
+
+    #[test]
+    fn test_load_dir_several_versions_of_a_format_get_versioned_slugs() {
+        let dir = dir_with(&[
+            ("v3", &versioned("x-fmt", "3.0.2", "")),
+            ("v31", &versioned("x-fmt", "3.1", "")),
+            ("other", &meta("other-fmt", "")),
+        ]);
+        let out = load_dir(&dir, &dir).expect("loads");
+        let slugs: Vec<&str> = out.spokes.iter().map(|s| s.slug.as_str()).collect();
+        assert_eq!(slugs, ["other_fmt", "x_fmt_v3_0_2", "x_fmt_v3_1"]);
+    }
+
+    #[test]
+    fn test_load_dir_a_disabled_version_does_not_version_the_others() {
+        let dir = dir_with(&[
+            ("base", &versioned("x-fmt", "1", "disabled = true")),
+            ("v2", &versioned("x-fmt", "2", r#"inherits = "x-fmt:1""#)),
+        ]);
+        let out = load_dir(&dir, &dir).expect("loads");
+        assert_eq!(
+            out.spokes[0].slug, "x_fmt",
+            "one emitted version: bare slug"
+        );
+    }
+
+    #[test]
+    fn test_load_dir_sample_source_naming_several_versions_is_e101() {
+        let dir = dir_with(&[
+            ("v1", &versioned("x-fmt", "1", "")),
+            ("v2", &versioned("x-fmt", "2", "")),
+            (
+                "reader",
+                &meta(
+                    "y-fmt",
+                    "[[meta.samples]]\nfile = \"s.xml\"\nsource = \"x-fmt\"",
+                ),
+            ),
+        ]);
+        std::fs::write(dir.join("s.xml"), "<Doc/>").expect("write sample");
+        let err = load_dir(&dir, &dir).unwrap_err();
+        assert!(err.message.contains("E101"), "{}", err.message);
+        assert!(
+            err.message.contains("`x-fmt:1`, `x-fmt:2`"),
+            "names the versions to choose from: {}",
+            err.message
+        );
+
+        // Naming one version by its mapping id resolves.
+        std::fs::write(
+            dir.join("reader.toml"),
+            meta(
+                "y-fmt",
+                "[[meta.samples]]\nfile = \"s.xml\"\nsource = \"x-fmt:2\"",
+            ),
+        )
+        .expect("rewrite mapping");
+        let out = load_dir(&dir, &dir).expect("loads");
+        let v2 = out
+            .spokes
+            .iter()
+            .find(|s| s.slug == "x_fmt_v2")
+            .expect("v2");
+        assert_eq!(v2.samples, ["s.xml"]);
+    }
+
+    #[test]
+    fn test_spoke_slug_qualifies_only_when_versioned() {
+        assert_eq!(
+            spoke_slug("ubl-invoice", "2.1", false).unwrap(),
+            "ubl_invoice"
+        );
+        assert_eq!(
+            spoke_slug("xrechnung-invoice", "3.0.2", true).unwrap(),
+            "xrechnung_invoice_v3_0_2"
         );
     }
 

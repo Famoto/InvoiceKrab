@@ -1,0 +1,44 @@
+# cargo-deny policy: `cargo deny check` (run in CI).
+#
+# Builds of KrabInvoice inherit this lockfile, so the dependency tree is part
+# of what a release promises: no known vulnerabilities, only licenses
+# compatible with distributing the result under the AGPL-3.0, and every crate
+# from crates.io.
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec advisories: vulnerabilities fail; unmaintained crates and yanked
+# versions fail too, so they are replaced before a release rather than after.
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# Permissive licenses compatible with the AGPL-3.0 the project is under.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+# The workspace crates are not published (`publish = false`); their license
+# is the repository's LICENSE.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

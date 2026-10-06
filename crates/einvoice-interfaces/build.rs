@@ -1,7 +1,11 @@
 //! Build-time codegen of the typed hub + native spoke mappers.
 //!
-//! Every `*.toml` in the workspace `config/mappings/` directory is a spoke, and
-//! every `*.toml` in `config/codecs/` a set of shared lexical codecs. Nothing is
+//! Every `*.toml` in the `mappings/` directory of the configuration directory
+//! is a spoke, and every `*.toml` in its `codecs/` a set of shared lexical
+//! codecs. The configuration directory is `$KRAB_CONFIG_DIR` when set (an
+//! absolute path: a user's own mappings, kept outside this repository), else
+//! the workspace `config/` (the bundled demo mappings); see
+//! [`config_dir`]. Nothing is
 //! hardcoded here: the directories are scanned, and each spoke's identity — its
 //! generated module name, its public `Spoke` enum variant, and its display name —
 //! is derived from the file's reserved `[meta]` table, specifically
@@ -53,6 +57,9 @@ struct Spoke {
     variant: String,
     /// Display id carried into `Spoke::name` (the source-model id from `[meta]`).
     name: String,
+    /// The mapping's own version (`[meta].mapping_version`), carried into
+    /// `Spoke::mapping_version`.
+    mapping_version: String,
     /// The root XML element name (from `[meta].root`), carried into
     /// `Spoke::root` and `Spoke::identity`.
     root: String,
@@ -76,11 +83,15 @@ struct Spoke {
     samples: Vec<String>,
 }
 
+/// The build-time variable naming the configuration directory to compile.
+const CONFIG_ENV: &str = "KRAB_CONFIG_DIR";
+
 fn main() {
-    let config_dir = workspace_config_dir();
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed={CONFIG_ENV}");
+    let config_dir = config_dir().unwrap_or_else(|e| panic!("{e}"));
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
-    println!("cargo:rerun-if-changed=build.rs");
     // Re-run when codecs or spokes are added or removed, not only when one is
     // edited.
     for dir in ["mappings", "codecs", "derivations.toml"] {
@@ -146,14 +157,50 @@ fn main() {
         .expect("write spokes.rs");
 }
 
-/// Locates the workspace `config/` directory (two levels up from the crate).
-fn workspace_config_dir() -> PathBuf {
+/// The configuration directory to compile.
+///
+/// `$KRAB_CONFIG_DIR` wins when set and not empty. It must be absolute: a build script runs
+/// in the crate's own directory, so a relative path would silently depend on
+/// where the crate happens to sit (a git checkout, `cargo vendor`, the
+/// registry cache). In `.cargo/config.toml`, `[env] KRAB_CONFIG_DIR = { value
+/// = "config", relative = true }` makes a project-relative path absolute.
+///
+/// Unset, it is the workspace `config/` two levels above this crate, which
+/// exists in a checkout of the repository. Anywhere else (a packaged crate)
+/// there is no such directory and the build says how to point it at one.
+fn config_dir() -> Result<PathBuf, String> {
+    // Empty counts as unset, so a build argument left at its default (the
+    // Dockerfile's `ARG KRAB_CONFIG_DIR=`) selects the bundled config.
+    if let Some(value) = std::env::var_os(CONFIG_ENV).filter(|v| !v.is_empty()) {
+        let dir = PathBuf::from(&value);
+        if !dir.is_absolute() {
+            return Err(format!(
+                "{CONFIG_ENV}={} must be an absolute path (in .cargo/config.toml use \
+                 `[env] {CONFIG_ENV} = {{ value = \"...\", relative = true }}`)",
+                dir.display()
+            ));
+        }
+        if !dir.join("mappings").is_dir() {
+            return Err(format!(
+                "{CONFIG_ENV}={} has no `mappings/` directory",
+                dir.display()
+            ));
+        }
+        return Ok(dir);
+    }
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     manifest
         .parent()
         .and_then(Path::parent)
-        .expect("crate is two levels under the workspace root")
-        .join("config")
+        .map(|root| root.join("config"))
+        .filter(|dir| dir.join("mappings").is_dir())
+        .ok_or_else(|| {
+            format!(
+                "no mapping configuration found: set {CONFIG_ENV} to the absolute path \
+                 of a directory holding `mappings/` (and optionally `codecs/` and \
+                 `derivations.toml`)"
+            )
+        })
 }
 
 /// Builds the per-spoke codegen descriptors from a clean [`CompileOutput`]. Every
@@ -183,8 +230,9 @@ fn collect_spokes(out: &CompileOutput, loaded: &[LoadedSpoke]) -> Vec<Spoke> {
                 .clone();
             Spoke {
                 slug: slug.clone(),
-                variant: pascal_of(&meta.doc_format),
+                variant: variant_of(slug, &meta.doc_format, &meta.format_version),
                 name,
+                mapping_version: meta.mapping_version.clone(),
                 root: source.root.clone(),
                 namespace: meta.root_namespace().map(str::to_string),
                 identity: meta.identity.clone().unwrap_or_default(),
@@ -245,9 +293,13 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
     out.push_str("/// A source/target format handled by a generated mapper.\n");
     out.push_str("///\n");
     out.push_str(
-        "/// Variants are generated from each `config/mappings/*.toml`'s `[meta].doc_format`.\n",
+        "/// Variants are generated from each `config/mappings/*.toml`'s `[meta].doc_format`,\n\
+         /// suffixed with `V<format_version>` (`XrechnungInvoiceV3_0_2`) when several\n\
+         /// versions of one format are compiled.\n",
     );
     out.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n");
+    // `V3_0_2`: the version's dots must stay visible (`3.0.2` is not `30.2`).
+    out.push_str("#[allow(non_camel_case_types)]\n");
     out.push_str("pub enum Spoke {\n");
     for spoke in spokes {
         let _ = writeln!(out, "    /// `{}`", spoke.name);
@@ -268,6 +320,14 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
         "name",
         "The spoke's display id (its source-model id from `[meta]`).",
         |spoke| &spoke.name,
+    );
+    emit_str_accessor(
+        &mut out,
+        spokes,
+        "mapping_version",
+        "The version of the mapping itself (`[meta].mapping_version`), as opposed\n\
+         to the format version in `name`: which revision of a mapping a build carries.",
+        |spoke| &spoke.mapping_version,
     );
 
     // The document identity every read checks and auto-detection matches.
@@ -473,6 +533,21 @@ fn emit_str_accessor(
 
 /// `PascalCase` enum-variant id from a meta `doc_format` (e.g. `ubl-invoice` →
 /// `UblInvoice`).
+/// The public `Spoke` variant of the spoke with module id `slug`: the
+/// `PascalCase` `doc_format`, plus `V<format_version>` with each run of
+/// non-alphanumerics as `_` when the loader version-qualified the slug
+/// (several versions of the format are compiled).
+fn variant_of(slug: &str, doc_format: &str, format_version: &str) -> String {
+    let base = pascal_of(doc_format);
+    if einvoice_dsl::slug_of(doc_format).is_ok_and(|bare| bare == slug) {
+        return base;
+    }
+    // `v3.0.2` → `v3_0_2`; the `v` keeps a leading digit a valid identifier.
+    let version = einvoice_dsl::slug_of(&format!("v{format_version}"))
+        .unwrap_or_else(|e| panic!("{}", e.message));
+    format!("{base}V{}", &version[1..])
+}
+
 fn pascal_of(doc_format: &str) -> String {
     let mut out = String::new();
     let mut at_word_start = true;

@@ -14,7 +14,7 @@ const UBL: &[u8] = br#"<Invoice xmlns="urn:oasis:names:specification:ubl:schema:
     <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
     <AccountingSupplierParty><Party><PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress><PartyLegalEntity><RegistrationName>Seller GmbH</RegistrationName></PartyLegalEntity></Party></AccountingSupplierParty><AccountingCustomerParty><Party><PostalAddress><Country><IdentificationCode>DE</IdentificationCode></Country></PostalAddress><PartyLegalEntity><RegistrationName>Buyer AG</RegistrationName></PartyLegalEntity></Party></AccountingCustomerParty><TaxTotal><TaxAmount currencyID="EUR">19.00</TaxAmount><TaxSubtotal><TaxableAmount currencyID="EUR">100.00</TaxableAmount><TaxAmount currencyID="EUR">19.00</TaxAmount><TaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></TaxCategory></TaxSubtotal></TaxTotal>
         <LegalMonetaryTotal><LineExtensionAmount currencyID="EUR">100.00</LineExtensionAmount><TaxExclusiveAmount currencyID="EUR">100.00</TaxExclusiveAmount><TaxInclusiveAmount currencyID="EUR">119.00</TaxInclusiveAmount><PayableAmount currencyID="EUR">119.00</PayableAmount></LegalMonetaryTotal>
-    <InvoiceLine><ID>1</ID><InvoicedQuantity unitCode="C62">2</InvoicedQuantity><LineExtensionAmount currencyID="EUR">50.00</LineExtensionAmount><Item><Name>Widget</Name><ClassifiedTaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></ClassifiedTaxCategory></Item><Price><PriceAmount currencyID="EUR">25.00</PriceAmount></Price></InvoiceLine>
+    <InvoiceLine><ID>1</ID><InvoicedQuantity unitCode="C62">4</InvoicedQuantity><LineExtensionAmount currencyID="EUR">100.00</LineExtensionAmount><Item><Name>Widget</Name><ClassifiedTaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></ClassifiedTaxCategory></Item><Price><PriceAmount currencyID="EUR">25.00</PriceAmount></Price></InvoiceLine>
 </Invoice>"#;
 
 fn invoke(args: &[&str], stdin: &[u8]) -> (i32, String, String) {
@@ -272,4 +272,18 @@ fn test_check_root_that_is_no_directory_exits_74() {
     assert_eq!(code, 74);
     assert!(out.is_empty());
     assert!(err.contains("not a directory"), "stderr: {err}");
+}
+
+#[test]
+fn test_version_names_the_engine_and_every_compiled_mapping() {
+    let (code, out, _) = invoke(&["--version"], b"");
+    assert_eq!(code, 0);
+    assert!(
+        out.starts_with(&format!("krab-cli {}\n", env!("CARGO_PKG_VERSION"))),
+        "{out}"
+    );
+    for spoke in einvoice_interfaces::Spoke::ALL {
+        let line = format!("    {} (mapping {})", spoke.name(), spoke.mapping_version());
+        assert!(out.contains(&line), "missing {line:?}: {out}");
+    }
 }

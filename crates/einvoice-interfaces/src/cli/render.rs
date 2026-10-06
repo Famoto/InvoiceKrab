@@ -1,4 +1,5 @@
-//! Human-readable text output: usage, the format list, and diagnostics.
+//! Human-readable text output: usage, the version, the format list, and
+//! diagnostics.
 //!
 //! These build the strings [`run`](super::run) prints; keeping them pure makes
 //! the wording testable without capturing process streams.
@@ -17,6 +18,7 @@ pub fn usage() -> String {
          krab-cli --keys [FORMAT]\n    \
          krab-cli --check [ROOT]\n    \
          krab-cli --list\n    \
+         krab-cli --version\n    \
          krab-cli --help\n\
          \n\
          ARGS:\n    \
@@ -37,6 +39,7 @@ pub fn usage() -> String {
          (sample and output XSD validity, round trips) on the\n                       \
          files under ROOT (default: .); exit 65 on a failure\n    \
          --list             List available formats\n    \
+         -V, --version      Show the engine version and the compiled mappings\n    \
          -h, --help         Show this help\n\
          \n\
          FORMATS:\n{}",
@@ -51,6 +54,21 @@ pub fn format_list() -> String {
         .map(|s| format!("    {}", s.name()))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The `--version` text of `program`: the engine version, then every
+/// compiled mapping with its own `mapping_version`, since what a build
+/// converts depends on the mappings compiled into it as much as on the engine.
+pub fn version_text(program: &str) -> String {
+    let mut out = format!("{program} {}\nmappings:\n", env!("CARGO_PKG_VERSION"));
+    for spoke in Spoke::ALL {
+        out.push_str(&format!(
+            "    {} (mapping {})\n",
+            spoke.name(),
+            spoke.mapping_version()
+        ));
+    }
+    out
 }
 
 /// Renders mapping diagnostics into a human-readable, newline-terminated block.
