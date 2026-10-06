@@ -33,7 +33,7 @@ codegen emits text that *targets* the runtime's API by name.
 | `codec.rs` | `Codec` / `CodecTable` — the shared lexical codecs (`config/codecs/*.toml`): the pattern language, validated per type, and the wire attributes. |
 | `normalize.rs` | `NormalizeOp` — declared string transforms. |
 | `multiple.rs` | `MultiplePolicy` — repeated-scalar handling. |
-| `meta.rs` | `MappingMeta` — the `[meta]` table (identity, `root`, `inherits`, `detect`, inherit-only `disabled`, the inherited namespace entries `root_ns` / `namespaces` / `ns_defaults`, the inherited `[meta.schema]` and the `[[meta.samples]]` of the schema-conformance checks). |
+| `meta.rs` | `MappingMeta` — the `[meta]` table (identity, `root`, `inherits`, inherit-only `disabled`, the inherited `[meta.identity]` document identity, the inherited namespace entries `root_ns` / `namespaces` / `ns_defaults`, the inherited `[meta.schema]` and the `[[meta.samples]]` of the schema-conformance checks). |
 | `node.rs` | `NodeId` / `Scope` / `RawNode` (as-declared) / `SourceNode` (effective). |
 | `error.rs` | `ConfigError`, `Diagnostic`, `Severity`. |
 | `parse.rs` | TOML → `ParsedMapping` (dotted-table flattening). |
@@ -44,6 +44,7 @@ codegen emits text that *targets* the runtime's API by name.
 | `hub.rs` | `derive_hub` — the canonical model as the union of spoke `canonical_key`s. |
 | `validate.rs` | the compile-time validation pipeline (E020–E085). |
 | `contract.rs` | the transformation contract per spoke (keys, required write routes, collapses, selectors), its registry rendering, and W095. |
+| `identity.rs` | `check_identities` — the spokes' document identities: each `[meta.identity]` well formed (E120), and spokes sharing a root told apart by disjoint profiles (E121). |
 | `compile.rs` | `compile` — runs the whole multi-spoke pipeline and aggregates diagnostics. |
 | `report.rs` | Static reporting helpers: coverage matrix, gap report, fallback graph. |
 | `codegen/` | `generate_hub` and `generate_spoke` — emit the typed hub (with its `values` walker, the label-keyed view round trips compare) plus native Rust reader/writer modules. |

@@ -9,8 +9,7 @@
 # CIUS deltas over the UBL base (inherited nodes merge field-wise, so each
 # override states only what changes):
 #   * `[meta]` identity: its own doc_format/format_version/source_model, plus the
-#     `detect` marker (matched case-insensitively against CustomizationID, BT-24,
-#     which for the CIUS carries `...:xrechnung_3.0`).
+#     exact XRechnung 3.0 CustomizationID (BT-24) values it reads.
 #   * `CustomizationID` (BT-24) is pinned to the XRechnung 3.0 URN, and the
 #     business process type (BT-23) is mandatory — `required = true`.
 #
@@ -24,9 +23,6 @@ source_model = "xrechnung-invoice:3.0.2"
 canonical_model = "canonical-invoice:1.0"
 root = "Invoice"
 inherits = "ubl-invoice:2.1"
-# Matched case-insensitively against the document's CustomizationID (BT-24),
-# which for the CIUS carries `...:xrechnung_3.0`.
-detect = ["xrechnung"]
 
 # XRechnung documents are UBL 2.1 Invoices. The table restates the inherited
 # schema whole (a child's `[meta.schema]` replaces its parent's) to document
@@ -40,6 +36,19 @@ refuses = [
     "testfiles/en16931-full-fatturapa.xml",
     "testfiles/UBL-Invoice-2.1.xml",
 ]
+
+# The exact CustomizationID (BT-24) values of XRechnung 3.0: the KoSIT
+# identifier XRechnung 3.0 specifies (and this spoke writes), and the
+# `xoev-de` spelling earlier releases used, which 3.0 documents (such as the
+# bundled example) still carry. Restates the inherited table whole.
+[meta.identity]
+profile = "CustomizationID"
+profiles = [
+    "urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0",
+    "urn:cen.eu:en16931:2017#compliant#urn:xoev-de:kosit:standard:xrechnung_3.0",
+]
+version = "UBLVersionID"
+versions = ["2.1"]
 
 # The XRechnung 3.0.2 example invoice: valid against the UBL 2.1 schema,
 # read by this spoke, written by every spoke with a

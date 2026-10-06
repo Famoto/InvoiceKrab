@@ -23,11 +23,19 @@ use rstest::rstest;
 
 // --- harness ---------------------------------------------------------------
 
-/// A minimal `[meta]` table for a spoke with `doc_format = fmt`, root `Doc`.
+/// A minimal `[meta]` table for a spoke with `doc_format = fmt`, root `Doc`
+/// in a namespace of its own (`urn:<fmt>`), so spokes of one case never share
+/// a root and need no `[meta.identity]` to tell them apart (E121). An `extra`
+/// declaring its own `[meta.namespaces]` replaces that default.
 fn meta(fmt: &str, extra: &str) -> String {
+    let namespaces = if extra.contains("[meta.namespaces]") {
+        String::new()
+    } else {
+        format!("[meta.namespaces]\n\"\" = \"urn:{fmt}\"\n")
+    };
     format!(
         "[meta]\ndoc_format = \"{fmt}\"\nformat_version = \"1\"\nmapping_version = \"1\"\n\
-         canonical_model = \"c:1\"\nroot = \"Doc\"\n{extra}\n"
+         canonical_model = \"c:1\"\nroot = \"Doc\"\n{extra}\n{namespaces}"
     )
 }
 

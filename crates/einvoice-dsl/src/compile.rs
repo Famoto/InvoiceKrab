@@ -4,8 +4,10 @@
 //! normalized [`MappingIr`], derive the shared canonical hub from the union of
 //! their canonical keys, validate every spoke against the source metadata and
 //! the hub, then check the spokes' `required` write routes against each other
-//! (`W095`: a required key no other spoke supplies). All diagnostics from every stage are aggregated into one
-//! [`CompileOutput`] (R9: never first-error-only), in deterministic order.
+//! (`W095`: a required key no other spoke supplies) and their document
+//! identities (`E120`, `E121`). All diagnostics from every stage are aggregated
+//! into one [`CompileOutput`] (R9: never first-error-only), in deterministic
+//! order.
 //!
 //! The IRs and hub it returns are the inputs to the static-analysis comparison
 //! tool ([`crate::report`]) and to codegen.
@@ -17,6 +19,7 @@ use crate::codegen::naming::item_struct_name;
 use crate::contract::{check_required_routes, spoke_contract};
 use crate::error::{Diagnostic, Severity};
 use crate::hub::{CanonicalModel, derive_hub};
+use crate::identity::check_identities;
 use crate::ir::{MappingIr, build_ir_with};
 use crate::parse::ParsedMapping;
 use crate::source_model::SourceModelMeta;
@@ -102,6 +105,11 @@ pub fn compile(spokes: &[SpokeInput], codecs: &CodecTable) -> CompileOutput {
         .collect();
     diagnostics.extend(check_required_routes(&contracts));
 
+    // Stage: document identities — well formed (E120), and telling apart the
+    // spokes that share a root (E121), so every read and every auto-detection
+    // has exactly one answer.
+    diagnostics.extend(check_identities(&irs));
+
     CompileOutput {
         irs,
         sources,
@@ -176,6 +184,8 @@ mod tests {
             source_model = "{model_id}"
             canonical_model = "c:1"
             root = "Doc"
+            [meta.namespaces]
+            "" = "urn:{model_id}"
             {body}
         "#
         );

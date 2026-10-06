@@ -8,7 +8,7 @@ use einvoice_interfaces::{Engine, Spoke};
 /// A bare-name UBL document carrying every aliased element: two invoiced-object
 /// references (only the first may be read), one supporting document, and both
 /// seller tax schemes.
-const UBL: &[u8] = br#"<Invoice>
+const UBL: &[u8] = br#"<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"><CustomizationID>urn:cen.eu:en16931:2017</CustomizationID>
   <ID>INV-1</ID>
   <IssueDate>2026-04-15</IssueDate>
   <InvoiceTypeCode>380</InvoiceTypeCode>
@@ -141,8 +141,12 @@ fn test_peppol_restates_only_the_tax_registration_selector() {
         back.seller_tax_registration_identifier.as_deref(),
         Some("201/113/40209")
     );
+    let peppol = String::from_utf8(UBL.to_vec()).unwrap().replace(
+        "urn:cen.eu:en16931:2017<",
+        "urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0<",
+    );
     let fc = engine
-        .to_hub(Spoke::PeppolBisBilling, UBL)
+        .to_hub(Spoke::PeppolBisBilling, peppol.as_bytes())
         .expect("well-formed");
     assert_eq!(
         fc.value.expect("hub").seller_tax_registration_identifier,
@@ -178,7 +182,7 @@ fn test_cii_writes_and_reads_type_code_and_scheme_id_discriminators() {
 
     // A CII document with all three type codes partitions on read; the tender
     // reference lands on the same key UBL fills from OriginatorDocumentReference.
-    let cii = br#"<CrossIndustryInvoice>
+    let cii = br#"<CrossIndustryInvoice xmlns="urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100"><ExchangedDocumentContext><GuidelineSpecifiedDocumentContextParameter><ID>urn:cen.eu:en16931:2017</ID></GuidelineSpecifiedDocumentContextParameter></ExchangedDocumentContext>
       <ExchangedDocument><ID>INV-2</ID><TypeCode>380</TypeCode>
         <IssueDateTime><DateTimeString format="102">20260415</DateTimeString></IssueDateTime></ExchangedDocument>
       <SupplyChainTradeTransaction>

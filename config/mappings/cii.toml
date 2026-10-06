@@ -49,9 +49,6 @@ canonical_model = "canonical-invoice:1.0"
 root = "CrossIndustryInvoice"
 # Inherit-only base: Factur-X/ZUGFeRD inherit this tree; plain CII emits no spoke.
 disabled = true
-# CII is the base cross-industry syntax (Factur-X/ZUGFeRD are its CIUS profiles);
-# it declares no discriminator and acts as the fallback for the CII tree.
-detect = []
 root_ns = "rsm"
 
 [meta.namespaces]

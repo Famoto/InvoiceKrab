@@ -35,7 +35,7 @@ pointing at the offending node.
 - [Derivations: EN 16931 calculation rules](#derivations-en-16931-calculation-rules)
 - [`required` and the transformation contract](#required-and-the-transformation-contract)
 - [Inheritance](#inheritance)
-- [Auto-detection](#auto-detection)
+- [Document identity & auto-detection](#document-identity--auto-detection)
 - [Schema conformance](#schema-conformance)
 - [A complete example](#a-complete-example)
 - [Checking your mapping](#checking-your-mapping)
@@ -59,7 +59,7 @@ and compiles every `*.toml` through the DSL pipeline:
    checked, then every spoke's `required` write routes against the other
    spokes; every problem is reported (never just the first).
 6. **Codegen** — the `read`/`write` mappers and the format registry (the
-   `Spoke` enum, display names, detection markers, each spoke's
+   `Spoke` enum, display names, document identities, each spoke's
    [transformation contract](#required-and-the-transformation-contract) and
    its [schema-conformance](#schema-conformance) declarations) are emitted as
    Rust.
@@ -212,10 +212,13 @@ mapping_version = "1.0"                     # required — version of this mappi
 canonical_model = "canonical-invoice:1.0"   # required — the hub this targets
 root            = "Invoice"                 # root XML element / struct (default: "Root")
 source_model    = "ubl-invoice:2.1"         # optional display id (default: doc_format:format_version)
-detect          = ["xrechnung"]             # optional auto-detection markers
 inherits        = "ubl-invoice:2.0"         # optional parent mapping to inherit from
 disabled        = true                      # optional — inherit-only base, emits no spoke
 description     = "…"                       # optional, reports only
+
+[meta.identity]                             # optional — what a document must declare
+profile  = "CustomizationID"
+profiles = ["urn:cen.eu:en16931:2017"]
 
 [meta.schema]                               # optional — the XSD the format is defined by
 xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
@@ -232,13 +235,13 @@ file = "testfiles/xrechnung-3.0.2-beispiel.xml"
 | `canonical_model` | ✅ | Canonical model id this mapping targets |
 | `root` | — | Root element/struct name (default `Root`) |
 | `source_model` | — | Display id (default `doc_format:format_version`) |
-| `detect` | — | Substrings matched against `CustomizationID` for [auto-detection](#auto-detection) |
 | `inherits` | — | Parent mapping id to inherit nodes from |
 | `disabled` | — | When `true`, inherit-only base: other spokes may `inherits` it, but it emits no `Spoke` of its own |
 | `description` | — | Human note, used in reports only |
 | `root_ns` | — | Prefix of the root element (default `""`); inherited — see [Namespaces](#namespaces) |
 | `[meta.namespaces]` | — | `prefix = "URI"` declarations emitted on the root (`""` = default namespace); inherited |
 | `[meta.ns_defaults]` | — | `leaf` / `aggregate` default prefixes; inherited |
+| `[meta.identity]` | — | `profile`/`profiles`, `version`/`versions`, `attributes`: what a document must declare to be read; inherited — see [Document identity](#document-identity--auto-detection) |
 | `[meta.schema]` | — | `xsd`, `catalog`, `known_gaps`: the schema the spoke's documents must satisfy; inherited — see [Schema conformance](#schema-conformance) |
 | `[[meta.samples]]` | — | `file`, `source`: sample documents every spoke with a schema must write validly and round-trip; not inherited |
 
@@ -917,8 +920,9 @@ declares its deltas:
 Missing parents and inheritance cycles fail the build.
 
 [xrechnung.toml](xrechnung.toml) is the reference CIUS: its own `[meta]`
-identity, a `detect` marker, and a one-line override making `CustomizationID`
-required — everything else (~150 nodes) folds in from [ubl.toml](ubl.toml)
+identity, its own `[meta.identity]` (the exact XRechnung `CustomizationID`
+values it reads), and a one-line override making `CustomizationID` required —
+everything else (~150 nodes) folds in from [ubl.toml](ubl.toml)
 unchanged:
 
 ```toml
@@ -930,7 +934,10 @@ source_model = "xrechnung-invoice:3.0.2"
 canonical_model = "canonical-invoice:1.0"
 root = "Invoice"
 inherits = "ubl-invoice:2.1"
-detect = ["xrechnung"]
+
+[meta.identity]
+profile = "CustomizationID"
+profiles = ["urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0"]
 
 # Merges over the base node: only the delta is stated.
 [Invoice.CustomizationID]
@@ -939,21 +946,58 @@ required = true
 
 ---
 
-## Auto-detection
+## Document identity & auto-detection
 
-When a document is valid under more than one format (an XRechnung is also
-valid UBL), `[meta].detect` markers break the tie. Markers are matched
-**case-insensitively** as substrings of the document's `CustomizationID`
-(EN 16931 BT-24). A format whose marker is present wins over a base format
-that declares none.
+Every read checks that the document *is* one of the spoke's format before a
+single value is mapped — whether the caller named the format (`--from`,
+`?from=`) or it was auto-detected. A document is read by a spoke only when:
+
+1. its root element's **namespace URI** is the one `[meta.namespaces]` binds
+   to `root_ns` (no namespace when the mapping declares none) — the prefix in
+   the document is irrelevant, only the URI counts;
+2. its root element's **local name** is `[meta].root`;
+3. it declares one of the spoke's exact **profile identifiers**;
+4. any **version** element it carries names a supported version;
+5. every mandatory **identity attribute** of the root is present with a
+   supported value.
+
+Items 3–5 come from `[meta.identity]`:
 
 ```toml
-[meta]
-detect = ["xrechnung"]
+[meta.identity]
+profile  = "CustomizationID"               # element path under the root (BT-24); mandatory in documents
+profiles = ["urn:cen.eu:en16931:2017"]     # the exact identifiers this spoke reads
+version  = "UBLVersionID"                  # optional element; checked when present
+versions = ["2.1"]
+
+[meta.identity.attributes]                 # mandatory unqualified root attributes
+versione = ["FPA12", "FPR12"]              # (FatturaPA)
 ```
 
-A base format (plain UBL) simply leaves `detect` empty and acts as the
-fallback when no marker matches.
+| Field | Purpose |
+|-------|---------|
+| `profile` | Dotted element path, under the root, of the element naming the specification the document follows. When set, a document without it is refused. |
+| `profiles` | The exact identifiers accepted at `profile`. |
+| `version` | Dotted element path, under the root, of an optional version element. |
+| `versions` | The exact values accepted at `version`. |
+| `attributes` | Unqualified root attributes every document must carry, each with its accepted values. |
+
+Values are compared **whole**, after trimming surrounding whitespace: no
+substrings, no case folding — `urn:evil:xrechnung` is not an XRechnung
+identifier. The paths match element local names at exactly that position, so a
+`CustomizationID` nested elsewhere is not the document's. The identity elements
+are read from the document's header: scanning stops at the first top-level
+element after the profile that lies on no identity path.
+
+`[meta.identity]` is inherited whole like `[meta.schema]`; a CIUS restates it
+with its own identifiers, as XRechnung and Peppol do over [ubl.toml](ubl.toml).
+
+**Auto-detection** picks the one spoke whose identity the document has. To
+make that answer unique, the build requires every two emitted spokes that share
+a root (namespace URI and local name) to declare the same `profile` element
+with disjoint `profiles` (E121); a malformed table — `profile` without
+`profiles` or the reverse, an attribute with no value, a path or attribute that
+is no XML name, a padded value — is E120.
 
 ---
 
@@ -1184,6 +1228,8 @@ Validation reports **every** problem in one run, never just the first error.
 | `W095` | A `required` node needs a hub key no other spoke maps (warning): no transform into this spoke, except from itself, can supply it |
 | `E100` | A `[meta.schema]` (`xsd`, `catalog`, `refuses`) or `[[meta.samples]]` path is absolute or names no file under the workspace root |
 | `E101` | A sample has no reader: its `source` names no emitted spoke, or it is declared on an inherit-only base without a `source` |
+| `E120` | A malformed `[meta.identity]`: `profile` without `profiles` (or the reverse), `version` without `versions` (or the reverse), an attribute with no accepted value, a path segment or attribute that is no XML name, or an empty or whitespace-padded value |
+| `E121` | Two emitted spokes share a root (namespace URI and local name) without the same `profile` element and disjoint `profiles`: a document could be read as either |
 | `E110` | A derivation target is no fitting canonical key (a computed total: a root `decimal`; a `value`: a scalar key), or a total is computed by more than one rule |
 | `E111` | A `sum` names no `decimal` key of a root collection |
 | `E112` | A `where` key is unknown, or its literal does not fit the key's type |

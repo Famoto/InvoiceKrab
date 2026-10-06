@@ -25,15 +25,16 @@
 //! Mapping-level outcomes (missing required fields, type errors, fallbacks taken)
 //! are not errors: they are carried as
 //! [`MappingDiagnostic`](einvoice_transformator::result::MappingDiagnostic)s in
-//! the returned [`MappingResult`]. An [`EngineError`] means the bytes could not
-//! be parsed or rendered at all.
+//! the returned [`MappingResult`]. An [`EngineError`] means the bytes are not
+//! a document of the source format (its [`identity`], checked on every read)
+//! or could not be parsed or rendered at all.
 //!
 //! ```no_run
 //! use einvoice_interfaces::{Engine, Spoke};
 //!
 //! let engine = Engine::new();
 //! let result = engine
-//!     .transform(Spoke::UblInvoice, Spoke::UblInvoice, b"<Invoice>...</Invoice>")
+//!     .transform(Spoke::UblInvoice, Spoke::UblInvoice, br#"<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">...</Invoice>"#)
 //!     .expect("well-formed XML");
 //! assert!(!result.has_errors());
 //! ```
@@ -44,6 +45,7 @@ pub mod analysis;
 pub mod cli;
 pub mod conformance;
 pub mod contract;
+pub mod identity;
 pub mod keys;
 pub mod server;
 mod table;
@@ -66,12 +68,22 @@ mod generated {
 pub use generated::Spoke;
 pub use generated::hub::MainKey;
 
-/// A failure at the crate boundary: the bytes could not be parsed or rendered.
+/// A failure at the crate boundary: the bytes are not a document of the source
+/// format, or could not be parsed or rendered.
 ///
 /// Mapping-level issues (missing fields, bad types) are diagnostics in the
 /// [`MappingResult`], not [`EngineError`]s.
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
+    /// The source document does not have the source format's identity (root
+    /// namespace and name, profile, version, identity attributes).
+    #[error("source is not a {format} document: {error}")]
+    Identity {
+        /// The source format's display name.
+        format: &'static str,
+        /// What the document lacks.
+        error: identity::IdentityError,
+    },
     /// Source XML could not be deserialized into the typed model.
     #[error("source deserialization failed: {0}")]
     Deserialize(#[from] quick_xml::DeError),
@@ -91,18 +103,28 @@ impl Engine {
         Engine
     }
 
-    /// Deserializes `bytes` of `spoke` and runs its generated reader, producing
-    /// the typed canonical hub plus any mapping diagnostics.
+    /// Verifies that `bytes` is a document of `spoke` ([`Spoke::identity`]),
+    /// deserializes it and runs its generated reader, producing the typed
+    /// canonical hub plus any mapping diagnostics. The identity is checked on
+    /// every read, whether `spoke` was auto-detected or chosen by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::Deserialize`] if `bytes` is not a well-formed
+    /// Returns [`EngineError::Identity`] if `bytes` does not have `spoke`'s
+    /// identity, and [`EngineError::Deserialize`] if it is not a well-formed
     /// document for `spoke`.
     pub fn to_hub(
         &self,
         spoke: Spoke,
         bytes: &[u8],
     ) -> Result<MappingResult<MainKey>, EngineError> {
+        spoke
+            .identity()
+            .check(bytes)
+            .map_err(|error| EngineError::Identity {
+                format: spoke.name(),
+                error,
+            })?;
         Ok(generated::read(spoke, bytes)?)
     }
 
@@ -179,7 +201,7 @@ mod tests {
     use rust_decimal::Decimal;
     use std::str::FromStr as _;
 
-    const UBL: &[u8] = br#"<Invoice>
+    const UBL: &[u8] = br#"<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"><CustomizationID>urn:cen.eu:en16931:2017</CustomizationID>
         <ID>INV-42</ID>
         <IssueDate>2026-06-27</IssueDate><InvoiceTypeCode>380</InvoiceTypeCode>
         <DocumentCurrencyCode>eur</DocumentCurrencyCode>
@@ -354,7 +376,7 @@ mod tests {
     #[test]
     fn test_missing_required_id_is_a_diagnostic_not_an_error() {
         let engine = Engine::new();
-        let xml = br#"<Invoice>
+        let xml = br#"<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"><CustomizationID>urn:cen.eu:en16931:2017</CustomizationID>
             <ID></ID>
             <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
             <LegalMonetaryTotal><PayableAmount currencyID="EUR">1.00</PayableAmount></LegalMonetaryTotal>
@@ -402,7 +424,7 @@ mod tests {
         // The required `<ID>` element is missing entirely (not just empty). The
         // document must still parse; the reader reports REQUIRED_MISSING.
         let engine = Engine::new();
-        let xml = br#"<Invoice>
+        let xml = br#"<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"><CustomizationID>urn:cen.eu:en16931:2017</CustomizationID>
             <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
             <LegalMonetaryTotal><PayableAmount currencyID="EUR">1.00</PayableAmount></LegalMonetaryTotal>
             <InvoiceLine><ID>1</ID><InvoicedQuantity>1</InvoicedQuantity><Item><Name>X</Name></Item></InvoiceLine>
@@ -425,6 +447,104 @@ mod tests {
         let err = engine
             .to_hub(Spoke::UblInvoice, b"not xml <<<")
             .unwrap_err();
-        assert!(matches!(err, EngineError::Deserialize(_)));
+        assert!(matches!(
+            err,
+            EngineError::Identity {
+                error: identity::IdentityError::NotXml(_),
+                ..
+            }
+        ));
+        // Past an intact identity header, malformed content still fails to
+        // deserialize.
+        let broken = String::from_utf8(UBL.to_vec())
+            .unwrap()
+            .replace("</LegalMonetaryTotal>", "</Wrong>");
+        let err = engine
+            .to_hub(Spoke::UblInvoice, broken.as_bytes())
+            .unwrap_err();
+        assert!(matches!(err, EngineError::Deserialize(_)), "{err}");
+    }
+
+    #[test]
+    fn test_explicit_source_format_checks_root_namespace() {
+        // The issue's reproduction: correct local name, wrong namespace URI —
+        // refused even though the caller named the format explicitly.
+        let engine = Engine::new();
+        let spoofed = String::from_utf8(UBL.to_vec()).unwrap().replace(
+            "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
+            "urn:example:not-ubl",
+        );
+        let err = engine
+            .to_hub(Spoke::UblInvoice, spoofed.as_bytes())
+            .unwrap_err();
+        let EngineError::Identity { format, error } = err else {
+            panic!("expected an identity error, got {err}");
+        };
+        assert_eq!(format, Spoke::UblInvoice.name());
+        assert!(
+            matches!(error, identity::IdentityError::Root { .. }),
+            "{error}"
+        );
+        // A prefix is irrelevant; only the URI it is bound to counts.
+        let prefixed = String::from_utf8(UBL.to_vec())
+            .unwrap()
+            .replacen("<Invoice xmlns=", "<inv:Invoice xmlns:inv=", 1)
+            .replace("</Invoice>", "</inv:Invoice>");
+        let result = engine
+            .to_hub(Spoke::UblInvoice, prefixed.as_bytes())
+            .expect("prefixed root in the UBL namespace");
+        assert!(!result.has_errors(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn test_explicit_source_format_checks_profile_and_version() {
+        let engine = Engine::new();
+        let ubl = String::from_utf8(UBL.to_vec()).unwrap();
+        // Another format's profile is refused by the base UBL spoke.
+        let peppol = ubl.replace(
+            "urn:cen.eu:en16931:2017<",
+            "urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0<",
+        );
+        let err = engine
+            .to_hub(Spoke::UblInvoice, peppol.as_bytes())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("unsupported profile identifier"),
+            "{err}"
+        );
+        // ... but read by the spoke it names.
+        assert!(
+            engine
+                .to_hub(Spoke::PeppolBisBilling, peppol.as_bytes())
+                .is_ok()
+        );
+        // A missing profile, and an unsupported version, are refused.
+        let missing = ubl.replace(
+            "<CustomizationID>urn:cen.eu:en16931:2017</CustomizationID>",
+            "",
+        );
+        let err = engine
+            .to_hub(Spoke::UblInvoice, missing.as_bytes())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("declares no profile identifier"),
+            "{err}"
+        );
+        let versioned = |v: &str| {
+            ubl.replacen(
+                "<CustomizationID>",
+                &format!("<UBLVersionID>{v}</UBLVersionID><CustomizationID>"),
+                1,
+            )
+        };
+        assert!(
+            engine
+                .to_hub(Spoke::UblInvoice, versioned("2.1").as_bytes())
+                .is_ok()
+        );
+        let err = engine
+            .to_hub(Spoke::UblInvoice, versioned("9.9").as_bytes())
+            .unwrap_err();
+        assert!(err.to_string().contains("unsupported version"), "{err}");
     }
 }

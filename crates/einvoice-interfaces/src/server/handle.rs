@@ -82,6 +82,8 @@ fn transform(query: &str, body: Vec<u8>) -> Result<Reply, (u16, String)> {
     };
 
     let status_of = |e: EngineError| match e {
+        // The client sent a document of another format than `from`.
+        e @ EngineError::Identity { .. } => (400, e.to_string()),
         // The client sent bytes that are not a well-formed `from` document.
         EngineError::Deserialize(e) => (400, format!("source deserialization failed: {e}")),
         // The engine produced an unserializable model: our bug, not theirs.
@@ -166,7 +168,7 @@ pub fn analyze(query: &str) -> Result<String, (u16, String)> {
 mod tests {
     use super::*;
 
-    const UBL: &[u8] = br#"<Invoice>
+    const UBL: &[u8] = br#"<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"><CustomizationID>urn:cen.eu:en16931:2017</CustomizationID>
         <ID>INV-42</ID>
         <IssueDate>2026-06-27</IssueDate><InvoiceTypeCode>380</InvoiceTypeCode>
         <DocumentCurrencyCode>EUR</DocumentCurrencyCode>

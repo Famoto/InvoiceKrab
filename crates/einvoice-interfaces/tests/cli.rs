@@ -8,7 +8,7 @@
 use einvoice_interfaces::cli::run;
 
 /// A minimal EN 16931 UBL invoice: every mandatory business term, nothing more.
-const UBL: &[u8] = br#"<Invoice>
+const UBL: &[u8] = br#"<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"><CustomizationID>urn:cen.eu:en16931:2017</CustomizationID>
     <ID>INV-42</ID>
     <IssueDate>2026-06-27</IssueDate><InvoiceTypeCode>380</InvoiceTypeCode>
     <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
@@ -79,7 +79,7 @@ fn test_malformed_xml_exits_65() {
 
 #[test]
 fn test_missing_required_field_exits_65_with_diagnostics() {
-    let bad = br#"<Invoice>
+    let bad = br#"<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"><CustomizationID>urn:cen.eu:en16931:2017</CustomizationID>
         <ID></ID>
         <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
         <LegalMonetaryTotal><PayableAmount currencyID="EUR">1.00</PayableAmount></LegalMonetaryTotal>

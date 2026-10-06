@@ -87,11 +87,11 @@ checked with `krab-cli --list`. This workspace currently ships:
 
 | Display name | Mapping file | Inherits | Notes |
 |--------------|--------------|----------|-------|
-| `ubl-invoice:2.1` | [config/mappings/ubl.toml](config/mappings/ubl.toml) | — | Base UBL Invoice tree, full EN 16931 model |
-| `xrechnung-invoice:3.0.2` | [config/mappings/xrechnung.toml](config/mappings/xrechnung.toml) | `ubl-invoice:2.1` | XRechnung CIUS, detected by `CustomizationID` marker |
-| `peppol-bis-billing:3.0` | [config/mappings/peppol.toml](config/mappings/peppol.toml) | `ubl-invoice:2.1` | Peppol BIS Billing CIUS, detected by `CustomizationID` marker |
-| `facturx-invoice:1.0` | [config/mappings/facturx.toml](config/mappings/facturx.toml) | `cii-invoice:en16931` | Factur-X / ZUGFeRD, detected by guideline-id marker |
-| `fatturapa:1.2.2` | [config/mappings/fatturapa.toml](config/mappings/fatturapa.toml) | — | Italian FatturaPA (`FatturaElettronica` tree) |
+| `ubl-invoice:2.1` | [config/mappings/ubl.toml](config/mappings/ubl.toml) | — | Base UBL Invoice tree, full EN 16931 model; reads `CustomizationID` `urn:cen.eu:en16931:2017` |
+| `xrechnung-invoice:3.0.2` | [config/mappings/xrechnung.toml](config/mappings/xrechnung.toml) | `ubl-invoice:2.1` | XRechnung CIUS, identified by its exact `CustomizationID` |
+| `peppol-bis-billing:3.0` | [config/mappings/peppol.toml](config/mappings/peppol.toml) | `ubl-invoice:2.1` | Peppol BIS Billing CIUS, identified by its exact `CustomizationID` |
+| `facturx-invoice:1.0` | [config/mappings/facturx.toml](config/mappings/facturx.toml) | `cii-invoice:en16931` | Factur-X / ZUGFeRD (EN 16931 and BASIC profiles), identified by its exact guideline id |
+| `fatturapa:1.2.2` | [config/mappings/fatturapa.toml](config/mappings/fatturapa.toml) | — | Italian FatturaPA (`FatturaElettronica` tree), identified by its `versione` attribute |
 
 [config/mappings/cii.toml](config/mappings/cii.toml) carries the full UN/CEFACT CII tree but is
 an **inherit-only base** (`[meta].disabled = true`): it exists to be inherited by
@@ -348,9 +348,15 @@ an `EngineError` only means the XML could not be parsed or rendered at all.
 - **No runtime interpretation.** TOML is compiled to native Rust mappers at
   build time; at run time the engine only executes generated code.
 - **Generated format registry.** The build scans `config/mappings/*.toml` and derives
-  the public `Spoke` enum, module names, display names, and detection markers.
-- **Source auto-detection.** Omit `--from` and KrabInvoice identifies the source
-  format, disambiguating specifications/CIUS by the document's `CustomizationID`.
+  the public `Spoke` enum, module names, display names, and document identities.
+- **Strict document identity.** Every read — format auto-detected or named with
+  `--from` — first checks that the document is one of the source format: its
+  root element's namespace URI and local name, its exact profile identifier
+  (`CustomizationID` / guideline id) against the format's whitelist, a
+  supported version, and mandatory identity attributes. A document that merely
+  looks like the format is refused, not read.
+- **Source auto-detection.** Omit `--from` and KrabInvoice picks the one format
+  whose identity the document has; the build guarantees at most one matches.
 - **Diagnostics, not silent loss.** Missing required fields, type errors, and
   taken fallbacks are reported as structured diagnostics with severity and a
   source-node reference — they don't vanish.

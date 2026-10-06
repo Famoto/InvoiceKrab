@@ -58,13 +58,14 @@ pub fn build_ir_with(
     let (leaf, ancestors) = chain
         .split_last()
         .expect("inheritance chain must contain at least the leaf mapping");
-    // Namespace and schema meta are inherited: the nearest ancestor that
+    // Namespace, schema and identity meta are inherited: the nearest ancestor that
     // declares an entry supplies it when the leaf (and every closer ancestor)
     // omits it.
     let mut meta = leaf.meta.clone();
     for ancestor in ancestors.iter().rev() {
         meta.inherit_namespaces(&ancestor.meta);
         meta.inherit_schema(&ancestor.meta);
+        meta.inherit_identity(&ancestor.meta);
     }
     let ns = NamespaceConfig {
         root_prefix: meta.root_prefix().to_string(),

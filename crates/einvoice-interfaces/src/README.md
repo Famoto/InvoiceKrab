@@ -19,6 +19,10 @@ No format is named in hand-written code.
   each spoke's embedded contract and its declared schema and samples).
 - `lib.rs` — [`Engine`] (`to_hub`, `from_hub`, `transform`), [`EngineError`], and
   the re-exported generated [`Spoke`] enum and [`MainKey`] hub.
+- `identity.rs` — source document identity: the `Identity` `build.rs` embeds
+  per spoke (`Spoke::identity()`: root namespace URI and local name, exact
+  profile identifiers, versions, root attributes) and its `check`, run by
+  `Engine::to_hub` on every read and matched by auto-detection.
 - `contract.rs` — the runtime `TransformationContract` types: what a spoke
   maps, what its `required` nodes need to write, what it declares it may lose.
   `build.rs` embeds one per spoke (`Spoke::contract()`).

@@ -302,7 +302,7 @@ mod tests {
     use axum::http::Request as HttpRequest;
     use tower::ServiceExt as _;
 
-    const UBL: &[u8] = br#"<Invoice>
+    const UBL: &[u8] = br#"<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"><CustomizationID>urn:cen.eu:en16931:2017</CustomizationID>
         <ID>INV-42</ID>
         <IssueDate>2026-06-27</IssueDate><InvoiceTypeCode>380</InvoiceTypeCode>
         <DocumentCurrencyCode>EUR</DocumentCurrencyCode>
