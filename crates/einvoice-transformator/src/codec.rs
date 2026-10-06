@@ -14,6 +14,7 @@
 //! - [`decode_bool`] / [`encode_bool`] — literal pair ⇄ `bool`.
 //! - [`format_fraction`] — a decimal with a fixed range of fraction digits.
 //! - [`to_latin1`] — text restricted to ISO 8859-1.
+//! - [`exact_digits`] — a fixed count of ASCII digits.
 //! - [`split_at`] / [`join_parts`] — one value as two elements.
 //!
 //! # Behavior
@@ -322,6 +323,20 @@ pub fn to_latin1(value: &str) -> Option<CompactString> {
         }
     }
     Some(out)
+}
+
+/// `value` when it is exactly `n` ASCII digits (surrounding whitespace
+/// trimmed), for a format field such as FatturaPA's CAP; otherwise `None`.
+///
+/// ```
+/// use einvoice_transformator::codec::exact_digits;
+/// assert_eq!(exact_digits(" 00144 ", 5).as_deref(), Some("00144"));
+/// assert_eq!(exact_digits("9876 YZ", 5), None);
+/// assert_eq!(exact_digits("1234", 5), None);
+/// ```
+pub fn exact_digits(value: &str, n: usize) -> Option<CompactString> {
+    let value = value.trim();
+    (value.len() == n && value.bytes().all(|b| b.is_ascii_digit())).then(|| value.into())
 }
 
 /// Splits `value` after its first `at` characters, for a codec that writes

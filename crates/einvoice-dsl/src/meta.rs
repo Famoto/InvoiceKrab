@@ -86,6 +86,14 @@ pub struct SchemaMeta {
     /// entry and fails the check, so the list only shrinks.
     #[serde(default)]
     pub refuses: Vec<String>,
+    /// The official business-rule sets (compiled Schematron, XSLT producing
+    /// SVRL) the spoke's documents must also satisfy, relative to the
+    /// Schematron directory `scripts/fetch-schematron.sh` fills (default
+    /// `target/schematron`). They are fetched, not vendored, so their
+    /// existence is not checked here; the conformance check skips them with a
+    /// notice where they or `java` are missing. Default: none.
+    #[serde(default)]
+    pub schematron: Vec<String>,
 }
 
 /// One `[[meta.samples]]` entry: a document that must be schema-valid itself and

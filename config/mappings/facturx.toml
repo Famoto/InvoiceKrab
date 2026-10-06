@@ -18,9 +18,15 @@ inherits = "cii-invoice:en16931"
 detect = ["factur-x", "zugferd"]
 
 # Schema conformance: written documents must validate against the Factur-X
-# EN 16931 profile schema (CII D16B, restricted to the profile).
+# EN 16931 profile schema (CII D16B, restricted to the profile) and satisfy
+# the EN 16931 business rules for CII (CEN Schematron 1.3.16).
 [meta.schema]
 xsd = "testfiles/xsd/facturx-en16931/Factur-X_EN16931.xsd"
+schematron = ["en16931/EN16931-CII-validation.xslt"]
+
+# The full EN 16931 invoice (as testfiles/en16931-full-ubl.xml) in CII syntax.
+[[meta.samples]]
+file = "testfiles/en16931-full-cii.xml"
 
 # BT-24: a Factur-X EN 16931 profile document identifies itself by the plain
 # EN 16931 specification identifier, whatever the source said.

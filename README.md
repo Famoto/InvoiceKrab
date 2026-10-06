@@ -203,9 +203,11 @@ krab-cli --keys xrechnung-invoice
 `--check` runs the checks the mappings declare in `[meta.schema]` and
 `[[meta.samples]]`: every sample validates against the XSD of the format that
 reads it, and written by every format with a schema it validates against that
-format's XSD (up to its documented `known_gaps`) and reads back with the same
-value for every canonical key the format covers. Keys a format does not cover
-are reported, not failed. The declared paths are relative to ROOT, the
+format's XSD (up to its documented `known_gaps`), satisfies the official
+EN 16931 / XRechnung / Peppol business rules the format names, and reads back
+with the same value for every canonical key the format covers. Keys a format
+does not cover are reported, not failed; so are the samples a format is
+documented to refuse because it cannot represent their data. The declared paths are relative to ROOT, the
 workspace root (default: the current directory).
 
 ```bash
@@ -213,8 +215,10 @@ workspace root (default: the current directory).
 krab-cli --check
 ```
 
-Schema validation needs `xmllint` (libxml2) on `PATH`; without it the schema
-checks are skipped with a notice and the round trips still run. A failed check
+Schema validation needs `xmllint` (libxml2) on `PATH`, and the business rules
+need `java` and the rule sets `scripts/fetch-schematron.sh` downloads into
+`target/schematron/` (or `KRAB_SCHEMATRON`); without them those checks are
+skipped with a notice and the round trips still run. A failed check
 exits 65 with the report on stderr. See
 [Schema conformance](config/mappings/README.md#schema-conformance) in the DSL
 reference.
@@ -442,7 +446,9 @@ executes only that generated code.
 
 Emitted documents are validated against the vendored XSDs in
 [testfiles/xsd/](testfiles/xsd/) by `crates/einvoice-interfaces/tests/xsd_validation.rs`
-(it needs `xmllint` from libxml2 on `PATH`; CI installs it). The test names no
+and against the official Schematron business rules (it needs `xmllint` from
+libxml2 on `PATH`, plus `java` and `scripts/fetch-schematron.sh` for the
+rules; CI provides all three). The test names no
 format: it runs the checks each mapping declares in `[meta.schema]` and
 `[[meta.samples]]`, the same ones `krab-cli --check` reports. A format's
 remaining schema errors are its `known_gaps`, and the check fails both on a

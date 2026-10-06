@@ -84,6 +84,12 @@ fraction_digits = [2, 8]
 for_type = "string"
 charset = "latin-1"
 
+# CAPType: an Italian postal code, five digits. A postal code of another form
+# (a foreign address) cannot be written: it is refused, never padded or cut.
+[codec.fatturapa-cap]
+for_type = "string"
+digits = 5
+
 # IdFiscaleType: a VAT identifier (BT-31, BT-48) as its two-letter country
 # prefix (IdPaese) and the number (IdCodice).
 [codec.fatturapa-id-fiscale]

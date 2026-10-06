@@ -54,6 +54,14 @@ p = "http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2"
 [meta.schema]
 xsd = "testfiles/xsd/fatturapa-1.2.2/Schema_del_file_xml_FatturaPA_v1.2.2.xsd"
 catalog = "testfiles/xsd/fatturapa-1.2.2/catalog.xml"
+# The OASIS example's Dutch postal codes (`9876 YZ`) are no five-digit CAP.
+refuses = ["testfiles/UBL-Invoice-2.1.xml"]
+
+# The full EN 16931 invoice (as testfiles/en16931-full-ubl.xml) as FatturaPA
+# states it: read back into EN 16931 it must satisfy the EN 16931 rules again,
+# with the totals FatturaPA does not state derived (config/derivations.toml).
+[[meta.samples]]
+file = "testfiles/en16931-full-fatturapa.xml"
 
 # The schema-version attribute every FatturaPA document carries on its root.
 [FatturaElettronica.versione]
@@ -110,6 +118,7 @@ required = true
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.Sede.CAP]
 type = "string"
 canonical_key = "SellerPostCode"
+codec = "fatturapa-cap"
 required = true
 
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.Sede.Comune]
@@ -147,6 +156,7 @@ required = true
 [FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.Sede.CAP]
 type = "string"
 canonical_key = "BuyerPostCode"
+codec = "fatturapa-cap"
 required = true
 
 [FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.Sede.Comune]

@@ -759,9 +759,9 @@ fn decode_body(
                 "Decimal::from_str(raw.trim()).ok()".to_string(),
                 format!("Some(d) => {lhs} = Some(d),"),
             ),
-            // Latin-1 text and a joined split value are read as they are:
-            // nothing to decode, nothing that can fail.
-            (Pattern::Latin1 | Pattern::Split { .. }, _) => {
+            // Latin-1 text, digits and a joined split value are read as they
+            // are: nothing to decode, and the schema constrains the document.
+            (Pattern::Latin1 | Pattern::Digits(_) | Pattern::Split { .. }, _) => {
                 let _ = writeln!(out, "{pad}{lhs} = Some(raw);");
                 return;
             }

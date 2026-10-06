@@ -816,6 +816,17 @@ fn write_encoded(
             let _ = writeln!(out, "{pad}    }}");
             let _ = writeln!(out, "{pad}}};");
         }
+        (Pattern::Digits(n), _) => {
+            let _ = writeln!(
+                out,
+                "{pad}let rendered = match codec::exact_digits(value.as_str(), {n}) {{"
+            );
+            let _ = writeln!(out, "{pad}    Some(s) => s,");
+            let _ = writeln!(out, "{pad}    None => {{");
+            encode_failure(out, node, codec, key, index_var, &format!("{pad}        "));
+            let _ = writeln!(out, "{pad}    }}");
+            let _ = writeln!(out, "{pad}}};");
+        }
         _ => {
             let _ = writeln!(
                 out,

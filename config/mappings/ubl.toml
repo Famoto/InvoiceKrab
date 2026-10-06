@@ -74,11 +74,24 @@ leaf = "cbc"
 aggregate = "cac"
 
 # Schema conformance: every document this spoke writes (and every sample it
-# reads) must validate against the UBL 2.1 Invoice schema. Inherited by
-# XRechnung and Peppol, whose documents are UBL 2.1 Invoices too. See
-# `krab-cli --check`.
+# reads) must validate against the UBL 2.1 Invoice schema and satisfy the
+# EN 16931 business rules for UBL (CEN Schematron 1.3.16, fetched by
+# scripts/fetch-schematron.sh). Inherited by XRechnung and Peppol, whose
+# documents are UBL 2.1 Invoices too. See `krab-cli --check`.
 [meta.schema]
 xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
+schematron = ["en16931/EN16931-UBL-validation.xslt"]
+
+# An invoice using every EN 16931 business group the mappings cover: lines
+# with allowances, charges and item attributes, document-level allowances and
+# charges, several VAT categories, payment instructions and references.
+[[meta.samples]]
+file = "testfiles/en16931-full-ubl.xml"
+
+# The OASIS UBL 2.1 example invoice (EN 16931 customization, as published by
+# the CEN BII project): a document written by another tool.
+[[meta.samples]]
+file = "testfiles/UBL-Invoice-2.1.xml"
 
 # ===========================================================================
 # PROCESS CONTROL (BG-2)

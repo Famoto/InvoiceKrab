@@ -111,6 +111,9 @@ pub enum Pattern {
     },
     /// Text restricted to ISO 8859-1 (typographic punctuation transliterated).
     Latin1,
+    /// Exactly this many ASCII digits (an Italian CAP); any other value is
+    /// refused on write, never padded or cut.
+    Digits(usize),
     /// One value written as two child elements: its first `at` characters
     /// into `head`, the rest into `tail`; read back as their concatenation.
     Split {
@@ -162,6 +165,8 @@ struct RawCodec {
     fraction_digits: Option<(usize, usize)>,
     #[serde(default)]
     charset: Option<String>,
+    #[serde(default)]
+    digits: Option<usize>,
     #[serde(default)]
     split: Option<RawSplit>,
     #[serde(default)]
@@ -236,7 +241,7 @@ fn build_codec(id: &str, raw: RawCodec) -> Result<Codec, String> {
 }
 
 /// The one codec kind a raw codec declares — `lexical`, `values`,
-/// `fraction_digits`, `charset` or `split` — validated against `for_type`,
+/// `fraction_digits`, `charset`, `digits` or `split` — validated against `for_type`,
 /// with the summary diagnostics quote it by.
 fn codec_kind(raw: &RawCodec) -> Result<(String, Pattern), String> {
     let declared = [
@@ -244,11 +249,12 @@ fn codec_kind(raw: &RawCodec) -> Result<(String, Pattern), String> {
         raw.values.is_some(),
         raw.fraction_digits.is_some(),
         raw.charset.is_some(),
+        raw.digits.is_some(),
         raw.split.is_some(),
     ];
     if declared.iter().filter(|d| **d).count() != 1 {
         return Err(
-            "declare exactly one of `lexical`, `values`, `fraction_digits`, `charset`, `split`"
+            "declare exactly one of `lexical`, `values`, `fraction_digits`, `charset`, `digits`, `split`"
                 .to_string(),
         );
     }
@@ -299,6 +305,13 @@ fn codec_kind(raw: &RawCodec) -> Result<(String, Pattern), String> {
             ));
         }
         return Ok(("charset latin-1".to_string(), Pattern::Latin1));
+    }
+    if let Some(digits) = raw.digits {
+        need(text_like, "digits", "`string` or `identifier`")?;
+        if digits == 0 {
+            return Err("`digits` must be at least 1".to_string());
+        }
+        return Ok((format!("{digits} digits"), Pattern::Digits(digits)));
     }
     let split = raw.split.as_ref().expect("exactly one kind is declared");
     need(text_like, "split", "`string` or `identifier`")?;
@@ -502,6 +515,10 @@ mod tests {
             [codec.vat-split]
             for_type = "identifier"
             split = { at = 2, into = ["IdPaese", "IdCodice"] }
+
+            [codec.cap]
+            for_type = "string"
+            digits = 5
             "#,
         )
         .expect("parses");
@@ -516,6 +533,7 @@ mod tests {
         );
         assert_eq!(by("amount-2"), Pattern::Fraction { min: 2, max: 2 });
         assert_eq!(by("text"), Pattern::Latin1);
+        assert_eq!(by("cap"), Pattern::Digits(5));
         assert_eq!(
             by("vat-split"),
             Pattern::Split {
@@ -537,6 +555,8 @@ mod tests {
     #[case::fraction_on_string("for_type = \"string\"\nfraction_digits = [2, 2]", "not `string`")]
     #[case::fraction_inverted("for_type = \"decimal\"\nfraction_digits = [3, 2]", "min <= max")]
     #[case::unknown_charset("for_type = \"string\"\ncharset = \"ascii\"", "unknown charset")]
+    #[case::digits_zero("for_type = \"string\"\ndigits = 0", "at least 1")]
+    #[case::digits_on_decimal("for_type = \"decimal\"\ndigits = 5", "not `decimal`")]
     #[case::split_at_zero(
         "for_type = \"string\"\nsplit = { at = 0, into = [\"A\", \"B\"] }",
         "at least 1"
