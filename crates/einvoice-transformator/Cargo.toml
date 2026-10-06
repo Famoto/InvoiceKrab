@@ -2,6 +2,10 @@
 name = "einvoice-transformator"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
 
 [dependencies]
 # Normalize helpers thread the generated models' inline-string values.

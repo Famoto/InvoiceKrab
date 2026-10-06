@@ -9,7 +9,7 @@
 
 use std::fmt::Write as _;
 
-use crate::derive::{Derivation, DerivationKind};
+use crate::derive::{CheckLevel, Derivation, DerivationKind};
 use crate::hub::{CanonicalField, CanonicalModel, CanonicalScope};
 use crate::report::FieldKey;
 use crate::types::MappingType;
@@ -115,9 +115,9 @@ fn push_values_fn(out: &mut String, hub: &CanonicalModel, scope: &CanonicalScope
 }
 
 /// Emits `MainKey::DERIVATIONS` (each rule's target label, reference and the
-/// labels it needs) and `MainKey::derive_missing`, which applies the rules in
+/// labels it needs), `MainKey::derive_missing`, which applies the rules in
 /// order to the keys the hub lacks and returns `(label, rule)` per value it
-/// derived.
+/// derived, and `MainKey::check_derived` (see [`check_fn`]).
 fn derive_fns(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]) {
     out.push_str(
         "    /// The derivation rules (`config/derivations.toml`), in order: target\n\
@@ -156,22 +156,12 @@ fn derive_fns(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]
                 let target = snake_case(&d.key);
                 let scope = CanonicalScope::Root.child(collection);
                 let _ = writeln!(out, "        if self.{target}.is_none() {{");
-                out.push_str("            let mut sum: Option<Decimal> = None;\n");
+                emit_checked_sum(out, hub, &scope, collection, item, filter);
+                // An overflowing sum derives nothing: the target stays
+                // absent, as for a source that lacks it.
                 let _ = writeln!(
                     out,
-                    "            for item in &self.{} {{",
-                    snake_case(collection)
-                );
-                emit_filter(out, hub, &scope, filter, "item", "                ");
-                let _ = writeln!(
-                    out,
-                    "                if let Some(value) = item.{} {{\n                    sum = Some(sum.unwrap_or_default() + value);\n                }}",
-                    snake_case(item)
-                );
-                out.push_str("            }\n");
-                let _ = writeln!(
-                    out,
-                    "            if let Some(value) = sum {{\n                self.{target} = Some(value);\n                {push}\n            }}"
+                    "            if !overflow && let Some(value) = sum {{\n                self.{target} = Some(value);\n                {push}\n            }}"
                 );
                 out.push_str("        }\n");
             }
@@ -180,6 +170,7 @@ fn derive_fns(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]
                 subtract,
                 requires,
                 skip_zero,
+                skip_negative,
             } => {
                 let target = snake_case(&d.key);
                 let mut present = vec![format!("self.{target}.is_none()")];
@@ -187,23 +178,29 @@ fn derive_fns(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]
                     present.push(format!("self.{}.is_some()", snake_case(r)));
                 }
                 let _ = writeln!(out, "        if {} {{", present.join(" && "));
-                let mut expr = format!("self.{}.unwrap_or_default()", snake_case(&add[0]));
-                for a in &add[1..] {
-                    expr.push_str(&format!(" + self.{}.unwrap_or_default()", snake_case(a)));
+                // An overflowing result (`None`) derives nothing.
+                let _ = writeln!(
+                    out,
+                    "            if let Some(value) = {} {{",
+                    checked_expr(add, subtract)
+                );
+                let mut guards = Vec::new();
+                if *skip_zero {
+                    guards.push("!value.is_zero()");
                 }
-                for s in subtract {
-                    expr.push_str(&format!(" - self.{}.unwrap_or_default()", snake_case(s)));
+                if *skip_negative {
+                    guards.push("!value.is_sign_negative()");
                 }
-                let _ = writeln!(out, "            let value: Decimal = {expr};");
-                let guard = if *skip_zero {
-                    "!value.is_zero()"
+                let guard = if guards.is_empty() {
+                    "true".to_string()
                 } else {
-                    "true"
+                    guards.join(" && ")
                 };
                 let _ = writeln!(
                     out,
-                    "            if {guard} {{\n                self.{target} = Some(value);\n                {push}\n            }}"
+                    "                if {guard} {{\n                    self.{target} = Some(value);\n                    {push}\n                }}"
                 );
+                out.push_str("            }\n");
                 out.push_str("        }\n");
             }
             DerivationKind::Value {
@@ -247,6 +244,132 @@ fn derive_fns(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]
         }
     }
     out.push_str("        derived\n    }\n");
+    check_fn(out, hub, derivations);
+}
+
+/// Emits `MainKey::check_derived`: every checked `sum` / `add` rule whose
+/// target the hub carries is recomputed from its operands (under the same
+/// presence conditions as deriving it), and each mismatch is returned as
+/// `(label, rule, is_error, carried, computed)`, `computed` being `None` when
+/// the computation overflows the decimal range.
+fn check_fn(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]) {
+    out.push_str(
+        "\n    /// Recomputes every checked rule whose target the hub carries and\n\
+         \x20\x20\x20\x20/// returns each mismatch as `(label, rule, is_error, carried, computed)`;\n\
+         \x20\x20\x20\x20/// `computed` is `None` when the computation overflows the decimal range.\n\
+         \x20\x20\x20\x20/// Run after [`Self::derive_missing`], so derived operands take part.\n",
+    );
+    out.push_str(
+        "    pub fn check_derived(\n        &self,\n    ) -> Vec<(&'static str, &'static str, bool, Decimal, Option<Decimal>)> {\n",
+    );
+    out.push_str("        let mut mismatches = Vec::new();\n");
+    for d in derivations {
+        let is_error = match d.check {
+            CheckLevel::Off => continue,
+            CheckLevel::Warning => false,
+            CheckLevel::Error => true,
+        };
+        let target = snake_case(&d.key);
+        let push = format!(
+            "mismatches.push(({:?}, {:?}, {is_error}, carried, computed));",
+            d.key, d.rule
+        );
+        match &d.kind {
+            DerivationKind::Sum {
+                collection,
+                item,
+                filter,
+            } => {
+                let scope = CanonicalScope::Root.child(collection);
+                let _ = writeln!(out, "        // {} ({})", d.key, d.rule);
+                let _ = writeln!(out, "        if let Some(carried) = self.{target} {{");
+                emit_checked_sum(out, hub, &scope, collection, item, filter);
+                let _ = writeln!(
+                    out,
+                    "            if overflow {{\n                let computed = None;\n                {push}\n            }} else if let Some(computed) = sum && computed != carried {{\n                let computed = Some(computed);\n                {push}\n            }}"
+                );
+                out.push_str("        }\n");
+            }
+            DerivationKind::Arithmetic {
+                add,
+                subtract,
+                requires,
+                ..
+            } => {
+                let _ = writeln!(out, "        // {} ({})", d.key, d.rule);
+                let mut present = Vec::new();
+                for r in add.iter().take(1).chain(requires) {
+                    present.push(format!("self.{}.is_some()", snake_case(r)));
+                }
+                let _ = writeln!(
+                    out,
+                    "        if let Some(carried) = self.{target} && {} {{",
+                    present.join(" && ")
+                );
+                let _ = writeln!(
+                    out,
+                    "            let computed: Option<Decimal> = {};",
+                    checked_expr(add, subtract)
+                );
+                let _ = writeln!(
+                    out,
+                    "            if computed != Some(carried) {{\n                {push}\n            }}"
+                );
+                out.push_str("        }\n");
+            }
+            DerivationKind::Value { .. } => {}
+        }
+    }
+    out.push_str("        mismatches\n    }\n");
+}
+
+/// Emits the summation of `collection`'s `item` values (filtered by `where`)
+/// into `sum: Option<Decimal>` (`None` with no contributing item), with
+/// checked addition: `overflow` is set, and the loop left, when the sum
+/// leaves the decimal range. Decimal `+` would panic there instead, on
+/// values an untrusted document controls.
+fn emit_checked_sum(
+    out: &mut String,
+    hub: &CanonicalModel,
+    scope: &CanonicalScope,
+    collection: &str,
+    item: &str,
+    filter: &[(String, String)],
+) {
+    out.push_str("            let mut sum: Option<Decimal> = None;\n");
+    out.push_str("            let mut overflow = false;\n");
+    let _ = writeln!(
+        out,
+        "            for item in &self.{} {{",
+        snake_case(collection)
+    );
+    emit_filter(out, hub, scope, filter, "item", "                ");
+    let _ = writeln!(
+        out,
+        "                if let Some(value) = item.{} {{\n                    match sum.unwrap_or_default().checked_add(value) {{\n                        Some(next) => sum = Some(next),\n                        None => {{\n                            overflow = true;\n                            break;\n                        }}\n                    }}\n                }}",
+        snake_case(item)
+    );
+    out.push_str("            }\n");
+}
+
+/// An `Option<Decimal>` expression for `add[0] + add[1..] - subtract[..]`
+/// over root keys (absent ones count as zero), with checked arithmetic:
+/// `None` when an intermediate result leaves the decimal range.
+fn checked_expr(add: &[String], subtract: &[String]) -> String {
+    let mut expr = format!("Some(self.{}.unwrap_or_default())", snake_case(&add[0]));
+    for a in &add[1..] {
+        expr.push_str(&format!(
+            ".and_then(|v: Decimal| v.checked_add(self.{}.unwrap_or_default()))",
+            snake_case(a)
+        ));
+    }
+    for s in subtract {
+        expr.push_str(&format!(
+            ".and_then(|v: Decimal| v.checked_sub(self.{}.unwrap_or_default()))",
+            snake_case(s)
+        ));
+    }
+    expr
 }
 
 /// Emits the `continue` guards of a rule's `where` filters on the item `var`

@@ -7,6 +7,12 @@
 # defines. A value the source carries is never replaced, and each derived value
 # is reported as a VALUE_DERIVED info diagnostic.
 #
+# A value the source carries is checked instead: every `sum` / `add` rule is
+# recomputed once all rules have run, and a carried total that contradicts it
+# (a wrong PayableAmount, a line sum that does not match the lines) is reported
+# as VALUE_INCONSISTENT. `check` sets the severity: "warning" (default),
+# "error" (the transform fails) or "off".
+#
 # The last rules fill in a reason code EN 16931 demands where a source has
 # none: an allowance or charge needs a reason or reason code (BR-33, BR-38,
 # BR-42, BR-44), and FatturaPA's ScontoMaggiorazione states only whether it is
@@ -66,7 +72,10 @@ subtract = ["PaidAmount"]
 
 # BR-CO-16 solved for the paid amount: a source stating the amount due and the
 # total with VAT but no prepayment (FatturaPA) carries it implicitly. Only a
-# non-zero prepayment is written.
+# positive prepayment is derived: a negative one would only make a wrong
+# amount due look consistent, so it is left absent and the PayableAmount rule
+# above reports the mismatch. Not checked itself: it restates that rule's
+# equation.
 [[derive]]
 key = "PaidAmount"
 rule = "BR-CO-16"
@@ -74,6 +83,8 @@ add = ["InvoiceTotalWithVat", "RoundingAmount"]
 subtract = ["PayableAmount"]
 requires = ["PayableAmount"]
 skip_zero = true
+skip_negative = true
+check = "off"
 
 # BR-33 / BR-42: an allowance without reason or reason code is a discount, code
 # 95 (UNTDID 5189).

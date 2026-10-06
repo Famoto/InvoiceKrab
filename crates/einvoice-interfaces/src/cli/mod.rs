@@ -21,7 +21,8 @@
 //! - [`parse`] — [`parse_args`], pure argv → [`Command`].
 //! - [`detect`] — [`resolve_spoke`] (format-name → [`Spoke`](crate::Spoke)) and
 //!   [`detect_source`] (auto-detection from the document identity).
-//! - [`render`] — [`usage`], [`format_list`], and [`render_diagnostics`].
+//! - [`render`] — [`usage`], [`version_text`], [`format_list`], and
+//!   [`render_diagnostics`].
 //! - [`run`] — [`run`], the IO entry point used by the binary.
 //!
 //! # Behavior
@@ -77,5 +78,5 @@ pub use command::{AnalyzeArgs, Args, Command};
 pub use detect::{detect_source, resolve_spoke};
 pub use error::CliError;
 pub use parse::parse_args;
-pub use render::{format_list, render_diagnostics, usage};
+pub use render::{format_list, render_diagnostics, usage, version_text};
 pub use run::{analyze_output, check_output, run, write_output_file};

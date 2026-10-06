@@ -29,6 +29,8 @@ router.
 | `KRAB_MEM_BUDGET_BYTES`  | detected memory x 1/2 (cgroup v2 limit first) |
 | `KRAB_MEM_BLOWUP`        | `12` — reservation = Content-Length x blowup  |
 | `KRAB_BODY_TIMEOUT_SECS` | `30` — per-frame body read/write timeout      |
+| `KRAB_REQUEST_TIMEOUT_SECS` | `300` — deadline for the whole request body |
+| `KRAB_QUEUE_TIMEOUT_SECS` | `60` — longest wait for a memory reservation |
 
 Malformed values are startup errors, never silent fallbacks. `KRAB_WORKERS`
 sets the tokio runtime worker threads and caps the blocking pool that runs
@@ -43,7 +45,8 @@ the CPU-bound transforms, so it bounds transform parallelism.
 | `GET /analyze[?from=<f>[&to=<f>]][&deny_lossy=1]` | text loss/error matrix, row or pair report (the CLI's `--analyze`); `422` + report when `deny_lossy` and not lossless |
 | `GET /health`                              | `200 ok` — the engine is stateless, alive = healthy |
 
-`krab-server --healthcheck` probes `GET /health` on loopback and exits 0/1 —
+`krab-server --healthcheck` probes `GET /health` on the bound address (see
+*Behavior* below) and exits 0/1 —
 the Docker `HEALTHCHECK` for the `FROM scratch` image, where no curl exists.
 
 ## Behavior
@@ -58,14 +61,19 @@ other source stays at or below 8.8x at any measured size, so
 `KRAB_MEM_BLOWUP=9` is safe when FatturaPA is never an input (see
 [docs/PERFORMANCE.md](../../../../docs/PERFORMANCE.md#memory)). Requests run
 in parallel while budget remains; when it is exhausted, requests queue FIFO until a
-reservation is released. The reservation is held until the response is
+reservation is released, for at most `KRAB_QUEUE_TIMEOUT_SECS`; after that
+the request is shed with `503` and `Retry-After`, instead of holding a
+connection whose client has likely given up. The reservation is held until the response is
 *written* (it rides inside the response body), so a slow-reading client
 cannot accumulate unreserved output. The process therefore cannot be driven
 past its budget — no OOM from traffic.
 
-Slow peers are bounded twice: a per-frame body timeout
+Slow peers are bounded three ways: a per-frame body timeout
 (`KRAB_BODY_TIMEOUT_SECS`, both directions) drops live-but-silent
-connections, and TCP keepalive on the listener reaps dead ones.
+connections; a whole-body deadline (`KRAB_REQUEST_TIMEOUT_SECS`, `408`) drops
+clients that trickle bytes just inside the frame timeout, which would
+otherwise hold their reservation (up to the whole budget) indefinitely; and
+TCP keepalive on the listener reaps dead ones.
 
 `SIGTERM`/`SIGINT` trigger a graceful shutdown: the listener stops
 accepting, in-flight requests drain to completion, then the process exits 0.
@@ -78,17 +86,26 @@ Denials:
 | unknown route                        | 404 + usage text             |
 | no Content-Length (chunked upload)   | 411 + `Connection: close`    |
 | reservation exceeds the whole budget | 413 + `Connection: close`    |
-| body read fails or times out         | 400 + `Connection: close`    |
-| missing/unknown format, bad XML      | 400                          |
+| no reservation within queue timeout  | 503 + `Retry-After` + close  |
+| body not complete by request timeout | 408 + `Connection: close`    |
+| body read fails or a frame times out | 400 + `Connection: close`    |
+| missing/unknown/repeated format, bad XML, unsupported encoding | 400 |
 | error-severity mapping diagnostics   | 422 with rendered diagnostics|
 | unserializable output (engine bug)   | 500                          |
 
 Warning-severity diagnostics on success are returned in the
 `X-Krab-Warnings` response header; the 200 body is pure XML.
 
+Query values are `application/x-www-form-urlencoded`-decoded, so clients may
+percent-encode the `:` of versioned format names (`to=xrechnung-invoice%3A3.0.2`).
+
+`krab-server --healthcheck` probes the bound address from `KRAB_ADDR`, or its
+loopback (`127.0.0.1` / `[::1]`) when bound to all interfaces.
+
 Known ceiling: connections are accepted eagerly (tokio), so once the budget
 is exhausted the queue of gate waiters lives in userspace, one small task +
-connection each, unbounded. Header-only floods are cheap but not free; front
+connection each; the queue timeout bounds how long each waits, not how many
+there are. Header-only floods are cheap but not free; front
 with nginx/caddy for hostile internet exposure.
 
 ## Testing
@@ -96,13 +113,14 @@ with nginx/caddy for hostile internet exposure.
 - `gate.rs` tests: immediate admission, RAII release, `NeverFits`,
   cross-task waiting and resumption, parallel admission, cancellation.
 - `config.rs` tests: defaults, every override, malformed/zero rejection, the
-  cgroup `"max"` sentinel, `/proc/meminfo` parsing — all against pure
+  cgroup `"max"` sentinel, `/proc/meminfo` parsing, the healthcheck probe
+  address — all against pure
   lookups/fixtures, never the process environment.
 - `handle.rs` tests: every row of the status table plus source
   auto-detection.
 - `router.rs` tests: the full HTTP surface via `tower::ServiceExt::oneshot`
-  — every transport denial, headers, stalled-upload timeout (paused time),
-  and reservation-release timing. No sockets.
+  — every transport denial, headers, stalled- and trickling-upload timeouts
+  and the queue timeout (paused time), and reservation-release timing. No sockets.
 - Only the binary's listener/runtime/signal wiring is untested I/O. Smoke
   test:
 

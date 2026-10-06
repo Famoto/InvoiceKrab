@@ -25,6 +25,8 @@ pub enum Command {
     Check(Option<String>),
     /// Print usage and exit successfully.
     Help,
+    /// Print the engine version and the compiled mappings, and exit.
+    Version,
 }
 
 /// The inputs of an `--analyze` command.

@@ -7,8 +7,16 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
+# Minimum supported Rust version, checked in CI.
+rust-version = "1.88"
+repository = "https://github.com/Famoto/InvoiceKrab"
+# The code; the bundled `config/` is CC0-1.0 (config/LICENSE).
+license = "AGPL-3.0-or-later"
+# Built from source with the user's own mappings (see README); never
+# published to a registry.
+publish = false
 
 [profile.release]
 # fat LTO + 1 codegen unit = best runtime speed (~10% over thin LTO on the
@@ -62,6 +70,9 @@ http-body-util = "0.1"
 # TCP_NODELAY on the server listener: Nagle + delayed ACK adds ~40 ms to
 # every keep-alive request without it. Keepalive bounds dead-peer pinning.
 socket2 = "0.6"
+# Decodes `/transform` and `/analyze` query strings (`%3A`, `+`): clients
+# percent-encode the `:` in versioned format names. Already in the tree via axum.
+form_urlencoded = "1"
 
 # Internal crates.
 einvoice-transformator = { path = "crates/einvoice-transformator" }

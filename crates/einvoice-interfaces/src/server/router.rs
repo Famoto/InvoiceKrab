@@ -9,7 +9,7 @@
 //! # Structure
 //!
 //! - [`router`] — builds the [`Router`] from a [`MemGate`], the reservation
-//!   blowup factor, and the body timeout.
+//!   blowup factor, and the [`Timeouts`].
 //! - `transform` — the `POST /transform` handler; the only route that reads
 //!   a body and therefore the only one that touches the gate.
 //! - `GuardedBody` — a response body that owns the request's memory
@@ -26,7 +26,9 @@
 //! | unknown route                        | 404 + usage text          |
 //! | no Content-Length (chunked upload)   | 411 + `Connection: close` |
 //! | reservation exceeds the whole budget | 413 + `Connection: close` |
-//! | body read fails or times out         | 400 + `Connection: close` |
+//! | no reservation within queue timeout  | 503 + `Retry-After` + close |
+//! | body not complete by request timeout | 408 + `Connection: close` |
+//! | body read fails or a frame times out | 400 + `Connection: close` |
 //! | body exceeds Content-Length          | 400 + `Connection: close` |
 //!
 //! The transformation itself is CPU-bound and runs via `spawn_blocking`; the
@@ -62,30 +64,53 @@ use tower_http::timeout::{RequestBodyTimeoutLayer, ResponseBodyTimeoutLayer};
 use super::gate::{Guard, MemGate};
 use super::handle::{self, Reply};
 
-/// Shared per-request context: the admission gate and the reservation
-/// multiplier.
+/// The server's time limits. Each bounds how long a client can hold a
+/// connection — and, once admitted, its memory reservation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timeouts {
+    /// Longest gap between body frames, in both directions.
+    pub body: Duration,
+    /// Deadline for reading the whole request body. Without it a client
+    /// sending one byte per `body` interval would hold its reservation
+    /// indefinitely.
+    pub request: Duration,
+    /// Longest wait for a reservation before the request is shed with 503.
+    pub queue: Duration,
+}
+
+/// Shared per-request context: the admission gate, the reservation
+/// multiplier, and the time limits.
 #[derive(Clone)]
 struct AppState {
     gate: Arc<MemGate>,
     blowup: u64,
+    timeouts: Timeouts,
 }
 
 /// The usage text served on unknown routes.
-const USAGE: &str = "POST /transform?to=<format>[&from=<format>] | GET /formats | GET /analyze[?from=<format>[&to=<format>]][&deny_lossy=1] | GET /health";
+const USAGE: &str = "POST /transform?to=<format>[&from=<format>] | GET /formats | GET /analyze[?from=<format>[&to=<format>]][&deny_lossy=1] | GET /version | GET /health";
 
 /// Builds the complete `krab-server` service. `blowup` is the reservation
 /// multiplier (`Content-Length x blowup` bytes are reserved per transform);
-/// `body_timeout` bounds the gap between body frames in both directions.
-pub fn router(gate: Arc<MemGate>, blowup: u64, body_timeout: Duration) -> Router {
+/// `timeouts` bound frame gaps, the whole upload, and the queue wait.
+pub fn router(gate: Arc<MemGate>, blowup: u64, timeouts: Timeouts) -> Router {
     Router::new()
         .route("/health", get(async || "ok"))
         .route("/formats", get(formats))
+        .route(
+            "/version",
+            get(async || crate::cli::version_text("krab-server")),
+        )
         .route("/analyze", get(analyze))
         .route("/transform", post(transform))
         .fallback(async || (StatusCode::NOT_FOUND, USAGE))
-        .layer(RequestBodyTimeoutLayer::new(body_timeout))
-        .layer(ResponseBodyTimeoutLayer::new(body_timeout))
-        .with_state(AppState { gate, blowup })
+        .layer(RequestBodyTimeoutLayer::new(timeouts.body))
+        .layer(ResponseBodyTimeoutLayer::new(timeouts.body))
+        .with_state(AppState {
+            gate,
+            blowup,
+            timeouts,
+        })
 }
 
 /// `GET /formats`: the JSON format list.
@@ -130,51 +155,48 @@ async fn transform(State(state): State<AppState>, request: Request) -> Response 
 
     // Reserve the request's estimated peak memory (body + parse blowup)
     // before reading a byte. Waits while the budget is exhausted — queued
-    // requests here are the backpressure. Held until the response is written.
-    let reservation = match state
+    // requests here are the backpressure, bounded by the queue timeout so a
+    // saturated server sheds load instead of parking connections whose
+    // clients have long given up. Held until the response is written.
+    let acquire = state
         .gate
         .clone()
-        .acquire(length.saturating_mul(state.blowup))
-        .await
-    {
-        Ok(guard) => guard,
-        Err(never_fits) => {
+        .acquire(length.saturating_mul(state.blowup));
+    let reservation = match tokio::time::timeout(state.timeouts.queue, acquire).await {
+        Ok(Ok(guard)) => guard,
+        Ok(Err(never_fits)) => {
             return plain(StatusCode::PAYLOAD_TOO_LARGE, never_fits.to_string()).close();
+        }
+        Err(_elapsed) => {
+            let mut response = plain(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "server busy: no memory reservation within the queue timeout".into(),
+            )
+            .close();
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                HeaderValue::from(retry_after(state.timeouts)),
+            );
+            return response;
         }
     };
 
     // Read frame by frame into one pre-sized buffer: a single copy, and no
     // extractor means no default body limit. The timeout layer wraps this
-    // body, so a stalled upload surfaces as a frame error, not a pinned task.
-    let mut body = Vec::with_capacity(length as usize);
-    let mut stream = request.into_body();
-    loop {
-        match stream.frame().await {
-            None => break,
-            Some(Ok(frame)) => {
-                let Ok(data) = frame.into_data() else {
-                    continue; // trailers etc. carry no body bytes
-                };
-                // Hyper enforces Content-Length framing on a real socket;
-                // this keeps the reservation honest for any other transport.
-                if body.len() + data.len() > length as usize {
-                    return plain(
-                        StatusCode::BAD_REQUEST,
-                        "request body exceeds Content-Length".into(),
-                    )
-                    .close();
-                }
-                body.extend_from_slice(&data);
-            }
-            Some(Err(e)) => {
-                return plain(
-                    StatusCode::BAD_REQUEST,
-                    format!("failed reading request body: {e}"),
-                )
-                .close();
-            }
+    // body, so a stalled upload surfaces as a frame error, not a pinned task;
+    // the request deadline bounds a trickling one.
+    let read = read_body(request.into_body(), length);
+    let body = match tokio::time::timeout(state.timeouts.request, read).await {
+        Ok(Ok(body)) => body,
+        Ok(Err(problem)) => return plain(StatusCode::BAD_REQUEST, problem).close(),
+        Err(_elapsed) => {
+            return plain(
+                StatusCode::REQUEST_TIMEOUT,
+                "request body not received within the request timeout".into(),
+            )
+            .close();
         }
-    }
+    };
 
     // The transform is pure CPU for up to hundreds of ms: off the reactor.
     // The runtime caps the blocking pool at the worker count, bounding
@@ -191,6 +213,36 @@ async fn transform(State(state): State<AppState>, request: Request) -> Response 
         }
     };
     respond(reply, reservation)
+}
+
+/// Reads exactly the body announced by `length` into one pre-sized buffer;
+/// `Err` says why a body that overruns `length` or fails was not read (a
+/// `400`, answered with `Connection: close` by the caller).
+async fn read_body(mut stream: Body, length: u64) -> Result<Vec<u8>, String> {
+    let mut body = Vec::with_capacity(length as usize);
+    loop {
+        match stream.frame().await {
+            None => return Ok(body),
+            Some(Ok(frame)) => {
+                let Ok(data) = frame.into_data() else {
+                    continue; // trailers etc. carry no body bytes
+                };
+                // Hyper enforces Content-Length framing on a real socket;
+                // this keeps the reservation honest for any other transport.
+                if body.len() + data.len() > length as usize {
+                    return Err("request body exceeds Content-Length".into());
+                }
+                body.extend_from_slice(&data);
+            }
+            Some(Err(e)) => return Err(format!("failed reading request body: {e}")),
+        }
+    }
+}
+
+/// The `Retry-After` seconds for a request shed from the queue: one queue
+/// timeout, at least one second.
+fn retry_after(timeouts: Timeouts) -> u64 {
+    timeouts.queue.as_secs().max(1)
 }
 
 /// Parses the `Content-Length` header; `None` when absent or unreadable
@@ -310,13 +362,19 @@ mod tests {
         <LegalMonetaryTotal>
             <LineExtensionAmount currencyID="EUR">100.00</LineExtensionAmount><TaxExclusiveAmount currencyID="EUR">100.00</TaxExclusiveAmount><TaxInclusiveAmount currencyID="EUR">119.00</TaxInclusiveAmount><PayableAmount currencyID="EUR">119.00</PayableAmount>
         </LegalMonetaryTotal>
-        <InvoiceLine><ID>1</ID><InvoicedQuantity unitCode="C62">2</InvoicedQuantity><LineExtensionAmount currencyID="EUR">50.00</LineExtensionAmount><Item><Name>Widget</Name><ClassifiedTaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></ClassifiedTaxCategory></Item><Price><PriceAmount currencyID="EUR">25.00</PriceAmount></Price></InvoiceLine>
+        <InvoiceLine><ID>1</ID><InvoicedQuantity unitCode="C62">4</InvoicedQuantity><LineExtensionAmount currencyID="EUR">100.00</LineExtensionAmount><Item><Name>Widget</Name><ClassifiedTaxCategory><ID>S</ID><Percent>19</Percent><TaxScheme><ID>VAT</ID></TaxScheme></ClassifiedTaxCategory></Item><Price><PriceAmount currencyID="EUR">25.00</PriceAmount></Price></InvoiceLine>
     </Invoice>"#;
 
     const BIG_BUDGET: u64 = 64 * 1024 * 1024;
 
+    const TIMEOUTS: Timeouts = Timeouts {
+        body: Duration::from_secs(30),
+        request: Duration::from_secs(300),
+        queue: Duration::from_secs(60),
+    };
+
     fn app(budget: u64) -> Router {
-        router(Arc::new(MemGate::new(budget)), 7, Duration::from_secs(30))
+        router(Arc::new(MemGate::new(budget)), 7, TIMEOUTS)
     }
 
     /// A POST /transform request with an explicit Content-Length.
@@ -402,6 +460,25 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let text = body_text(response).await;
         assert!(text.contains("BuyerName"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn test_version_names_the_engine_and_the_mappings() {
+        let response = app(BIG_BUDGET)
+            .oneshot(
+                HttpRequest::get("/version")
+                    .body(Body::empty())
+                    .expect("ok"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
+        let text = body_text(response).await;
+        assert!(
+            text.starts_with(&format!("krab-server {}\n", env!("CARGO_PKG_VERSION"))),
+            "{text}"
+        );
+        assert!(text.contains("mappings:"), "{text}");
     }
 
     #[tokio::test]
@@ -523,7 +600,7 @@ mod tests {
     #[tokio::test]
     async fn test_reservation_released_only_after_response_body_is_read() {
         let gate = Arc::new(MemGate::new(BIG_BUDGET));
-        let app = router(gate.clone(), 7, Duration::from_secs(30));
+        let app = router(gate.clone(), 7, TIMEOUTS);
         let response = app
             .oneshot(transform_request(UBL, "to=ubl-invoice&from=ubl-invoice"))
             .await
@@ -540,5 +617,87 @@ mod tests {
             BIG_BUDGET,
             "dropping the response body must release the reservation"
         );
+    }
+
+    /// A body that yields one byte per `gap` forever: a client trickling its
+    /// upload just inside the per-frame timeout.
+    struct TricklingBody {
+        gap: Duration,
+        sleep: Option<Pin<Box<tokio::time::Sleep>>>,
+    }
+
+    impl http_body::Body for TricklingBody {
+        type Data = Bytes;
+        type Error = Infallible;
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+            let gap = self.gap;
+            let sleep = self
+                .sleep
+                .get_or_insert_with(|| Box::pin(tokio::time::sleep(gap)));
+            match sleep.as_mut().poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(()) => {
+                    self.sleep = None;
+                    Poll::Ready(Some(Ok(Frame::data(Bytes::from_static(b"<")))))
+                }
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_transform_trickling_upload_hits_request_timeout_with_408_close() {
+        let gate = Arc::new(MemGate::new(BIG_BUDGET));
+        let app = router(gate.clone(), 7, TIMEOUTS);
+        let request = HttpRequest::post("/transform?to=ubl-invoice")
+            .header(header::CONTENT_LENGTH, 1024 * 1024)
+            .body(Body::new(TricklingBody {
+                gap: Duration::from_secs(29), // inside the 30 s frame timeout
+                sleep: None,
+            }))
+            .expect("valid request");
+        let response = app.oneshot(request).await.expect("infallible");
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(response.headers()[header::CONNECTION], "close");
+        assert_eq!(
+            gate.available(),
+            BIG_BUDGET,
+            "a timed-out upload must release its reservation"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_transform_queue_timeout_returns_503_retry_after_close() {
+        let gate = Arc::new(MemGate::new(BIG_BUDGET));
+        let held = gate
+            .clone()
+            .acquire(BIG_BUDGET)
+            .await
+            .expect("whole budget fits");
+        let app = router(gate.clone(), 7, TIMEOUTS);
+        let response = app
+            .oneshot(transform_request(UBL, "to=ubl-invoice"))
+            .await
+            .expect("infallible");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::CONNECTION], "close");
+        assert_eq!(response.headers()[header::RETRY_AFTER], "60");
+        drop(held);
+        assert_eq!(
+            gate.available(),
+            BIG_BUDGET,
+            "the shed waiter reserved nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_transform_percent_encoded_target_returns_200() {
+        let response = app(BIG_BUDGET)
+            .oneshot(transform_request(UBL, "to=ubl-invoice%3A2.1"))
+            .await
+            .expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

@@ -12,33 +12,55 @@ use crate::identity::IdentityError;
 /// Resolves a human-typed format name to a [`Spoke`], case-insensitively.
 ///
 /// Matches either the full display name (`ubl-invoice:2.1`) or the bare
-/// `doc_format` prefix before the version colon (`ubl-invoice`).
+/// `doc_format` prefix before the version colon (`ubl-invoice`). A bare
+/// prefix shared by several compiled versions of a format is refused rather
+/// than guessed: which version an invoice is written as must not change when
+/// a mapping for a newer one is added.
 ///
 /// # Errors
 ///
 /// Returns [`CliError::UnknownFormat`] (listing the known names) when `name`
-/// matches no spoke.
+/// matches no spoke, and [`CliError::Usage`] (listing the versions) when it is
+/// a bare prefix of several.
 pub fn resolve_spoke(name: &str) -> Result<Spoke, CliError> {
-    let matches = |full: &str| {
-        full.eq_ignore_ascii_case(name)
-            || full
-                .split_once(':')
-                .is_some_and(|(prefix, _)| prefix.eq_ignore_ascii_case(name))
-    };
-    Spoke::ALL
+    let names: Vec<&str> = Spoke::ALL.iter().map(|s| s.name()).collect();
+    resolve_name(name, &names).map(|index| Spoke::ALL[index])
+}
+
+/// The index in `names` of the display name `name` selects (see
+/// [`resolve_spoke`]).
+///
+/// Every display name `name` matches counts — case-insensitively, in full or
+/// as the bare prefix before the version colon — so a name is refused as
+/// ambiguous whenever it could mean two spokes: two versions sharing a
+/// prefix, a mapping whose display name *is* that bare prefix next to a
+/// versioned one, or two display names differing only in case.
+fn resolve_name(name: &str, names: &[&str]) -> Result<usize, CliError> {
+    let versions: Vec<usize> = names
         .iter()
-        .copied()
-        .find(|s| matches(s.name()))
-        .ok_or_else(|| {
-            CliError::UnknownFormat(format!(
-                "{name:?} (known formats: {})",
-                Spoke::ALL
-                    .iter()
-                    .map(|s| s.name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ))
+        .enumerate()
+        .filter(|(_, full)| {
+            full.eq_ignore_ascii_case(name)
+                || full
+                    .split_once(':')
+                    .is_some_and(|(prefix, _)| prefix.eq_ignore_ascii_case(name))
         })
+        .map(|(index, _)| index)
+        .collect();
+    match versions.as_slice() {
+        [only] => Ok(*only),
+        [] => Err(CliError::UnknownFormat(format!(
+            "{name:?} (known formats: {})",
+            names.join(", ")
+        ))),
+        many => Err(CliError::Usage(format!(
+            "format {name:?} names several formats; name one: {}",
+            many.iter()
+                .map(|&index| names[index])
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
 }
 
 /// Detects the source spoke of `bytes` from the compile-time spoke registry.
@@ -58,6 +80,11 @@ pub fn resolve_spoke(name: &str) -> Result<Spoke, CliError> {
 /// guarantee, more than one) matches; it names why the spokes sharing the
 /// document's root refused it.
 pub fn detect_source(bytes: &[u8]) -> Result<Spoke, CliError> {
+    // Identities are matched on UTF-8. An undecodable encoding is left as is:
+    // detection still works on ASCII-compatible bytes, and the read that
+    // follows reports the encoding error itself.
+    let decoded = crate::encoding::to_utf8(bytes);
+    let bytes = decoded.as_deref().unwrap_or(bytes);
     let checked: Vec<(Spoke, Result<(), IdentityError>)> = Spoke::ALL
         .iter()
         .map(|&s| (s, s.identity().check(bytes)))
@@ -267,6 +294,50 @@ mod tests {
                 assert_eq!(resolve_spoke(prefix).expect("prefix resolves"), *spoke);
             }
         }
+    }
+
+    const VERSIONS: [&str; 3] = [
+        "xrechnung-invoice:3.0.2",
+        "xrechnung-invoice:3.1",
+        "ubl-invoice:2.1",
+    ];
+
+    #[test]
+    fn test_resolve_name_full_name_selects_one_of_several_versions() {
+        assert_eq!(
+            resolve_name("XRECHNUNG-invoice:3.1", &VERSIONS).expect("full"),
+            1
+        );
+        assert_eq!(
+            resolve_name("ubl-invoice", &VERSIONS).expect("one version"),
+            2
+        );
+    }
+
+    #[test]
+    fn test_resolve_name_bare_prefix_of_several_versions_is_ambiguous() {
+        let err = resolve_name("xrechnung-invoice", &VERSIONS).expect_err("ambiguous");
+        assert_eq!(err.exit_code(), 64);
+        let text = err.to_string();
+        assert!(
+            text.contains("xrechnung-invoice:3.0.2, xrechnung-invoice:3.1"),
+            "lists the versions: {text}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_name_bare_display_name_next_to_a_version_is_ambiguous() {
+        // A mapping whose display name is the bare `foo` (its `source_model`)
+        // and a `foo:2`: `foo` could mean either, so it means neither.
+        let err = resolve_name("foo", &["foo", "foo:2"]).expect_err("ambiguous");
+        assert!(err.to_string().contains("foo, foo:2"), "{err}");
+        assert_eq!(resolve_name("foo:2", &["foo", "foo:2"]).expect("full"), 1);
+    }
+
+    #[test]
+    fn test_resolve_name_names_differing_only_in_case_are_ambiguous() {
+        let err = resolve_name("foo:1", &["Foo:1", "foo:1"]).expect_err("ambiguous");
+        assert_eq!(err.exit_code(), 64);
     }
 
     #[test]

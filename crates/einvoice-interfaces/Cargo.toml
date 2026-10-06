@@ -2,6 +2,10 @@
 name = "einvoice-interfaces"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
 
 [dependencies]
 # Runtime the generated mappers link against.
@@ -19,6 +23,7 @@ tower-http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 socket2 = { workspace = true }
+form_urlencoded = { workspace = true }
 # JSON for the server's capability endpoints (`GET /formats`).
 serde_json = { workspace = true }
 

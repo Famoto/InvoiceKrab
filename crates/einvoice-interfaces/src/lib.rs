@@ -45,6 +45,7 @@ pub mod analysis;
 pub mod cli;
 pub mod conformance;
 pub mod contract;
+pub mod encoding;
 pub mod identity;
 pub mod keys;
 pub mod server;
@@ -75,6 +76,10 @@ pub use generated::hub::MainKey;
 /// [`MappingResult`], not [`EngineError`]s.
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
+    /// The source document's character encoding cannot be decoded
+    /// ([`encoding::to_utf8`]).
+    #[error("source encoding: {0}")]
+    Encoding(#[from] encoding::EncodingError),
     /// The source document does not have the source format's identity (root
     /// namespace and name, profile, version, identity attributes).
     #[error("source is not a {format} document: {error}")]
@@ -107,10 +112,13 @@ impl Engine {
     /// deserializes it and runs its generated reader, producing the typed
     /// canonical hub plus any mapping diagnostics. The identity is checked on
     /// every read, whether `spoke` was auto-detected or chosen by the caller.
+    /// A document in another supported encoding than UTF-8 is transcoded
+    /// first ([`encoding::to_utf8`]).
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::Identity`] if `bytes` does not have `spoke`'s
+    /// Returns [`EngineError::Encoding`] if the document's encoding cannot be
+    /// decoded, [`EngineError::Identity`] if `bytes` does not have `spoke`'s
     /// identity, and [`EngineError::Deserialize`] if it is not a well-formed
     /// document for `spoke`.
     pub fn to_hub(
@@ -118,6 +126,8 @@ impl Engine {
         spoke: Spoke,
         bytes: &[u8],
     ) -> Result<MappingResult<MainKey>, EngineError> {
+        let bytes = encoding::to_utf8(bytes)?;
+        let bytes = bytes.as_ref();
         spoke
             .identity()
             .check(bytes)
@@ -132,7 +142,9 @@ impl Engine {
     /// XML, carrying through the writer's diagnostics. EN 16931 totals the hub
     /// lacks are first derived by their calculation rules
     /// ([`MainKey::derive_missing`]), each reported as a `VALUE_DERIVED` info
-    /// diagnostic; values the hub carries are never replaced.
+    /// diagnostic; values the hub carries are never replaced. A carried total
+    /// that contradicts its rule ([`MainKey::check_derived`]) is reported as
+    /// `VALUE_INCONSISTENT`, a warning or an error as the rule's `check` says.
     ///
     /// Consumes the hub: the writer moves its values into the target document
     /// instead of cloning them, so the hub's memory is released as the target
@@ -149,7 +161,7 @@ impl Engine {
     ) -> Result<MappingResult<String>, EngineError> {
         // EN 16931 totals the hub lacks are computed by their calculation
         // rules (`config/derivations.toml`) before the writer runs.
-        let derived: Vec<MappingDiagnostic> = hub
+        let mut checks: Vec<MappingDiagnostic> = hub
             .derive_missing()
             .into_iter()
             .map(|(label, rule)| {
@@ -163,9 +175,36 @@ impl Engine {
                 d
             })
             .collect();
+        // Totals the hub carries are checked against the same rules, derived
+        // operands included: a contradiction is never written silently.
+        checks.extend(hub.check_derived().into_iter().map(
+            |(label, rule, is_error, carried, computed)| {
+                let severity = if is_error {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                };
+                let mut d = MappingDiagnostic::new(
+                    severity,
+                    "VALUE_INCONSISTENT",
+                    rule,
+                    match computed {
+                        Some(computed) => {
+                            format!("`{label}` is {carried} but {rule} computes {computed}")
+                        }
+                        None => format!(
+                            "`{label}` is {carried} but {rule} cannot be computed: \
+                             the result exceeds the decimal range"
+                        ),
+                    },
+                );
+                d.canonical_key = Some(label.to_string());
+                d
+            },
+        ));
         let mut written = generated::write(spoke, hub)?;
-        if !derived.is_empty() {
-            written.diagnostics.splice(0..0, derived);
+        if !checks.is_empty() {
+            written.diagnostics.splice(0..0, checks);
         }
         Ok(written)
     }
@@ -317,6 +356,136 @@ mod tests {
     }
 
     #[test]
+    fn test_from_hub_reports_a_carried_total_that_contradicts_its_rule() {
+        // The source states an amount due that BR-CO-16 does not give: it is
+        // written as carried (never replaced), but not silently. The paid
+        // amount is stated (zero): without it, BR-CO-16 solved for the paid
+        // amount would derive one that makes any amount due consistent.
+        let engine = Engine::new();
+        let mut hub = engine
+            .to_hub(Spoke::UblInvoice, UBL)
+            .unwrap()
+            .value
+            .unwrap();
+        hub.payable_amount = Some(Decimal::from_str("999.99").unwrap());
+        hub.paid_amount = Some(Decimal::ZERO);
+        let out = engine.from_hub(Spoke::UblInvoice, hub).unwrap();
+        let inconsistent: Vec<_> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "VALUE_INCONSISTENT")
+            .collect();
+        assert_eq!(inconsistent.len(), 1, "{:?}", out.diagnostics);
+        let d = inconsistent[0];
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.source_node, "BR-CO-16");
+        assert_eq!(d.canonical_key.as_deref(), Some("PayableAmount"));
+        assert!(
+            d.message.contains("999.99") && d.message.contains("119"),
+            "{}",
+            d.message
+        );
+        assert!(!out.has_errors(), "a warning keeps the output");
+        assert!(out.value.unwrap().contains(">999.99<"));
+    }
+
+    #[test]
+    fn test_from_hub_checks_carried_totals_against_derived_operands() {
+        // A line sum that is derived from the lines (BR-CO-10) and a total
+        // with VAT that is carried must still agree (BR-CO-13, BR-CO-15): the
+        // engine never mixes a derived and a carried value silently.
+        let engine = Engine::new();
+        let mut hub = engine
+            .to_hub(Spoke::UblInvoice, UBL)
+            .unwrap()
+            .value
+            .unwrap();
+        hub.sum_of_invoice_line_net_amount = None;
+        hub.invoice_total_without_vat = None;
+        hub.invoice_lines[0].line_net_amount = Some(Decimal::from_str("5000.00").unwrap());
+        let out = engine.from_hub(Spoke::UblInvoice, hub).unwrap();
+        let rules: Vec<_> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "VALUE_INCONSISTENT")
+            .map(|d| d.source_node.as_str())
+            .collect();
+        assert_eq!(rules, ["BR-CO-15"], "{:?}", out.diagnostics);
+    }
+
+    #[test]
+    fn test_wrong_amount_due_without_paid_amount_is_reported() {
+        // No paid amount: BR-CO-16 solved for it would infer -880.99, which
+        // would make the amount due consistent with itself. A negative
+        // prepayment is never derived (`skip_negative`), so the amount due
+        // is checked against the totals and reported.
+        let engine = Engine::new();
+        let mut hub = engine
+            .to_hub(Spoke::UblInvoice, UBL)
+            .unwrap()
+            .value
+            .unwrap();
+        hub.payable_amount = Some(Decimal::from_str("999.99").unwrap());
+        hub.paid_amount = None;
+        let out = engine.from_hub(Spoke::UblInvoice, hub).unwrap();
+        assert!(
+            out.diagnostics
+                .iter()
+                .all(|d| d.canonical_key.as_deref() != Some("PaidAmount")),
+            "no paid amount is derived: {:?}",
+            out.diagnostics
+        );
+        let rules: Vec<_> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "VALUE_INCONSISTENT")
+            .map(|d| d.source_node.as_str())
+            .collect();
+        assert_eq!(rules, ["BR-CO-16"], "{:?}", out.diagnostics);
+    }
+
+    #[test]
+    fn test_totals_beyond_the_decimal_range_are_reported_not_panicking() {
+        // Two line amounts at the decimal maximum: their sum overflows. The
+        // engine must not panic (decimal `+` would): the sum is not derived,
+        // and the carried total cannot be confirmed.
+        let engine = Engine::new();
+        let mut hub = engine
+            .to_hub(Spoke::UblInvoice, UBL)
+            .unwrap()
+            .value
+            .unwrap();
+        for line in &mut hub.invoice_lines {
+            line.line_net_amount = Some(Decimal::MAX);
+        }
+        let out = engine.from_hub(Spoke::UblInvoice, hub).unwrap();
+        let overflow = out
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "VALUE_INCONSISTENT" && d.source_node == "BR-CO-10")
+            .unwrap_or_else(|| panic!("BR-CO-10 reported: {:?}", out.diagnostics));
+        assert!(
+            overflow.message.contains("decimal range"),
+            "{}",
+            overflow.message
+        );
+    }
+
+    #[test]
+    fn test_consistent_document_reports_no_inconsistency() {
+        let out = Engine::new()
+            .transform(Spoke::UblInvoice, Spoke::UblInvoice, UBL)
+            .unwrap();
+        assert!(
+            out.diagnostics
+                .iter()
+                .all(|d| d.code != "VALUE_INCONSISTENT"),
+            "{:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
     fn test_from_hub_derives_missing_totals_and_reports_them() {
         // A hub without the sum of line net amounts (BT-106) or the total
         // without VAT (BT-109), as FatturaPA yields: the engine derives both by
@@ -391,6 +560,41 @@ mod tests {
                 .iter()
                 .any(|d| d.code == "REQUIRED_MISSING" && d.source_node == "Invoice.ID")
         );
+    }
+
+    #[test]
+    fn test_to_hub_reads_a_latin1_document() {
+        // A declared ISO-8859-1 document is transcoded before the identity
+        // check and the read; `\xE8` is `è` in Latin-1, not valid UTF-8.
+        let mut xml = b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>".to_vec();
+        xml.extend(
+            String::from_utf8(UBL.to_vec())
+                .unwrap()
+                .replace(
+                    "<DocumentCurrencyCode>",
+                    "<Note>Caff@</Note><DocumentCurrencyCode>",
+                )
+                .bytes()
+                .map(|b| if b == b'@' { 0xE8 } else { b }),
+        );
+        let result = Engine::new()
+            .to_hub(Spoke::UblInvoice, &xml)
+            .expect("Latin-1 is decoded");
+        assert!(!result.has_errors(), "{:?}", result.diagnostics);
+        assert_eq!(
+            result.value.expect("hub").invoice_note.as_deref(),
+            Some("Caff\u{E8}")
+        );
+    }
+
+    #[test]
+    fn test_to_hub_unsupported_encoding_is_an_encoding_error() {
+        let mut xml = b"<?xml version=\"1.0\" encoding=\"EBCDIC-US\"?>".to_vec();
+        xml.extend_from_slice(UBL);
+        assert!(matches!(
+            Engine::new().to_hub(Spoke::UblInvoice, &xml),
+            Err(EngineError::Encoding(_))
+        ));
     }
 
     #[test]

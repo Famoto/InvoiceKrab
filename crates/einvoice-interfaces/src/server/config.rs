@@ -11,6 +11,8 @@
 //! | `KRAB_MEM_BUDGET_BYTES`  | detected memory x 1/2 (cgroup v2 limit first)  |
 //! | `KRAB_MEM_BLOWUP`        | `12` (measured peak-memory multiplier)         |
 //! | `KRAB_BODY_TIMEOUT_SECS` | `30` (per-frame body read/write timeout)       |
+//! | `KRAB_REQUEST_TIMEOUT_SECS` | `300` (whole request-body read deadline)    |
+//! | `KRAB_QUEUE_TIMEOUT_SECS` | `60` (longest wait for a memory reservation)  |
 //!
 //! # Structure
 //!
@@ -18,7 +20,8 @@
 //! the pure core taking an env lookup plus the detected hardware values, so
 //! every rule is unit-testable without touching process environment (global
 //! mutable state). [`parse_cgroup_max`] and [`parse_meminfo`] are the pure
-//! parsers behind memory detection.
+//! parsers behind memory detection. [`probe_addr`] maps the listen address to
+//! the address `krab-server --healthcheck` connects to.
 //!
 //! # Behavior
 //!
@@ -49,6 +52,13 @@ pub struct Config {
     /// Per-frame timeout (seconds) on request-body reads and response-body
     /// writes: bounds how long a live-but-slow peer can pin a reservation.
     pub body_timeout_secs: u64,
+    /// Total deadline (seconds) for reading a request body. The per-frame
+    /// timeout alone lets a client trickle one byte per frame interval and
+    /// hold its reservation indefinitely; this bounds the whole upload.
+    pub request_timeout_secs: u64,
+    /// Longest wait (seconds) for a memory reservation before the request is
+    /// shed with `503` instead of parking its connection indefinitely.
+    pub queue_timeout_secs: u64,
 }
 
 /// A configuration problem that must stop startup.
@@ -114,12 +124,27 @@ impl Config {
             // *gap between frames*, not the total transfer time.
             None => 30,
         };
+        let request_timeout_secs = match lookup("KRAB_REQUEST_TIMEOUT_SECS") {
+            Some(v) => parse_nonzero("KRAB_REQUEST_TIMEOUT_SECS", &v)?,
+            // Five minutes moves ~85 MB (the default size cap of a 2 GB
+            // container) at under 300 kB/s; a slower upload is not a client
+            // worth pinning memory for.
+            None => 300,
+        };
+        let queue_timeout_secs = match lookup("KRAB_QUEUE_TIMEOUT_SECS") {
+            Some(v) => parse_nonzero("KRAB_QUEUE_TIMEOUT_SECS", &v)?,
+            // Typical reverse-proxy read timeout: waiting longer only holds a
+            // connection whose client has already given up.
+            None => 60,
+        };
         Ok(Config {
             addr: lookup("KRAB_ADDR").unwrap_or_else(|| "0.0.0.0:8080".into()),
             workers,
             mem_budget_bytes,
             mem_blowup,
             body_timeout_secs,
+            request_timeout_secs,
+            queue_timeout_secs,
         })
     }
 
@@ -151,6 +176,22 @@ fn parse_nonzero(var: &'static str, value: &str) -> Result<u64, ConfigError> {
         return Err(invalid("must be greater than zero"));
     }
     Ok(n)
+}
+
+/// The address `krab-server --healthcheck` probes for a server listening on
+/// `addr`: the bound address itself, except that an unspecified one
+/// (`0.0.0.0`, `[::]`) is not connectable and becomes its loopback. `None`
+/// when `addr` resolves to no socket address.
+pub fn probe_addr(addr: &str) -> Option<std::net::SocketAddr> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs as _};
+    let mut target = addr.to_socket_addrs().ok()?.next()?;
+    if target.ip().is_unspecified() {
+        target.set_ip(match target.ip() {
+            IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        });
+    }
+    Some(target)
 }
 
 /// Detects usable memory: the cgroup v2 limit when the process is confined
@@ -206,6 +247,8 @@ mod tests {
                 mem_budget_bytes: 32 * GIB, // half of detected
                 mem_blowup: 12,
                 body_timeout_secs: 30,
+                request_timeout_secs: 300,
+                queue_timeout_secs: 60,
             }
         );
     }
@@ -232,6 +275,8 @@ mod tests {
                 mem_budget_bytes: 1_000_000,
                 mem_blowup: 3,
                 body_timeout_secs: 5,
+                request_timeout_secs: 300,
+                queue_timeout_secs: 60,
             }
         );
     }
@@ -327,6 +372,60 @@ mod tests {
             ),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn test_resolve_timeouts_default_and_override() {
+        let cfg = Config::resolve(env(&[]), Some(GIB), 1).expect("defaults resolve");
+        assert_eq!(
+            (cfg.request_timeout_secs, cfg.queue_timeout_secs),
+            (300, 60)
+        );
+        let cfg = Config::resolve(
+            env(&[
+                ("KRAB_REQUEST_TIMEOUT_SECS", "20"),
+                ("KRAB_QUEUE_TIMEOUT_SECS", "5"),
+            ]),
+            Some(GIB),
+            1,
+        )
+        .expect("overrides resolve");
+        assert_eq!((cfg.request_timeout_secs, cfg.queue_timeout_secs), (20, 5));
+        for var in ["KRAB_REQUEST_TIMEOUT_SECS", "KRAB_QUEUE_TIMEOUT_SECS"] {
+            assert!(
+                Config::resolve(env(&[(var, "0")]), Some(GIB), 1).is_err(),
+                "{var}=0 must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_probe_addr_maps_unspecified_to_loopback() {
+        assert_eq!(
+            probe_addr("0.0.0.0:8080"),
+            Some("127.0.0.1:8080".parse().expect("valid"))
+        );
+        assert_eq!(
+            probe_addr("[::]:8080"),
+            Some("[::1]:8080".parse().expect("valid"))
+        );
+    }
+
+    #[test]
+    fn test_probe_addr_keeps_a_concrete_bind_address() {
+        assert_eq!(
+            probe_addr("10.1.2.3:9000"),
+            Some("10.1.2.3:9000".parse().expect("valid"))
+        );
+        assert_eq!(
+            probe_addr("[fd00::5]:9000"),
+            Some("[fd00::5]:9000".parse().expect("valid"))
+        );
+    }
+
+    #[test]
+    fn test_probe_addr_unresolvable_is_none() {
+        assert_eq!(probe_addr("not an address"), None);
     }
 
     #[test]

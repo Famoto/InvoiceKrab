@@ -311,9 +311,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "dc74980687109a3b14c72fd458107bf0baa1da1a1a805e178d15501ba9b86d9d"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -338,7 +338,7 @@ checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
 
 [[package]]
 name = "einvoice-dsl"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "insta",
  "rstest",
@@ -350,13 +350,14 @@ dependencies = [
 
 [[package]]
 name = "einvoice-interfaces"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "compact_str",
  "criterion",
  "einvoice-dsl",
  "einvoice-transformator",
+ "form_urlencoded",
  "http-body",
  "http-body-util",
  "pretty_assertions",
@@ -374,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "einvoice-transformator"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "compact_str",
  "serde",

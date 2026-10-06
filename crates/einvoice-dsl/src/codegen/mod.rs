@@ -1876,6 +1876,23 @@ mod tests {
             out.contains("if self.payable_amount.is_none() && self.payable_amount.is_some() {"),
             "{out}"
         );
+        assert!(out.contains("pub fn check_derived("), "{out}");
+        assert!(
+            !out.contains("unwrap_or_default() +") && !out.contains("unwrap_or_default() -"),
+            "no unchecked decimal arithmetic: {out}"
+        );
+        assert!(
+            out.contains(
+                "if let Some(carried) = self.payable_amount && self.payable_amount.is_some() {"
+            ),
+            "a checked `add` rule recomputes its carried target: {out}"
+        );
+        assert!(
+            out.contains(
+                r#"mismatches.push(("PayableAmount", "BR-CO-16", false, carried, computed));"#
+            ),
+            "the default check level is a warning: {out}"
+        );
         // No rules: the table is empty and nothing is derived.
         let plain = generate_hub(&hub);
         assert!(plain.contains("pub const DERIVATIONS"), "{plain}");
@@ -1899,6 +1916,8 @@ mod tests {
             add = ["PayableAmount"]
             requires = ["PayableAmount"]
             skip_zero = true
+            skip_negative = true
+            check = "off"
             "#,
         )
         .unwrap();
@@ -1915,7 +1934,18 @@ mod tests {
             out.contains("i0.quantity = Some(<Decimal as std::str::FromStr>::from_str(\"1\")"),
             "{out}"
         );
-        assert!(out.contains("if !value.is_zero() {"), "{out}");
+        assert!(
+            out.contains("if !value.is_zero() && !value.is_sign_negative() {"),
+            "{out}"
+        );
+        assert!(
+            out.contains("if let Some(value) = Some(self.payable_amount.unwrap_or_default()) {"),
+            "arithmetic yields an Option, `None` on overflow: {out}"
+        );
+        assert!(
+            !out.contains("mismatches.push("),
+            "neither a `value` rule nor a `check = \"off\"` rule is checked: {out}"
+        );
         syn::parse_file(&out).expect("valid Rust");
     }
 

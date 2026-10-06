@@ -230,7 +230,7 @@ file = "testfiles/xrechnung-3.0.2-beispiel.xml"
 | Field | Required | Purpose |
 |-------|----------|---------|
 | `doc_format` | ✅ | Logical id; becomes the `Spoke` name and module slug |
-| `format_version` | ✅ | Format version string |
+| `format_version` | ✅ | Format version string; also qualifies the `Spoke` name and slug when several versions share a `doc_format` |
 | `mapping_version` | ✅ | Version of this mapping file |
 | `canonical_model` | ✅ | Canonical model id this mapping targets |
 | `root` | — | Root element/struct name (default `Root`) |
@@ -251,6 +251,17 @@ mapping file; it guards callers that supply source metadata separately.)
 Duplicate mapping ids or slugs across
 files, and unknown or cyclic `inherits` targets, fail the load before
 compilation starts.
+
+Several mappings may share a `doc_format` with different `format_version`s,
+one per version of the format (`xrechnung-invoice` 3.0.2 and 3.1). Each is a
+spoke of its own: the slug and `Spoke` variant then carry the version
+(`xrechnung_invoice_v3_0_2`, `XrechnungInvoiceV3_0_2`); a `doc_format` with
+one emitted version keeps the plain ones. Their documents must differ in
+[identity](#document-identity--auto-detection) (E121), and a newer version
+can `inherits` the older one and restate only what changed. Where a mapping
+names another by bare `doc_format` (a sample's `source`), that name must then
+be a full mapping id (`xrechnung-invoice:3.1`), since the bare one is
+ambiguous (E101); so must format names given to `krab-cli` and `krab-server`.
 
 ---
 
@@ -797,6 +808,29 @@ each canonical value [`config/derivations.toml`](../derivations.toml)
 defines and the hub lacks. A value the source carries is never replaced, and
 each derived value is reported as a `VALUE_DERIVED` info diagnostic.
 
+A value the source *does* carry is checked against its rule instead. After
+every rule has run, each `sum` / `add` rule whose target is present is
+recomputed from its operands, derived ones included, under the same presence
+conditions as deriving it. A mismatch is reported as `VALUE_INCONSISTENT`
+(`` `PayableAmount` is 999.99 but BR-CO-16 computes 119.00 ``), and the carried
+value is still written unchanged. `check` sets the severity per rule:
+`"warning"` (the default; the transform succeeds), `"error"` (it fails, a
+`422` on the server), or `"off"`. Values compare numerically, so `100.0` and
+`100.00` agree.
+
+Turn `check` off for a rule that restates another rule's equation. The bundled
+file does this for BR-CO-16 solved for the paid amount, which the
+`PayableAmount` rule already checks. That inverse rule is also
+`skip_negative`: a source stating an amount due larger than its total with VAT
+and no paid amount would otherwise get a negative prepayment derived, which
+makes the wrong amount due consistent by construction. Left absent, the
+`PayableAmount` rule reports it.
+
+All sums and arithmetic are computed with checked decimal operations. A
+result outside the decimal range (about ±7.9 × 10²⁸, reachable only by a
+hostile or broken document) derives nothing, and a check that overflows is
+reported as `VALUE_INCONSISTENT` saying the rule cannot be computed.
+
 ```toml
 # BR-CO-10: sum of invoice line net amounts.
 [[derive]]
@@ -835,6 +869,8 @@ unless = ["LineAllowanceChargeReason"]
 | `add` / `subtract` | Root `decimal` keys: the first `add` operand must be present, any other absent operand counts as zero |
 | `requires` | Root keys that must be present for the rule to apply |
 | `skip_zero` | Derive nothing when the result is zero (default `false`) |
+| `skip_negative` | Derive nothing when the result is negative (default `false`) |
+| `check` | `sum` / `add` only: how a carried value that contradicts the rule is reported, `"warning"` (default), `"error"` or `"off"` |
 | `value` | A literal set on the target (on every item matching `where`) when neither it nor any `unless` key is present |
 | `where` | `{ Key = "literal" }`: an item filter on another key of the item |
 | `unless` | Keys whose presence (on the item) suppresses a `value` |
@@ -1238,6 +1274,6 @@ Validation reports **every** problem in one run, never just the first error.
 
 Runtime (per-document) diagnostics — missing required values, type validation
 failures, taken fallbacks, `CLONE_MISMATCH`, `CODEC_INVALID`,
-`CODEC_WIRE_MISMATCH`, `MATCH_MULTIPLE`, `VALUE_DERIVED` — are reported with severity and a
+`CODEC_WIRE_MISMATCH`, `MATCH_MULTIPLE`, `VALUE_DERIVED`, `VALUE_INCONSISTENT` — are reported with severity and a
 source-node reference when a document is transformed; they never silently
 vanish.

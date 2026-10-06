@@ -45,13 +45,25 @@
 //! A rule only ever fills a key the hub lacks; a value the source carries is
 //! never replaced.
 //!
+//! A `sum` or `add` rule also *checks* a value the hub carries: once every
+//! rule has run, the total is recomputed from its operands (with the same
+//! presence conditions as deriving it) and a mismatch is reported as a
+//! `VALUE_INCONSISTENT` diagnostic. `check` sets its severity: `"warning"`
+//! (default), `"error"` (the transform fails), or `"off"` — for a rule that
+//! restates another one's equation, such as BR-CO-16 solved for the paid
+//! amount. Values compare numerically (`100.0` equals `100.00`).
+//!
 //! - `sum` adds the values of one decimal key across the items of a root
 //!   collection (those matching `where`, an equality on another key of the
 //!   item); with no contributing item it derives nothing.
 //! - `add` / `subtract` computes from root keys: the first `add` operand and
 //!   every `requires` key must be present, any other operand that is absent
 //!   counts as zero. `skip_zero = true` derives nothing when the result is
-//!   zero. Every key involved is a root-scope `decimal`.
+//!   zero, `skip_negative = true` nothing when it is negative. Every key
+//!   involved is a root-scope `decimal`.
+//!
+//! Sums and arithmetic are checked: a result outside the decimal range
+//! derives nothing, and a check that overflows is reported as a mismatch.
 //! - `value` sets a literal on the target — a root key, or an item key named
 //!   by its label (`Collection/…/Key`) on every item matching `where` — when
 //!   neither the target nor any `unless` key of the item is present.
@@ -77,6 +89,18 @@ use crate::hub::{CanonicalModel, CanonicalScope};
 use crate::types::MappingType;
 use crate::validate::constant_literal_error;
 
+/// What a mismatch between a carried value and its rule is reported as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CheckLevel {
+    /// Not checked.
+    Off,
+    /// A warning diagnostic; the transform still succeeds.
+    #[default]
+    Warning,
+    /// An error diagnostic; the transform fails.
+    Error,
+}
+
 /// One derivation rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Derivation {
@@ -87,6 +111,9 @@ pub struct Derivation {
     pub rule: String,
     /// How the value is computed.
     pub kind: DerivationKind,
+    /// How a carried value that contradicts the rule is reported (`sum` and
+    /// `add` rules; always [`CheckLevel::Off`] for `value` rules).
+    pub check: CheckLevel,
 }
 
 /// How a derivation computes its value.
@@ -112,6 +139,8 @@ pub enum DerivationKind {
         requires: Vec<String>,
         /// Whether a zero result derives nothing.
         skip_zero: bool,
+        /// Whether a negative result derives nothing.
+        skip_negative: bool,
     },
     /// A literal for the target on every item satisfying `filter` that has
     /// neither the target nor any `unless` key.
@@ -174,9 +203,13 @@ struct RawDerivation {
     #[serde(default)]
     skip_zero: Option<bool>,
     #[serde(default)]
+    skip_negative: Option<bool>,
+    #[serde(default)]
     value: Option<String>,
     #[serde(default)]
     unless: Option<Vec<String>>,
+    #[serde(default)]
+    check: Option<String>,
 }
 
 /// Parses a derivations file into its rules, in file order.
@@ -185,7 +218,7 @@ struct RawDerivation {
 ///
 /// A TOML error, an unknown field, a rule that declares not exactly one of
 /// `sum`, `add` and `value`, a field beside the wrong kind (`where` on `add`;
-/// `subtract`, `requires`, `skip_zero` off `add`; `unless` off `value`), a
+/// `subtract`, `requires`, `skip_zero`, `skip_negative` off `add`; `unless` off `value`), a
 /// `sum` that is not `Collection/Key`, an empty `add`, or a non-string `where`
 /// value.
 pub fn parse_derivations(src: &str) -> Result<Vec<Derivation>, ConfigError> {
@@ -204,13 +237,33 @@ fn build(raw: RawDerivation) -> Result<Derivation, String> {
     if kinds.iter().filter(|k| **k).count() != 1 {
         return Err("declare exactly one of `sum`, `add` and `value`".to_string());
     }
-    let off_add = raw.subtract.is_some() || raw.requires.is_some() || raw.skip_zero.is_some();
+    let off_add = raw.subtract.is_some()
+        || raw.requires.is_some()
+        || raw.skip_zero.is_some()
+        || raw.skip_negative.is_some();
     if raw.add.is_none() && off_add {
-        return Err("`subtract`, `requires` and `skip_zero` belong to an `add` rule".to_string());
+        return Err(
+            "`subtract`, `requires`, `skip_zero` and `skip_negative` belong to an `add` rule"
+                .to_string(),
+        );
     }
     if raw.value.is_none() && raw.unless.is_some() {
         return Err("`unless` belongs to a `value` rule".to_string());
     }
+    if raw.value.is_some() && raw.check.is_some() {
+        return Err("`check` belongs to a `sum` or `add` rule".to_string());
+    }
+    let check = match raw.check.as_deref() {
+        None if raw.value.is_some() => CheckLevel::Off,
+        None | Some("warning") => CheckLevel::Warning,
+        Some("error") => CheckLevel::Error,
+        Some("off") => CheckLevel::Off,
+        Some(other) => {
+            return Err(format!(
+                "`check = \"{other}\"` must be \"warning\", \"error\" or \"off\""
+            ));
+        }
+    };
     let filter = || -> Result<Vec<(String, String)>, String> {
         let mut out = Vec::new();
         for (k, v) in raw.filter.clone().unwrap_or_default() {
@@ -242,6 +295,7 @@ fn build(raw: RawDerivation) -> Result<Derivation, String> {
             subtract: raw.subtract.clone().unwrap_or_default(),
             requires: raw.requires.clone().unwrap_or_default(),
             skip_zero: raw.skip_zero.unwrap_or(false),
+            skip_negative: raw.skip_negative.unwrap_or(false),
         }
     } else {
         DerivationKind::Value {
@@ -254,6 +308,7 @@ fn build(raw: RawDerivation) -> Result<Derivation, String> {
         key: raw.key,
         rule: raw.rule,
         kind,
+        check,
     })
 }
 
@@ -553,6 +608,47 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_reads_check_levels() {
+        let src = r#"
+            [[derive]]
+            key = "A"
+            rule = "R"
+            sum = "L/X"
+
+            [[derive]]
+            key = "B"
+            rule = "R"
+            add = ["A"]
+            check = "error"
+
+            [[derive]]
+            key = "C"
+            rule = "R"
+            add = ["A"]
+            check = "off"
+
+            [[derive]]
+            key = "L/Y"
+            rule = "R"
+            value = "1"
+        "#;
+        let levels: Vec<_> = parse_derivations(src)
+            .expect("parses")
+            .iter()
+            .map(|r| r.check)
+            .collect();
+        assert_eq!(
+            levels,
+            [
+                CheckLevel::Warning,
+                CheckLevel::Error,
+                CheckLevel::Off,
+                CheckLevel::Off
+            ]
+        );
+    }
+
+    #[test]
     fn test_valid_rules_check_clean() {
         let rules = parse_derivations(RULES).unwrap();
         assert!(check_derivations(&hub(), &rules).is_empty());
@@ -571,7 +667,10 @@ mod tests {
         "belongs to a `sum` or `value`"
     )]
     #[case::subtract_on_sum("sum = \"L/X\"\nsubtract = [\"A\"]", "belong to an `add`")]
+    #[case::skip_negative_on_sum("sum = \"L/X\"\nskip_negative = true", "belong to an `add`")]
     #[case::non_string_where("sum = \"L/X\"\nwhere = { K = true }", "string literal")]
+    #[case::check_on_value("value = \"1\"\ncheck = \"error\"", "belongs to a `sum` or `add`")]
+    #[case::check_unknown("sum = \"L/X\"\ncheck = \"loud\"", "\"warning\", \"error\" or \"off\"")]
     fn test_parse_rejects(#[case] body: &str, #[case] needle: &str) {
         let src = format!("[[derive]]\nkey = \"K\"\nrule = \"R\"\n{body}");
         let err = parse_derivations(&src).unwrap_err();

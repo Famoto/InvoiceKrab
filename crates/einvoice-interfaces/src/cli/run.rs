@@ -10,7 +10,7 @@ use std::path::Path;
 
 use super::{
     Args, CliError, Command, detect_source, format_list, parse_args, render_diagnostics,
-    resolve_spoke, usage,
+    resolve_spoke, usage, version_text,
 };
 use crate::analysis::TransformState;
 use crate::conformance::Xmllint;
@@ -59,6 +59,10 @@ fn dispatch(
         Command::Help => {
             write_all(stdout, usage().as_bytes())?;
             write_all(stdout, b"\n")?;
+            Ok(Vec::new())
+        }
+        Command::Version => {
+            write_all(stdout, version_text("krab-cli").as_bytes())?;
             Ok(Vec::new())
         }
         Command::ListFormats => {
