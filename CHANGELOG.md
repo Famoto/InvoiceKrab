@@ -55,7 +55,12 @@ versioning. The bundled mappings remain demos (see the README's disclaimer).
 - `krab-server` query parameters are URL-decoded (`to=xrechnung-invoice%3A3.0.2`),
   and a repeated parameter is a `400` (#43).
 - Minimum supported Rust version: 1.88 (`rust-version`).
-- The workspace crates are `publish = false`.
+- The workspace crates are `publish = false` and declare
+  `license = "AGPL-3.0-or-later"`.
+- Licensing: KrabInvoice is AGPL-3.0-or-later, except the `config/`
+  directory (demo mappings, codecs, calculation rules), which is now
+  CC0-1.0 (`config/LICENSE`), so mappings derived from the demos carry
+  whatever license their authors choose.
 - `crossbeam-epoch` (benchmark dependency) updated past RUSTSEC-2026-0204.
 
 ### Fixed

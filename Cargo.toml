@@ -12,6 +12,8 @@ edition = "2024"
 # Minimum supported Rust version, checked in CI.
 rust-version = "1.88"
 repository = "https://github.com/Famoto/InvoiceKrab"
+# The code; the bundled `config/` is CC0-1.0 (config/LICENSE).
+license = "AGPL-3.0-or-later"
 # Built from source with the user's own mappings (see README); never
 # published to a registry.
 publish = false

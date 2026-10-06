@@ -29,8 +29,8 @@ allow = [
 confidence-threshold = 0.9
 
 [licenses.private]
-# The workspace crates are not published (`publish = false`); their license
-# is the repository's LICENSE.
+# The workspace crates themselves (AGPL-3.0-or-later, `publish = false`) are
+# not checked against the allow list, which is for dependencies.
 ignore = true
 
 [bans]

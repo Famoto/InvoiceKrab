@@ -41,7 +41,8 @@ deltas — XRechnung and Peppol are a handful of lines on top of UBL.
 > validating every document you produce or accept** with the official tools
 > of the networks and authorities you exchange invoices with. The software is
 > provided without warranty of any kind; see [LICENSE](LICENSE) (AGPL-3.0,
-> sections 15 and 16).
+> sections 15 and 16) and, for the demo mappings, [config/LICENSE](config/LICENSE)
+> (CC0-1.0, section 4).
 
 ---
 
@@ -62,6 +63,7 @@ deltas — XRechnung and Peppol are a handful of lines on top of UBL.
 - [Workspace layout](#workspace-layout)
 - [Developer commands](#developer-commands)
 - [Versioning and stability](#versioning-and-stability)
+- [License](#license)
 
 ---
 
@@ -683,3 +685,34 @@ the changelog.
 
 Every change is listed in [CHANGELOG.md](CHANGELOG.md), DSL changes in a
 section of their own. To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+---
+
+## License
+
+Copyright (C) The KrabInvoice authors.
+
+KrabInvoice is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version (SPDX: `AGPL-3.0-or-later`). It is distributed in the hope that
+it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE)
+for the full text.
+
+**Exception: the `config/` directory is not under the AGPL.** The demo
+mappings, codecs and calculation rules in [config/](config/) are dedicated to
+the public domain under [CC0-1.0](config/LICENSE): copy and adapt them freely,
+with or without attribution, and license the mappings you write — whether from
+scratch or starting from the demos — however you like.
+
+Third-party material is under its own terms: the XSD schemas and sample
+documents in [testfiles/](testfiles/) (see
+[testfiles/xsd/SOURCES.md](testfiles/xsd/SOURCES.md) for their origins).
+
+What this means in practice (a summary, not legal advice): your mapping files
+are yours. The programs and libraries built from KrabInvoice (`krab-cli`,
+`krab-server`, a crate depending on `einvoice-interfaces`) are covered by the
+AGPL, including when you distribute them and, for modified versions, when you
+let others use them over a network (section 13). If that matters for your
+deployment, check it with your own counsel.
