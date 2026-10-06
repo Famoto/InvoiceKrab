@@ -383,7 +383,7 @@ checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
 
 [[package]]
 name = "einvoice-dsl"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "insta",
  "rstest",
@@ -395,7 +395,7 @@ dependencies = [
 
 [[package]]
 name = "einvoice-interfaces"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "compact_str",
@@ -420,7 +420,7 @@ dependencies = [
 
 [[package]]
 name = "einvoice-transformator"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "compact_str",
  "serde",
