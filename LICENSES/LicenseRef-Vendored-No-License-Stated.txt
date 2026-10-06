@@ -1,0 +1,9 @@
+No license stated.
+
+The files carrying this identifier are third-party works that KrabInvoice
+vendors, unmodified, for its schema-conformance tests (see
+testfiles/xsd/SOURCES.md for where each was obtained). Neither the files nor
+the distributions they were taken from state license terms for them. All
+rights remain with their copyright holders; KrabInvoice grants no rights in
+them, and neither the GNU Affero General Public License nor the CC0 1.0
+dedication of this repository applies to them.

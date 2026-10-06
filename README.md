@@ -802,9 +802,15 @@ configuration or the code the build generates from it. Changes to
 KrabInvoice outside the configuration, and programs that link its crates as
 a library, remain fully covered by the AGPL.
 
-Third-party material is under its own terms: the XSD schemas and sample
-documents in [testfiles/](testfiles/) (see
-[testfiles/xsd/SOURCES.md](testfiles/xsd/SOURCES.md) for their origins).
+Third-party material is under its own terms: the XSD schemas in
+[testfiles/xsd/](testfiles/xsd/) (see
+[testfiles/xsd/SOURCES.md](testfiles/xsd/SOURCES.md) for their origins) and
+the OASIS UBL 2.1 example invoice
+([testfiles/UBL-Invoice-2.1.xml](testfiles/UBL-Invoice-2.1.xml)).
+
+Every file's copyright and license are recorded in [REUSE.toml](REUSE.toml)
+([REUSE](https://reuse.software/) 3.3), with the license texts in
+[LICENSES/](LICENSES/); `reuse lint` checks the whole tree, and CI runs it.
 
 What this means in practice (a summary, not legal advice): your mapping files
 are yours, in source form and compiled into a build. The programs and libraries built from KrabInvoice (`krab-cli`,

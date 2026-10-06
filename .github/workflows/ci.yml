@@ -54,6 +54,25 @@ jobs:
       - name: Build with a custom mapping configuration
         run: scripts/check-custom-config.sh
 
+  reuse:
+    name: Licensing (REUSE)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install reuse
+        run: pipx install reuse==6.2.0
+
+      - name: Every file carries copyright and license information
+        run: reuse lint
+
+      - name: The license texts in LICENSES/ match the top-level copies
+        run: |
+          cmp LICENSE LICENSES/AGPL-3.0-or-later.txt
+          cmp LICENSE-EXCEPTION LICENSES/LicenseRef-KrabInvoice-Configuration-Exception.txt
+
   msrv:
     name: Minimum supported Rust version
     runs-on: ubuntu-24.04

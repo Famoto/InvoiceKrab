@@ -1,0 +1,80 @@
+# Copyright and licensing of every file in this repository, in the REUSE
+# format (https://reuse.software/spec-3.3/). The license texts are in
+# LICENSES/; check the whole tree with `reuse lint`.
+#
+# Later annotations override earlier ones for the files they match. The
+# third-party files under testfiles/ are annotated here rather than in their
+# own headers, so they stay byte-for-byte as vendored (see
+# testfiles/xsd/SOURCES.md and SHA256SUMS).
+version = 1
+
+# KrabInvoice itself: AGPL-3.0-or-later with the KrabInvoice Configuration
+# Exception (LICENSE-EXCEPTION).
+[[annotations]]
+path = "**"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 The KrabInvoice authors"
+SPDX-License-Identifier = "AGPL-3.0-or-later WITH LicenseRef-KrabInvoice-Configuration-Exception"
+
+# The demo configuration: public domain (config/LICENSE).
+[[annotations]]
+path = "config/**"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 The KrabInvoice authors"
+SPDX-License-Identifier = "CC0-1.0"
+
+# OASIS UBL 2.1 schemas (vendored unmodified).
+[[annotations]]
+path = [
+    "testfiles/xsd/ubl-2.1/common/UBL-*-2.1.xsd",
+    "testfiles/xsd/ubl-2.1/maindoc/*.xsd",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2013 OASIS Open"
+SPDX-License-Identifier = "LicenseRef-OASIS-IPR"
+
+# The OASIS UBL 2.1 example invoice, with namespace declarations and a
+# PartyName added by KrabInvoice.
+[[annotations]]
+path = "testfiles/UBL-Invoice-2.1.xml"
+precedence = "override"
+SPDX-FileCopyrightText = ["2013 OASIS Open", "2026 The KrabInvoice authors"]
+SPDX-License-Identifier = "LicenseRef-OASIS-IPR"
+
+# The UN/CEFACT core component types module of UBL 2.1.
+[[annotations]]
+path = "testfiles/xsd/ubl-2.1/common/CCTS_CCT_SchemaModule-2.1.xsd"
+precedence = "override"
+SPDX-FileCopyrightText = "2006 UN/CEFACT"
+SPDX-License-Identifier = "LicenseRef-UNCEFACT-IPR"
+
+# W3C XML Signature schema, as shipped with UBL 2.1 and FatturaPA.
+[[annotations]]
+path = [
+    "testfiles/xsd/ubl-2.1/common/UBL-xmldsig-core-schema-2.1.xsd",
+    "testfiles/xsd/fatturapa-1.2.2/xmldsig-core-schema.xsd",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2001 The Internet Society and W3C (Massachusetts Institute of Technology, Institut National de Recherche en Informatique et en Automatique, Keio University)"
+SPDX-License-Identifier = "W3C-19980720"
+
+# ETSI XAdES schemas, as shipped with UBL 2.1: no license stated.
+[[annotations]]
+path = "testfiles/xsd/ubl-2.1/common/UBL-XAdESv1*-2.1.xsd"
+precedence = "override"
+SPDX-FileCopyrightText = ["ETSI", "2013 OASIS Open"]
+SPDX-License-Identifier = "LicenseRef-Vendored-No-License-Stated"
+
+# Factur-X 1.09 EN 16931 schemas (FNFE-MPE and FeRD): no license stated.
+[[annotations]]
+path = "testfiles/xsd/facturx-en16931/*.xsd"
+precedence = "override"
+SPDX-FileCopyrightText = "FNFE-MPE and FeRD"
+SPDX-License-Identifier = "LicenseRef-Vendored-No-License-Stated"
+
+# FatturaPA 1.2.2 schema (Agenzia delle Entrate): no license stated.
+[[annotations]]
+path = "testfiles/xsd/fatturapa-1.2.2/Schema_del_file_xml_FatturaPA_v1.2.2.xsd"
+precedence = "override"
+SPDX-FileCopyrightText = "Agenzia delle Entrate"
+SPDX-License-Identifier = "LicenseRef-Vendored-No-License-Stated"

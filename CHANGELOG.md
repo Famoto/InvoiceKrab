@@ -15,6 +15,10 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   own configuration directory is not a modification of KrabInvoice, and that
   configuration and the code generated from it need not be part of the
   Corresponding Source.
+- Licensing: the repository is [REUSE](https://reuse.software/) 3.3
+  compliant. `REUSE.toml` records every file's copyright and license,
+  including the vendored third-party schemas, and `LICENSES/` holds the
+  license texts; CI and pre-commit run `reuse lint`.
 
 ### Documentation
 
