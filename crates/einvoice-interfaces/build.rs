@@ -332,15 +332,14 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
         let schema = match &spoke.schema {
             None => "None".to_string(),
             Some(schema) => format!(
-                "Some(&crate::conformance::Schema {{ xsd: {:?}, catalog: {}, known_gaps: &[{}], refuses: &[{}], schematron: &[{}] }})",
+                "Some(&crate::conformance::Schema {{ xsd: {:?}, catalog: {}, known_gaps: &[{}], refuses: &[{}] }})",
                 schema.xsd,
                 match &schema.catalog {
                     Some(catalog) => format!("Some({catalog:?})"),
                     None => "None".to_string(),
                 },
                 str_list(&schema.known_gaps),
-                str_list(&schema.refuses),
-                str_list(&schema.schematron)
+                str_list(&schema.refuses)
             ),
         };
         let _ = writeln!(out, "            Spoke::{} => {schema},", spoke.variant);

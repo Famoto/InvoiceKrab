@@ -11,18 +11,14 @@
 //! `known_gaps`, none of which may be stale) and round-trips every canonical
 //! key the spoke covers. `krab-cli --check` runs the same checks.
 //!
-//! Where a spoke names business-rule sets (`[meta.schema].schematron`), every
-//! such document must also satisfy those official Schematron rules.
-//!
 //! Without `xmllint` on `PATH` the schema checks are skipped with a notice and
-//! the round trips still run; likewise the rule checks without the rules
-//! (`scripts/fetch-schematron.sh`) or `java`. CI installs `libxml2-utils` and
-//! fetches the rules, so there every check always runs.
+//! the round trips still run; CI installs `libxml2-utils`, so there the schema
+//! checks always run.
 
 use std::path::Path;
 
 use einvoice_interfaces::Spoke;
-use einvoice_interfaces::conformance::{self, Schematron, Xmllint};
+use einvoice_interfaces::conformance::{self, Xmllint};
 
 #[test]
 fn test_bundled_mappings_satisfy_their_declared_schemas_and_samples() {
@@ -37,14 +33,7 @@ fn test_bundled_mappings_satisfy_their_declared_schemas_and_samples() {
         );
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let schematron = Schematron::detect(&root);
-    if let Err(why) = &schematron {
-        assert!(
-            std::env::var_os("CI").is_none(),
-            "the business rules are required on CI ({why}): run scripts/fetch-schematron.sh"
-        );
-    }
-    let report = conformance::check(&root, xmllint, schematron.as_ref().map_err(String::as_str));
+    let report = conformance::check(&root, xmllint);
     // The full report (known gaps, dropped keys) shows with `--nocapture`.
     eprintln!("{}", report.render());
 

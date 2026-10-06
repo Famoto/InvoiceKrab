@@ -58,8 +58,8 @@ catalog = "testfiles/xsd/fatturapa-1.2.2/catalog.xml"
 refuses = ["testfiles/UBL-Invoice-2.1.xml"]
 
 # The full EN 16931 invoice (as testfiles/en16931-full-ubl.xml) as FatturaPA
-# states it: read back into EN 16931 it must satisfy the EN 16931 rules again,
-# with the totals FatturaPA does not state derived (config/derivations.toml).
+# states it: written into the other formats, the totals FatturaPA does not
+# state are derived (config/derivations.toml).
 [[meta.samples]]
 file = "testfiles/en16931-full-fatturapa.xml"
 

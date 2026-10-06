@@ -75,6 +75,7 @@ use serde::Deserialize;
 use crate::error::{ConfigError, Diagnostic, Severity};
 use crate::hub::{CanonicalModel, CanonicalScope};
 use crate::types::MappingType;
+use crate::validate::constant_literal_error;
 
 /// One derivation rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -385,22 +386,30 @@ pub fn check_derivations(hub: &CanonicalModel, derivations: &[Derivation]) -> Ve
                 let scope = scope_of(hub, &collections);
                 match scope.as_ref().and_then(|s| hub.get(s, key)) {
                     Some(f) if !f.is_collection => {
-                        let fits = match f.ty {
-                            MappingType::Decimal => {
-                                value.parse::<f64>().is_ok() && !value.contains(['e', 'E'])
-                            }
-                            ty => literal_fits(ty, value),
-                        };
-                        if !fits {
+                        // The literal is emitted into generated code and
+                        // parsed there, so it must pass the same check as a
+                        // `constant` (a plain decimal: no `NaN`, no exponent).
+                        if let Some(reason) = constant_literal_error(f.ty, value) {
                             err(
                                 "E114",
-                                format!("`value = \"{value}\"` does not fit the `{}` key", f.ty),
+                                format!(
+                                    "`value = \"{value}\"` does not fit the `{}` key: {reason}",
+                                    f.ty
+                                ),
                             );
                         }
                     }
                     _ => err("E110", format!("`{}` is not a scalar canonical key", d.key)),
                 }
-                if let Some(scope) = &scope {
+                if collections.is_empty() && !filter.is_empty() {
+                    err(
+                        "E112",
+                        format!(
+                            "`where` filters the items of a collection; `{}` is a root key",
+                            d.key
+                        ),
+                    );
+                } else if let Some(scope) = &scope {
                     let unless: Vec<&str> = unless.iter().map(String::as_str).collect();
                     let owner = collections.join("/");
                     check_item_keys(hub, scope, filter, &unless, &owner, &mut err);
@@ -638,6 +647,22 @@ mod tests {
     #[case::bad_literal(
         "E114",
         "key = \"DocumentAllowanceCharges/ChargeIndicator\"\nrule = \"R\"\nvalue = \"maybe\""
+    )]
+    #[case::nan_decimal(
+        "E114",
+        "key = \"DocumentAllowanceCharges/AllowanceChargeAmount\"\nrule = \"R\"\nvalue = \"NaN\""
+    )]
+    #[case::infinite_decimal(
+        "E114",
+        "key = \"DocumentAllowanceCharges/AllowanceChargeAmount\"\nrule = \"R\"\nvalue = \"inf\""
+    )]
+    #[case::exponent_decimal(
+        "E114",
+        "key = \"DocumentAllowanceCharges/AllowanceChargeAmount\"\nrule = \"R\"\nvalue = \"1e3\""
+    )]
+    #[case::where_on_root_target(
+        "E112",
+        "key = \"InvoiceNumber\"\nrule = \"R\"\nvalue = \"x\"\nwhere = { InvoiceNumber = \"a\" }"
     )]
     #[case::bad_unless(
         "E112",

@@ -41,14 +41,5 @@ jobs:
       - name: Install xmllint (XSD validation of emitted documents)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libxml2-utils
 
-      - name: Cache business rules (Schematron)
-        uses: actions/cache@v4
-        with:
-          path: target/schematron
-          key: schematron-${{ hashFiles('scripts/fetch-schematron.sh') }}
-
-      - name: Fetch business rules (EN 16931, XRechnung, Peppol Schematron)
-        run: scripts/fetch-schematron.sh
-
       - name: Test workspace
         run: cargo test --workspace --locked

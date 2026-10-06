@@ -967,10 +967,6 @@ no output test has to be written or kept in step with the TOML by hand.
 ```toml
 [meta.schema]
 xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
-schematron = [
-    "en16931/EN16931-UBL-validation.xslt",
-    "xrechnung/XRechnung-UBL-validation.xslt",
-]
 refuses = ["testfiles/en16931-full-fatturapa.xml"]
 
 [[meta.samples]]
@@ -983,21 +979,19 @@ source = "xrechnung-invoice"     # optional: the spoke that reads it
 | `schema.xsd` | ✅ | The root XSD |
 | `schema.catalog` | — | An XML catalog resolving the schema's remote imports offline (passed as `XML_CATALOG_FILES`) |
 | `schema.known_gaps` | — | Substring patterns of the schema errors the spoke's output is documented to still produce |
-| `schema.schematron` | — | The official business-rule sets (compiled Schematron) its documents must satisfy, relative to the rules directory (see below) |
 | `schema.refuses` | — | Samples the spoke is documented to refuse: their data cannot be represented in its format |
 | `samples.file` | ✅ | A sample document |
 | `samples.source` | — | The spoke that reads the sample, as a mapping id or a bare `doc_format`; default: the declaring mapping |
 
-Every path is relative to the workspace root (the parent of `config/`),
-except `schematron`'s (see below). A
+Every path is relative to the workspace root (the parent of `config/`). A
 path that names no file fails the build (E100), and so does a sample no
 spoke reads: a `source` naming no emitted spoke, or a sample on an
 inherit-only base without a `source` (E101).
 
 `[meta.schema]` is inherited like the namespace entries, so a CIUS validates
 against the schema its base declares; a child's own table replaces the
-parent's whole, which is how XRechnung and Peppol add their own rule sets and
-refusals to the UBL 2.1 schema [ubl.toml](ubl.toml) declares. Samples are
+parent's whole, which is how XRechnung and Peppol add their own refusals to
+the UBL 2.1 schema [ubl.toml](ubl.toml) declares. Samples are
 never inherited: each runs once, read by its spoke.
 
 ### What gets verified
@@ -1005,16 +999,14 @@ never inherited: each runs once, read by its spoke.
 For every sample `D`, read by its spoke `R`, and every spoke `S` with a
 `[meta.schema]`:
 
-1. **Sample validity** — `D` validates against `R`'s XSD, satisfies `R`'s
-   business rules, and `R` reads it without error diagnostics. A broken
+1. **Sample validity** — `D` validates against `R`'s XSD, and `R` reads it
+   without error diagnostics. A broken
    fixture fails here, at the fixture; its pairs are not run.
 2. **Emitted validity** — `D` read by `R` and written by `S` validates against
-   `S`'s XSD, up to `S`'s `known_gaps`, and satisfies `S`'s business rules.
+   `S`'s XSD, up to `S`'s `known_gaps`.
    Every schema error must match a gap pattern, and every pattern must still
    match an error of some document `S` wrote: a stale pattern fails, so the
    lists only ever shrink. A sample has no gaps; it must validate outright.
-   A business rule has no gaps either: every failed assertion flagged
-   `fatal` or `error` fails (warnings are advice).
    When `D` is in `S`'s `refuses`, the write must instead end in error
    diagnostics (`REQUIRED_MISSING` naming what the sample lacks,
    `CODEC_INVALID` naming what the format cannot hold), which are reported;
@@ -1030,23 +1022,13 @@ Validation runs `xmllint --noout --nonet --schema <xsd>`. Without `xmllint`
 on `PATH` the schema checks are skipped with a notice and the round trips
 still run; CI installs `libxml2-utils`, so there they always run.
 
-The business rules are the official ones, compiled from Schematron to XSLT:
-CEN EN 16931 1.3.16 (UBL and CII), KoSIT XRechnung 3.0.2 and OpenPeppol BIS
-Billing 3.0 (2026.5). They are fetched, not vendored:
-`scripts/fetch-schematron.sh` downloads them, pinned by version and SHA-256,
-with Saxon-HE into `target/schematron/` (or the directory `KRAB_SCHEMATRON`
-names), and `schematron` paths are relative to that directory. Each rule set
-runs once per check, over every document it applies to. Without the
-directory or `java`, the rule checks are skipped with a notice; CI fetches
-the rules, so there they always run.
-
 The checks run in `cargo test` (`crates/einvoice-interfaces/tests/xsd_validation.rs`)
 and on demand, with the report, as `krab-cli --check [ROOT]`:
 
 ```text
 sample testfiles/en16931-full-fatturapa.xml (read by fatturapa:1.2.2)
   valid against testfiles/xsd/fatturapa-1.2.2/Schema_del_file_xml_FatturaPA_v1.2.2.xsd
-  -> facturx-invoice:1.0: ok (valid, 1 rule set(s) satisfied, 45 key(s) round-trip)
+  -> facturx-invoice:1.0: ok (valid, 45 key(s) round-trip)
        derived: InvoiceTotalWithoutVat: written as ["200.00"]
        …
   -> xrechnung-invoice:3.0.2: ok (refused, as declared)
@@ -1055,7 +1037,9 @@ sample testfiles/en16931-full-fatturapa.xml (read by fatturapa:1.2.2)
 ```
 
 The mapping stays the source of truth for element order and cardinalities;
-the schema and the business rules are the oracles that check them.
+the schema is the oracle that checks them. Business rules (EN 16931
+Schematron and the CIUS rule sets) are not run by this check; validate with
+them as your own toolchain provides.
 
 ---
 
@@ -1148,7 +1132,7 @@ needed), and the schema verdict on your declared samples:
 ```bash
 krab-cli --keys <your-format>    # covered vs. unused canonical keys
 krab-cli --analyze <your-format> # which conversions lose data, and what
-krab-cli --check                 # XSD validity, business rules and round trips (see Schema conformance)
+krab-cli --check                 # XSD validity and round trips (see Schema conformance)
 ```
 
 Validation reports **every** problem in one run, never just the first error.

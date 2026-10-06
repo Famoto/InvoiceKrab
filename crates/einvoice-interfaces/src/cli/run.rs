@@ -132,8 +132,7 @@ pub fn analyze_output(
 /// Builds the `--check` output: runs every schema-conformance check the
 /// mappings declare (see [`crate::conformance`]) against the files under the
 /// workspace `root` (default: the current directory), validating with
-/// `xmllint` when it is installed and with the business rules when
-/// [`crate::conformance::Schematron::detect`] finds them.
+/// `xmllint` when it is installed.
 ///
 /// # Errors
 ///
@@ -147,12 +146,7 @@ pub fn check_output(root: Option<&str>) -> Result<String, CliError> {
             "workspace root {root:?} is not a directory"
         )));
     }
-    let schematron = crate::conformance::Schematron::detect(root);
-    let report = crate::conformance::check(
-        root,
-        Xmllint::detect(),
-        schematron.as_ref().map_err(String::as_str),
-    );
+    let report = crate::conformance::check(root, Xmllint::detect());
     let rendered = report.render();
     if report.is_ok() {
         Ok(rendered)

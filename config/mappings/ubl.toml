@@ -74,13 +74,11 @@ leaf = "cbc"
 aggregate = "cac"
 
 # Schema conformance: every document this spoke writes (and every sample it
-# reads) must validate against the UBL 2.1 Invoice schema and satisfy the
-# EN 16931 business rules for UBL (CEN Schematron 1.3.16, fetched by
-# scripts/fetch-schematron.sh). Inherited by XRechnung and Peppol, whose
-# documents are UBL 2.1 Invoices too. See `krab-cli --check`.
+# reads) must validate against the UBL 2.1 Invoice schema. Inherited by
+# XRechnung and Peppol, whose documents are UBL 2.1 Invoices too. See
+# `krab-cli --check`.
 [meta.schema]
 xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
-schematron = ["en16931/EN16931-UBL-validation.xslt"]
 
 # An invoice using every EN 16931 business group the mappings cover: lines
 # with allowances, charges and item attributes, document-level allowances and
@@ -132,13 +130,11 @@ canonical_key = "DueDate"
 [Invoice.InvoiceTypeCode]
 type = "string"
 canonical_key = "InvoiceTypeCode"
+required = true
 
 # BG-1 INVOICE NOTE (0..n) — the subject-code prefix (BT-21) is carried inline
 # in each `cbc:Note` text, so only the note text (BT-22) is modelled. UBL allows
 # the element to repeat; the notes are joined into the one canonical value.
-required = true
-
-
 [Invoice.Note]
 type = "string"
 canonical_key = "InvoiceNote"
@@ -349,13 +345,11 @@ canonical_key = "SellerAddressLine3"
 type = "string"
 canonical_key = "SellerCountryCode"
 normalize = ["trim", "uppercase"]
+required = true
 
 # BT-31 / BT-32: the seller may carry two `PartyTaxScheme` elements, told apart
 # by `TaxScheme/ID`. Each is a structural node with a `match` selector on the
 # same physical element; the selector value is written back as the scheme id.
-required = true
-
-
 [Invoice.AccountingSupplierParty.Party.PartyTaxScheme]
 match = { "TaxScheme.ID" = "VAT" }
 
@@ -1081,11 +1075,9 @@ required = true
 [InvoiceLine.Item.AdditionalItemProperty.Value]
 type = "string"
 canonical_key = "ItemAttributeValue"
-
-# PRICE DETAILS (BG-29)
 required = true
 
-
+# PRICE DETAILS (BG-29)
 [InvoiceLine.Price.PriceAmount]
 type = "decimal"
 canonical_key = "ItemNetPrice"

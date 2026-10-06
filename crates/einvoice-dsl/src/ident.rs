@@ -88,13 +88,14 @@ pub(crate) fn escape_keyword(s: String) -> String {
 }
 
 /// Whether `s` is an XML `NCName`: a non-colonized name, starting with a letter
-/// or `_`, continuing with letters, digits, `-`, `.` or `_`. (Letters are
-/// Unicode alphabetic characters; the full XML production also admits a few
-/// combining ranges no invoice format uses.)
+/// or `_`, continuing with letters, ASCII digits, `-`, `.` or `_`. (Letters
+/// are Unicode alphabetic characters; the full XML production also admits
+/// other digits, a few combining ranges, and symbols such as `²` that no
+/// invoice format uses and that would not survive into a Rust field name.)
 pub fn is_xml_name(s: &str) -> bool {
     let mut chars = s.chars();
     chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
-        && chars.all(|c| c.is_alphanumeric() || matches!(c, '-' | '.' | '_'))
+        && chars.all(|c| c.is_alphabetic() || c.is_ascii_digit() || matches!(c, '-' | '.' | '_'))
 }
 
 /// Whether `s` is a well-formed canonical key: ASCII `PascalCase` (an upper-case
@@ -138,6 +139,9 @@ mod tests {
     #[case("a b", false)]
     #[case("cbc:ID", false)]
     #[case("bad<>", false)]
+    #[case("a2", true)]
+    #[case("a²", false)]
+    #[case("x٣", false)]
     fn test_is_xml_name(#[case] s: &str, #[case] ok: bool) {
         assert_eq!(is_xml_name(s), ok, "{s:?}");
     }

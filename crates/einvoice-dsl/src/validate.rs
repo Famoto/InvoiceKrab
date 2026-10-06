@@ -352,7 +352,7 @@ fn check_constant(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
 /// catching typos at compile time, not re-implementing the runtime validators.
 //  currency = 3 uppercase letters, date = digit/dash shape; wire the
 // runtime `validate` helpers in if a real code table is ever needed.
-fn constant_literal_error(ty: MappingType, value: &str) -> Option<String> {
+pub(crate) fn constant_literal_error(ty: MappingType, value: &str) -> Option<String> {
     if value.trim().is_empty() {
         return Some("it is empty".to_string());
     }
@@ -406,8 +406,11 @@ fn is_iso_date(s: &str) -> bool {
         && two_digits(b, 8).is_some_and(|d| (1..=31).contains(&d))
 }
 
-/// An [`is_iso_date`] date, `T`, an in-range `hh:mm:ss`, then nothing, `Z`, a
-/// fraction or a zone offset — mirroring the runtime's `validate::is_datetime`.
+/// An [`is_iso_date`] date, `T`, an in-range `hh:mm:ss`, then an optional
+/// fraction (`.` and digits) and an optional zone (`Z` or `±hh:mm`). Every
+/// literal this accepts, the runtime's `validate::is_datetime` accepts too;
+/// a constant is written verbatim, so an incomplete suffix (`…:00+`) is
+/// refused here.
 fn is_iso_datetime(s: &str) -> bool {
     let Some((date, time)) = s.split_once('T') else {
         return false;
@@ -421,9 +424,30 @@ fn is_iso_datetime(s: &str) -> bool {
         && in_range(3, 59)
         && in_range(6, 59);
     // `hms` guarantees bytes 0..8 are ASCII, so slicing at 8 is a char boundary.
-    is_iso_date(date)
-        && hms
-        && matches!(&time[8..], tail if tail.is_empty() || tail == "Z" || tail.starts_with(['.', '+', '-']))
+    is_iso_date(date) && hms && is_datetime_suffix(&time[8..])
+}
+
+/// The part of an ISO date-time after the seconds: `[.digits][Z|±hh:mm]`,
+/// each part optional, the offset at most 14 hours.
+fn is_datetime_suffix(tail: &str) -> bool {
+    let zone = match tail.strip_prefix('.') {
+        Some(rest) => {
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            if digits == 0 {
+                return false;
+            }
+            &rest[digits..]
+        }
+        None => tail,
+    };
+    let b = zone.as_bytes();
+    zone.is_empty()
+        || zone == "Z"
+        || (b.len() == 6
+            && matches!(b[0], b'+' | b'-')
+            && b[3] == b':'
+            && two_digits(b, 1).is_some_and(|h| h <= 14)
+            && two_digits(b, 4).is_some_and(|m| m <= 59))
 }
 
 /// Validates a node's read-side `default`: it fills the node's own hub key, so
@@ -999,6 +1023,12 @@ mod tests {
     #[case::datetime_garbage_time("datetime", "2026-01-01Tgarbage")]
     #[case::datetime_hour_out_of_range("datetime", "2026-01-01T24:00:00")]
     #[case::datetime_bad_tail("datetime", "2026-01-01T10:00:00X")]
+    #[case::datetime_bare_sign("datetime", "2024-01-01T12:00:00+")]
+    #[case::datetime_empty_fraction("datetime", "2024-01-01T12:00:00.")]
+    #[case::datetime_fraction_garbage("datetime", "2024-01-01T12:00:00.5x")]
+    #[case::datetime_short_offset("datetime", "2024-01-01T12:00:00+01")]
+    #[case::datetime_offset_no_colon("datetime", "2024-01-01T12:00:00+0100")]
+    #[case::datetime_offset_too_far("datetime", "2024-01-01T12:00:00+15:00")]
     #[case::unit_code_too_long("unit_code", "ABCD")]
     #[case::unit_code_symbol("unit_code", "m²")]
 
@@ -1051,6 +1081,8 @@ mod tests {
     #[case::datetime("datetime", "2024-01-01T10:00:00")]
     #[case::datetime_zulu("datetime", "2024-01-01T23:59:59Z")]
     #[case::datetime_fraction_offset("datetime", "2024-01-01T10:00:00.5+01:00")]
+    #[case::datetime_fraction_zulu("datetime", "2024-01-01T10:00:00.123Z")]
+    #[case::datetime_negative_offset("datetime", "2024-01-01T10:00:00-05:30")]
     #[case::date_day_31("date", "2024-12-31")]
     #[case::unit_code("unit_code", "C62")]
     fn test_valid_constant_literal_is_clean(#[case] ty: &str, #[case] value: &str) {

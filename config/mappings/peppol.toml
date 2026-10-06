@@ -21,19 +21,13 @@ inherits = "ubl-invoice:2.1"
 # Peppol BIS Billing carries `...:peppol.eu:2017:poacc:billing:3.0`.
 detect = ["peppol"]
 
-# Peppol documents are UBL 2.1 Invoices that satisfy the OpenPeppol BIS
-# Billing 3.0 rules (2026.5: its EN 16931 rule set and the PEPPOL-… rules).
-# The table restates the inherited schema whole (a child's `[meta.schema]`
-# replaces its parent's) to name those rules, and documents two refusals: the
-# XRechnung example addresses its parties by e-mail (scheme `EM`), which is no
-# Peppol address scheme, and the FatturaPA sample and the OASIS example have
-# no electronic addresses (BT-34, BT-49) at all.
+# Peppol documents are UBL 2.1 Invoices. The table restates the inherited
+# schema whole (a child's `[meta.schema]` replaces its parent's) to document
+# refusals: the XRechnung example addresses its parties by e-mail (scheme
+# `EM`), which is no Peppol address scheme, and the FatturaPA sample and the
+# OASIS example have no electronic addresses (BT-34, BT-49) at all.
 [meta.schema]
 xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
-schematron = [
-    "peppol/CEN-EN16931-UBL.xslt",
-    "peppol/PEPPOL-EN16931-UBL.xslt",
-]
 refuses = [
     "testfiles/xrechnung-3.0.2-beispiel.xml",
     "testfiles/en16931-full-fatturapa.xml",

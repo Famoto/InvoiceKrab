@@ -102,22 +102,18 @@ normalize = ["trim", "empty_as_missing"]
 [CrossIndustryInvoice.ExchangedDocument.TypeCode]
 type = "string"
 canonical_key = "InvoiceTypeCode"
-
-# BT-2 issue date: the text of `IssueDateTime/DateTimeString` (format 102).
 required = true
 
-
+# BT-2 issue date: the text of `IssueDateTime/DateTimeString` (format 102).
 [CrossIndustryInvoice.ExchangedDocument.IssueDateTime.DateTimeString]
 ns = "udt"
 type = "date"
 codec = "cii-date-102"
 canonical_key = "IssueDate"
+required = true
 
 # BG-1 INVOICE NOTE — the subject-code prefix (BT-21) is carried alongside in
 # CII's `IncludedNote/SubjectCode`; only the note text (BT-22) is modelled.
-required = true
-
-
 [CrossIndustryInvoice.ExchangedDocument.IncludedNote.Content]
 type = "string"
 canonical_key = "InvoiceNote"
@@ -185,11 +181,9 @@ required = true
 [CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedTradeProduct.ApplicableProductCharacteristic.Value]
 type = "string"
 canonical_key = "ItemAttributeValue"
-
-# BT-158 classification, BT-159 origin country — follow the attributes in the schema.
 required = true
 
-
+# BT-158 classification, BT-159 origin country — follow the attributes in the schema.
 [CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedTradeProduct.DesignatedProductClassification.ClassCode]
 type = "string"
 canonical_key = "ItemClassificationIdentifier"
@@ -251,13 +245,11 @@ normalize = ["trim"]
 [CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeDelivery.BilledQuantity]
 type = "decimal"
 canonical_key = "Quantity"
+required = true
 
 # --- LINE TRADE SETTLEMENT — LINE VAT (BG-30), period (BT-134/135),
 # net amount (BT-131), object id (BT-128), accounting ref (BT-133),
 # line allowances/charges (BG-27/28) ---
-required = true
-
-
 [CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedLineTradeDelivery.BilledQuantity.unitCode]
 xml = "@unitCode"
 type = "unit_code"
@@ -784,11 +776,9 @@ normalize = ["trim", "uppercase"]
 type = "currency"
 canonical_key = "DocumentCurrency"
 normalize = ["trim", "uppercase"]
-
-# --- PAYEE (BG-10) ---
 required = true
 
-
+# --- PAYEE (BG-10) ---
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.PayeeTradeParty.ID]
 type = "identifier"
 canonical_key = "PayeeIdentifier"
@@ -856,11 +846,9 @@ required = true
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.ApplicableTradeTax.CalculatedAmount]
 type = "decimal"
 canonical_key = "VatCategoryTaxAmount"
-
-# Mandatory tax type code of every VAT breakdown; emitted with the breakdown.
 required = true
 
-
+# Mandatory tax type code of every VAT breakdown; emitted with the breakdown.
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.ApplicableTradeTax.TypeCode]
 type = "identifier"
 constant = "VAT"
@@ -987,11 +975,9 @@ canonical_key = "SumOfAllowancesDocumentLevel"
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.TaxBasisTotalAmount]
 type = "decimal"
 canonical_key = "InvoiceTotalWithoutVat"
-
-# BT-110 tax total (and its optional currency attribute).
 required = true
 
-
+# BT-110 tax total (and its optional currency attribute).
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.TaxTotalAmount]
 type = "decimal"
 canonical_key = "TaxTotalAmount"

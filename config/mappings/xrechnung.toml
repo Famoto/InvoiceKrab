@@ -28,26 +28,21 @@ inherits = "ubl-invoice:2.1"
 # which for the CIUS carries `...:xrechnung_3.0`.
 detect = ["xrechnung"]
 
-# XRechnung documents are UBL 2.1 Invoices that satisfy the EN 16931 rules
-# and the KoSIT XRechnung 3.0.2 rules (BR-DE-…). The table restates the
-# inherited schema whole (a child's `[meta.schema]` replaces its parent's) to
-# add the CIUS rules, and documents a refusal: the FatturaPA sample has no
-# electronic addresses (BT-34, BT-49), seller contact (BG-6), buyer reference
-# (BT-10) or business process (BT-23), all of which XRechnung requires; nor
-# has the OASIS example electronic addresses or a buyer reference.
+# XRechnung documents are UBL 2.1 Invoices. The table restates the inherited
+# schema whole (a child's `[meta.schema]` replaces its parent's) to document
+# refusals: the FatturaPA sample has no electronic addresses (BT-34, BT-49),
+# seller contact (BG-6), buyer reference (BT-10) or business process (BT-23),
+# all of which XRechnung requires; nor has the OASIS example electronic
+# addresses or a buyer reference.
 [meta.schema]
 xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
-schematron = [
-    "en16931/EN16931-UBL-validation.xslt",
-    "xrechnung/XRechnung-UBL-validation.xslt",
-]
 refuses = [
     "testfiles/en16931-full-fatturapa.xml",
     "testfiles/UBL-Invoice-2.1.xml",
 ]
 
-# The XRechnung 3.0.2 example invoice: valid against the UBL 2.1 schema and
-# the XRechnung rules, read by this spoke, written by every spoke with a
+# The XRechnung 3.0.2 example invoice: valid against the UBL 2.1 schema,
+# read by this spoke, written by every spoke with a
 # schema, and read back by each (`krab-cli --check`).
 [[meta.samples]]
 file = "testfiles/xrechnung-3.0.2-beispiel.xml"

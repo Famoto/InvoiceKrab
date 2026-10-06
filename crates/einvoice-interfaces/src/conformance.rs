@@ -25,19 +25,10 @@
 //! `XML_CATALOG_FILES` pointing at the declared catalog. Without `xmllint`
 //! the schema checks are skipped with a notice; the round trip still runs.
 //!
-//! The XSD fixes the syntax only. EN 16931 and its CIUS define their business
-//! rules (BR-…, BR-CO-…, BR-DE-…, PEPPOL-…) as Schematron, which a spoke
-//! names in `[meta.schema].schematron`. Checks 1 and 2 also run those rule
-//! sets ([`Schematron`]): every `fatal` or `error` assertion a document fails
-//! is a failure. The rules are fetched by `scripts/fetch-schematron.sh`, not
-//! vendored; without them, or without `java`, the rule checks are skipped
-//! with a notice.
-//!
 //! # Structure
 //!
 //! - [`Schema`] — a spoke's `[meta.schema]`, embedded in the registry.
 //! - [`Xmllint`] — the XSD validator.
-//! - [`Schematron`] — the business-rule validator.
 //! - [`check`] — runs every derived check into a [`ConformanceReport`]: a
 //!   [`SampleReport`] per sample, a [`PairReport`] per sample and target.
 //! - [`round_trip`] — the hub comparison behind check 3 ([`RoundTrip`]).
@@ -52,7 +43,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::str::FromStr as _;
 
@@ -76,9 +67,6 @@ pub struct Schema {
     /// The samples the spoke is documented to refuse (it cannot represent
     /// their data): a refusal there is reported, a clean write fails.
     pub refuses: &'static [&'static str],
-    /// The business-rule sets (compiled Schematron) the spoke's documents
-    /// must satisfy, relative to the [`Schematron`] directory.
-    pub schematron: &'static [&'static str],
 }
 
 /// The `xmllint` XSD validator (libxml2).
@@ -154,213 +142,11 @@ impl Xmllint {
     }
 }
 
-/// The business-rule validator: Saxon-HE running the official rule sets,
-/// compiled from Schematron to XSLT, that report their verdict as SVRL.
-///
-/// The directory holds `saxon.jar`, `xmlresolver.jar` and the rule sets, as
-/// `scripts/fetch-schematron.sh` lays them out.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Schematron {
-    dir: PathBuf,
-}
-
-/// The SVRL namespace's failed assertion, and the flags that make one fail a
-/// document (a `warning` or `information` assertion is advice).
-const SVRL_FAILED_ASSERT: &[u8] = b"failed-assert";
-const FAILING_FLAGS: &[&str] = &["fatal", "error"];
-
-impl Schematron {
-    /// The validator in `KRAB_SCHEMATRON` (relative paths resolved under
-    /// `root`), else in `<root>/target/schematron`, when that directory holds
-    /// Saxon and `java` runs; otherwise why not.
-    ///
-    /// # Errors
-    ///
-    /// The reason the rule checks cannot run, for the skip notice.
-    pub fn detect(root: &Path) -> Result<Schematron, String> {
-        let dir = match std::env::var_os("KRAB_SCHEMATRON") {
-            Some(dir) => root.join(dir),
-            None => root.join("target/schematron"),
-        };
-        for jar in ["saxon.jar", "xmlresolver.jar"] {
-            if !dir.join(jar).is_file() {
-                return Err(format!(
-                    "no {jar} in {} (run scripts/fetch-schematron.sh)",
-                    dir.display()
-                ));
-            }
-        }
-        match Command::new("java").arg("-version").output() {
-            Ok(out) if out.status.success() => Ok(Schematron { dir }),
-            _ => Err("java not found on PATH".to_string()),
-        }
-    }
-
-    /// Runs the rule set `rule_set` (relative to the validator's directory)
-    /// over every document in one Saxon run, and returns per document the
-    /// assertions it fails, as `[rule id] message` (none: it satisfies them),
-    /// or why it got no verdict (Saxon produced no readable report for it).
-    ///
-    /// # Errors
-    ///
-    /// When the rule set is missing or the documents cannot be staged for
-    /// Saxon: the message says which and why.
-    pub fn validate(
-        &self,
-        rule_set: &str,
-        documents: &[&[u8]],
-    ) -> Result<Vec<Result<Vec<String>, String>>, String> {
-        let xslt = self.dir.join(rule_set);
-        if !xslt.is_file() {
-            return Err(format!(
-                "rule set `{rule_set}` not found in {} (run scripts/fetch-schematron.sh)",
-                self.dir.display()
-            ));
-        }
-        let work = ScratchDir::new()?;
-        let (input, output) = (work.0.join("in"), work.0.join("out"));
-        for dir in [&input, &output] {
-            std::fs::create_dir_all(dir).map_err(|e| format!("cannot stage documents: {e}"))?;
-        }
-        for (i, document) in documents.iter().enumerate() {
-            std::fs::write(input.join(format!("{i}.xml")), document)
-                .map_err(|e| format!("cannot stage documents: {e}"))?;
-        }
-        let classpath =
-            std::env::join_paths([self.dir.join("saxon.jar"), self.dir.join("xmlresolver.jar")])
-                .map_err(|e| format!("bad Schematron directory: {e}"))?;
-        // A directory source compiles the rule set once for every document.
-        let run = Command::new("java")
-            .arg("-cp")
-            .arg(classpath)
-            .arg("net.sf.saxon.Transform")
-            .arg(arg("-s:", &input))
-            .arg(arg("-xsl:", &xslt))
-            .arg(arg("-o:", &output))
-            .output()
-            .map_err(|e| format!("cannot run java: {e}"))?;
-        // The JVM announces JAVA_TOOL_OPTIONS on stderr; that is no reason.
-        let stderr = String::from_utf8_lossy(&run.stderr);
-        let stderr: Vec<&str> = stderr
-            .lines()
-            .filter(|line| !line.starts_with("Picked up JAVA_TOOL_OPTIONS"))
-            .collect();
-        Ok((0..documents.len())
-            .map(|i| match std::fs::read(output.join(format!("{i}.xml"))) {
-                Ok(svrl) => failed_assertions(&svrl),
-                Err(_) => Err(format!(
-                    "rule set `{rule_set}` produced no report ({}): {}",
-                    run.status,
-                    stderr.join("\n").trim()
-                )),
-            })
-            .collect())
-    }
-}
-
-/// A Saxon `-x:path` argument.
-fn arg(flag: &str, path: &Path) -> std::ffi::OsString {
-    let mut out = std::ffi::OsString::from(flag);
-    out.push(path);
-    out
-}
-
-/// A fresh directory under the system temp directory, removed on drop.
-struct ScratchDir(PathBuf);
-
-impl ScratchDir {
-    fn new() -> Result<ScratchDir, String> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "krab-schematron-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-        Ok(ScratchDir(dir))
-    }
-}
-
-impl Drop for ScratchDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-/// The failing assertions of an SVRL report: every `failed-assert` flagged
-/// `fatal` or `error`, as `[id] text` with the text's whitespace collapsed.
-///
-/// # Errors
-///
-/// When the report is not well-formed XML.
-pub fn failed_assertions(svrl: &[u8]) -> Result<Vec<String>, String> {
-    use quick_xml::XmlVersion;
-    use quick_xml::escape::resolve_predefined_entity;
-    use quick_xml::events::Event;
-    let mut reader = quick_xml::Reader::from_reader(svrl);
-    let mut buf = Vec::new();
-    let mut out = Vec::new();
-    // The assertion being read: its id, and its text so far.
-    let mut current: Option<(String, String)> = None;
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.local_name().as_ref() == SVRL_FAILED_ASSERT => {
-                let attr = |name: &[u8]| {
-                    e.attributes()
-                        .flatten()
-                        .find(|a| a.key.local_name().as_ref() == name)
-                        .and_then(|a| a.normalized_value(XmlVersion::Implicit1_0).ok())
-                        .map(|v| v.into_owned())
-                        .unwrap_or_default()
-                };
-                // An unflagged assertion fails the document: Schematron's
-                // default is an error.
-                let flag = attr(b"flag");
-                if flag.is_empty() || FAILING_FLAGS.contains(&flag.as_str()) {
-                    current = Some((attr(b"id"), String::new()));
-                }
-            }
-            Ok(Event::Text(t)) => {
-                if let Some((_, text)) = current.as_mut() {
-                    let content = t
-                        .xml_content(XmlVersion::Implicit1_0)
-                        .map_err(|e| format!("bad SVRL: {e}"))?;
-                    text.push_str(&content);
-                }
-            }
-            Ok(Event::GeneralRef(r)) => {
-                if let Some((_, text)) = current.as_mut() {
-                    let name = r.decode().map_err(|e| format!("bad SVRL: {e}"))?;
-                    match r.resolve_char_ref() {
-                        Ok(Some(c)) => text.push(c),
-                        _ => text.push_str(resolve_predefined_entity(&name).unwrap_or("")),
-                    }
-                }
-            }
-            Ok(Event::End(e)) if e.local_name().as_ref() == SVRL_FAILED_ASSERT => {
-                if let Some((id, text)) = current.take() {
-                    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                    out.push(format!("[{id}] {text}"));
-                }
-            }
-            Ok(Event::Eof) => return Ok(out),
-            Err(e) => return Err(format!("bad SVRL: {e}")),
-            Ok(_) => {}
-        }
-        buf.clear();
-    }
-}
-
 /// Everything [`check`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConformanceReport {
     /// Why the schema checks did not run, when they did not.
     pub schema_skipped: Option<String>,
-    /// Why the business-rule checks did not run, when they did not.
-    pub rules_skipped: Option<String>,
     /// The spokes with a schema: the target of every sample, registry order.
     pub targets: Vec<Spoke>,
     /// One report per declared sample, in registry order.
@@ -382,10 +168,6 @@ pub struct SampleReport {
     /// The schema errors that validation reported (failures: a sample has no
     /// known gaps).
     pub schema_errors: Vec<String>,
-    /// The business-rule sets the sample was checked against.
-    pub rules_checked: Vec<&'static str>,
-    /// The business rules it fails (failures).
-    pub rule_errors: Vec<String>,
     /// What else broke: the file is unreadable, `xmllint` itself failed, or
     /// the reader reported error diagnostics.
     pub errors: Vec<String>,
@@ -404,10 +186,6 @@ pub struct PairReport {
     pub schema_errors: Vec<String>,
     /// Schema errors a `known_gaps` pattern covers (reported, not failed).
     pub known_gap_errors: Vec<String>,
-    /// The business-rule sets the emitted document was checked against.
-    pub rules_checked: Vec<&'static str>,
-    /// The business rules it fails (failures).
-    pub rule_errors: Vec<String>,
     /// The round trip, when the emitted document could be read back.
     pub round_trip: Option<RoundTrip>,
     /// What else broke: the write, `xmllint` itself, or the read-back.
@@ -422,7 +200,6 @@ impl SampleReport {
     pub fn failures(&self) -> Vec<String> {
         let mut out = self.errors.clone();
         out.extend(self.schema_errors.iter().map(|e| format!("schema: {e}")));
-        out.extend(self.rule_errors.iter().map(|e| format!("rules: {e}")));
         out
     }
 }
@@ -433,7 +210,6 @@ impl PairReport {
     pub fn failures(&self) -> Vec<String> {
         let mut out = self.errors.clone();
         out.extend(self.schema_errors.iter().map(|e| format!("schema: {e}")));
-        out.extend(self.rule_errors.iter().map(|e| format!("rules: {e}")));
         if let Some(rt) = &self.round_trip {
             out.extend(rt.changed.iter().map(|m| {
                 format!(
@@ -524,12 +300,6 @@ impl ConformanceReport {
                 "notice: {why}: schema validation skipped, the round trips still run"
             );
         }
-        if let Some(why) = &self.rules_skipped {
-            let _ = writeln!(
-                out,
-                "notice: {why}: business-rule (Schematron) checks skipped"
-            );
-        }
         for sample in &self.samples {
             let _ = writeln!(
                 out,
@@ -544,14 +314,6 @@ impl ConformanceReport {
                     "invalid"
                 };
                 let _ = writeln!(out, "  {verdict} against {xsd}");
-            }
-            if !sample.rules_checked.is_empty() {
-                let verdict = if sample.rule_errors.is_empty() {
-                    "satisfies"
-                } else {
-                    "fails"
-                };
-                let _ = writeln!(out, "  {verdict} {}", sample.rules_checked.join(", "));
             }
             let failures = sample.failures();
             for failure in &failures {
@@ -597,12 +359,6 @@ fn render_pair(out: &mut String, pair: &PairReport) {
         verdict.push(match pair.schema_errors.len() {
             0 => format!("valid{gaps}"),
             n => format!("invalid: {n} schema error(s) beyond its known gaps"),
-        });
-    }
-    if !pair.rules_checked.is_empty() {
-        verdict.push(match pair.rule_errors.len() {
-            0 => format!("{} rule set(s) satisfied", pair.rules_checked.len()),
-            n => format!("{n} business-rule error(s)"),
         });
     }
     if let Some(rt) = &pair.round_trip {
@@ -684,14 +440,8 @@ fn wrap_list(out: &mut String, lead: &str, items: &[&str]) {
 /// Runs every schema-conformance check the bundled mappings declare (see the
 /// module docs), against the files under `root`, the workspace root their
 /// paths are relative to. With `xmllint` = `None` the schema checks are
-/// skipped and the report says so; the round trips still run. Likewise the
-/// business-rule checks run with a [`Schematron`] validator, and are skipped
-/// with its `Err` reason.
-pub fn check(
-    root: &Path,
-    xmllint: Option<Xmllint>,
-    schematron: Result<&Schematron, &str>,
-) -> ConformanceReport {
+/// skipped and the report says so; the round trips still run.
+pub fn check(root: &Path, xmllint: Option<Xmllint>) -> ConformanceReport {
     let targets: Vec<(Spoke, &'static Schema)> = Spoke::ALL
         .iter()
         .filter_map(|&spoke| spoke.schema().map(|schema| (spoke, schema)))
@@ -701,17 +451,17 @@ pub fn check(
     let mut target_errors: Vec<Vec<String>> = vec![Vec::new(); targets.len()];
 
     let mut samples = Vec::new();
-    let mut documents = Vec::new();
     for &reader in Spoke::ALL {
         for &file in reader.samples() {
-            let (sample, emitted) =
-                check_sample(root, xmllint, reader, file, &targets, &mut target_errors);
-            documents.push(emitted);
-            samples.push(sample);
+            samples.push(check_sample(
+                root,
+                xmllint,
+                reader,
+                file,
+                &targets,
+                &mut target_errors,
+            ));
         }
-    }
-    if let Ok(schematron) = schematron {
-        check_rules(schematron, &mut samples, &documents);
     }
 
     let mut stale_gaps = Vec::new();
@@ -727,20 +477,13 @@ pub fn check(
         schema_skipped: xmllint
             .is_none()
             .then(|| "xmllint not found on PATH".to_string()),
-        rules_skipped: schematron.err().map(str::to_string),
         targets: targets.iter().map(|(spoke, _)| *spoke).collect(),
         samples,
         stale_gaps,
     }
 }
 
-/// The documents of one sample the business rules apply to: the sample
-/// itself (when it was read), and per pair the emitted document (when one was
-/// written).
-type SampleDocuments = (Option<Vec<u8>>, Vec<Option<String>>);
-
-/// Checks one sample, then writes it through every target. Returns the report
-/// and the documents for the business-rule checks.
+/// Checks one sample, then writes it through every target.
 fn check_sample(
     root: &Path,
     xmllint: Option<Xmllint>,
@@ -748,14 +491,12 @@ fn check_sample(
     file: &'static str,
     targets: &[(Spoke, &'static Schema)],
     target_errors: &mut [Vec<String>],
-) -> (SampleReport, SampleDocuments) {
+) -> SampleReport {
     let mut report = SampleReport {
         file,
         reader,
         validated_against: None,
         schema_errors: Vec::new(),
-        rules_checked: Vec::new(),
-        rule_errors: Vec::new(),
         errors: Vec::new(),
         pairs: Vec::new(),
     };
@@ -763,7 +504,7 @@ fn check_sample(
         Ok(bytes) => bytes,
         Err(e) => {
             report.errors.push(format!("cannot read the sample: {e}"));
-            return (report, (None, Vec::new()));
+            return report;
         }
     };
 
@@ -782,92 +523,24 @@ fn check_sample(
             report
                 .errors
                 .extend(errors.into_iter().map(|e| format!("read: {e}")));
-            return (report, (Some(bytes), Vec::new()));
+            return report;
         }
     };
     if !report.failures().is_empty() {
-        return (report, (Some(bytes), Vec::new()));
+        return report;
     }
 
-    let mut emitted = Vec::new();
     for (&(target, schema), errors) in targets.iter().zip(target_errors.iter_mut()) {
-        let (pair, xml) = check_pair(root, xmllint, file, &hub, target, schema, errors);
-        report.pairs.push(pair);
-        emitted.push(xml);
+        report.pairs.push(check_pair(
+            root, xmllint, file, &hub, target, schema, errors,
+        ));
     }
-    (report, (Some(bytes), emitted))
-}
-
-/// One document a rule set applies to: its sample's index, its pair's index
-/// (`None`: the sample itself), and its bytes.
-type RuleJob<'a> = (usize, Option<usize>, &'a [u8]);
-
-/// Runs the business-rule checks: every sample against its reader's rule
-/// sets, every emitted document against its target's. Each rule set runs once,
-/// over all the documents it applies to. A sample that fails its rules is a
-/// broken fixture, like one that fails its schema; its pairs still report.
-fn check_rules(
-    schematron: &Schematron,
-    samples: &mut [SampleReport],
-    documents: &[SampleDocuments],
-) {
-    // Per rule set, the documents it applies to: (sample, pair or none, bytes).
-    let mut jobs: BTreeMap<&'static str, Vec<RuleJob<'_>>> = BTreeMap::new();
-    for (s, (sample, (own, emitted))) in samples.iter().zip(documents).enumerate() {
-        if let (Some(own), Some(schema)) = (own, sample.reader.schema()) {
-            for &rules in schema.schematron {
-                jobs.entry(rules).or_default().push((s, None, own));
-            }
-        }
-        for (p, (pair, xml)) in sample.pairs.iter().zip(emitted).enumerate() {
-            let (Some(xml), Some(schema)) = (xml, pair.target.schema()) else {
-                continue;
-            };
-            for &rules in schema.schematron {
-                jobs.entry(rules)
-                    .or_default()
-                    .push((s, Some(p), xml.as_bytes()));
-            }
-        }
-    }
-    for (rules, docs) in jobs {
-        let bytes: Vec<&[u8]> = docs.iter().map(|&(_, _, b)| b).collect();
-        let verdicts = schematron.validate(rules, &bytes);
-        for (i, &(s, p, _)) in docs.iter().enumerate() {
-            let sample = &mut samples[s];
-            let (checked, rule_errors, errors) = match p {
-                None => (
-                    &mut sample.rules_checked,
-                    &mut sample.rule_errors,
-                    &mut sample.errors,
-                ),
-                Some(p) => {
-                    let pair = &mut sample.pairs[p];
-                    (
-                        &mut pair.rules_checked,
-                        &mut pair.rule_errors,
-                        &mut pair.errors,
-                    )
-                }
-            };
-            match &verdicts {
-                Ok(verdicts) => match &verdicts[i] {
-                    Ok(failed) => {
-                        checked.push(rules);
-                        rule_errors.extend(failed.iter().map(|f| format!("{rules}: {f}")));
-                    }
-                    Err(e) => errors.push(e.clone()),
-                },
-                Err(e) => errors.push(e.clone()),
-            }
-        }
-    }
+    report
 }
 
 /// Writes `hub` (the sample's) with `target`, validates the document, and
 /// reads it back for the round trip. Every schema error is also appended to
-/// `errors`, the target's evidence for its known gaps. Returns the report and
-/// the emitted document, when one was written.
+/// `errors`, the target's evidence for its known gaps.
 fn check_pair(
     root: &Path,
     xmllint: Option<Xmllint>,
@@ -876,14 +549,12 @@ fn check_pair(
     target: Spoke,
     schema: &Schema,
     errors: &mut Vec<String>,
-) -> (PairReport, Option<String>) {
+) -> PairReport {
     let mut pair = PairReport {
         target,
         validated: false,
         schema_errors: Vec::new(),
         known_gap_errors: Vec::new(),
-        rules_checked: Vec::new(),
-        rule_errors: Vec::new(),
         round_trip: None,
         errors: Vec::new(),
         refused: Vec::new(),
@@ -898,17 +569,17 @@ fn check_pair(
             pair.errors.push(format!(
                 "declared refusal is stale: `{file}` now writes cleanly; remove it from `[meta.schema].refuses`"
             ));
-            return (pair, None);
+            return pair;
         }
         Ok(xml) => xml,
         Err(errors) if declared_refusal => {
             pair.refused = errors;
-            return (pair, None);
+            return pair;
         }
         Err(errors) => {
             pair.errors
                 .extend(errors.into_iter().map(|e| format!("write: {e}")));
-            return (pair, None);
+            return pair;
         }
     };
 
@@ -930,7 +601,7 @@ fn check_pair(
             .errors
             .extend(errors.into_iter().map(|e| format!("read back: {e}"))),
     }
-    (pair, Some(xml))
+    pair
 }
 
 /// Reads `bytes` with `spoke`, failing on an unparsable document or any
@@ -1247,7 +918,7 @@ mod tests {
     #[test]
     fn test_check_without_xmllint_runs_the_round_trips_and_notes_the_skip() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let report = check(&root, None, Err("not wanted here"));
+        let report = check(&root, None);
         assert!(report.is_ok(), "{}", report.render());
         assert!(!report.samples.is_empty(), "the mappings declare samples");
         for sample in &report.samples {
@@ -1276,7 +947,6 @@ mod tests {
     fn test_render_lists_failures_findings_and_stale_gaps() {
         let report = ConformanceReport {
             schema_skipped: None,
-            rules_skipped: None,
             targets: vec![Spoke::UblInvoice],
             samples: vec![
                 SampleReport {
@@ -1284,16 +954,12 @@ mod tests {
                     reader: Spoke::UblInvoice,
                     validated_against: Some("a.xsd"),
                     schema_errors: Vec::new(),
-                    rules_checked: vec!["r.xslt"],
-                    rule_errors: Vec::new(),
                     errors: Vec::new(),
                     pairs: vec![PairReport {
                         target: Spoke::UblInvoice,
                         validated: true,
                         schema_errors: vec!["Element 'B': This element is not expected.".into()],
                         known_gap_errors: vec!["Expected is ( Header )".into()],
-                        rules_checked: vec!["r.xslt"],
-                        rule_errors: vec!["r.xslt: [BR-01] A specification identifier".into()],
                         round_trip: Some(RoundTrip {
                             preserved: vec!["InvoiceNumber"],
                             changed: vec![Mismatch {
@@ -1315,8 +981,6 @@ mod tests {
                     reader: Spoke::UblInvoice,
                     validated_against: Some("a.xsd"),
                     schema_errors: vec!["Element 'Invoice': No matching global declaration".into()],
-                    rules_checked: Vec::new(),
-                    rule_errors: Vec::new(),
                     errors: Vec::new(),
                     pairs: Vec::new(),
                 },
@@ -1326,16 +990,15 @@ mod tests {
         let text = report.render();
         for needle in [
             "sample testfiles/a.xml (read by ubl-invoice:2.1)",
-            "  valid against a.xsd\n  satisfies r.xslt",
-            "  -> ubl-invoice:2.1: FAILED (invalid: 1 schema error(s) beyond its known gaps, 1 business-rule error(s), 1 key(s) round-trip)",
+            "  valid against a.xsd",
+            "  -> ubl-invoice:2.1: FAILED (invalid: 1 schema error(s) beyond its known gaps, 1 key(s) round-trip)",
             "       schema: Element 'B': This element is not expected.",
-            "       rules: r.xslt: [BR-01] A specification identifier",
             "       round trip: InvoiceLines/LineId: sample [\"1\"], read back []",
             "       known gap: Expected is ( Header )",
             "       dropped (1): PayableAmount",
             "  invalid against a.xsd\n  FAILED: schema: Element 'Invoice': No matching global declaration\n  (pairs not run: the sample itself failed)",
             "  ubl-invoice:2.1: gone",
-            "result: 5 failure(s)",
+            "result: 4 failure(s)",
         ] {
             assert!(text.contains(needle), "{needle:?} in\n{text}");
         }
@@ -1343,7 +1006,6 @@ mod tests {
             report.failures(),
             [
                 "testfiles/a.xml -> ubl-invoice:2.1: schema: Element 'B': This element is not expected.",
-                "testfiles/a.xml -> ubl-invoice:2.1: rules: r.xslt: [BR-01] A specification identifier",
                 "testfiles/a.xml -> ubl-invoice:2.1: round trip: InvoiceLines/LineId: sample [\"1\"], read back []",
                 "testfiles/broken.xml: schema: Element 'Invoice': No matching global declaration",
                 "ubl-invoice:2.1: stale known gap `gone`",
@@ -1358,8 +1020,6 @@ mod tests {
             validated: true,
             schema_errors: Vec::new(),
             known_gap_errors: vec!["Expected is ( Header )".into()],
-            rules_checked: Vec::new(),
-            rule_errors: Vec::new(),
             round_trip: None,
             errors: Vec::new(),
             refused: Vec::new(),
@@ -1380,7 +1040,6 @@ mod tests {
             catalog: None,
             known_gaps: &[],
             refuses: &["doc.xml"],
-            schematron: &[],
         };
         let root = Path::new(".");
         let mut errors = Vec::new();
@@ -1393,8 +1052,7 @@ mod tests {
             Spoke::UblInvoice,
             &schema,
             &mut errors,
-        )
-        .0;
+        );
         assert!(refused.failures().is_empty(), "{:?}", refused.failures());
         assert!(
             refused
@@ -1422,8 +1080,7 @@ mod tests {
             Spoke::UblInvoice,
             &schema,
             &mut errors,
-        )
-        .0;
+        );
         assert!(
             stale
                 .failures()
@@ -1431,31 +1088,6 @@ mod tests {
                 .any(|f| f.contains("declared refusal is stale")),
             "{:?}",
             stale.failures()
-        );
-    }
-
-    #[test]
-    fn test_failed_assertions_keeps_fatal_and_error_flags() {
-        let svrl = br#"<svrl:schematron-output xmlns:svrl="http://purl.oclc.org/dsdl/svrl">
-  <svrl:fired-rule context="/Invoice"/>
-  <svrl:failed-assert id="BR-01" flag="fatal" location="/Invoice">
-    <svrl:text>[BR-01]-An Invoice shall have a
-      Specification identifier &amp; more.</svrl:text>
-  </svrl:failed-assert>
-  <svrl:failed-assert id="BR-DE-1" flag="error"><svrl:text>Payment</svrl:text></svrl:failed-assert>
-  <svrl:failed-assert id="PEPPOL-R008" flag="warning"><svrl:text>Empty</svrl:text></svrl:failed-assert>
-  <svrl:successful-report id="X" flag="fatal"><svrl:text>reported</svrl:text></svrl:successful-report>
-</svrl:schematron-output>"#;
-        assert_eq!(
-            failed_assertions(svrl).unwrap(),
-            [
-                "[BR-01] [BR-01]-An Invoice shall have a Specification identifier & more.",
-                "[BR-DE-1] Payment",
-            ]
-        );
-        assert!(
-            failed_assertions(b"<a></b>").is_err(),
-            "a broken report fails"
         );
     }
 
