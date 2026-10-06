@@ -72,8 +72,10 @@ subtract = ["PaidAmount"]
 
 # BR-CO-16 solved for the paid amount: a source stating the amount due and the
 # total with VAT but no prepayment (FatturaPA) carries it implicitly. Only a
-# non-zero prepayment is written. Not checked: it restates the equation of the
-# PayableAmount rule above, which already reports a mismatch.
+# positive prepayment is derived: a negative one would only make a wrong
+# amount due look consistent, so it is left absent and the PayableAmount rule
+# above reports the mismatch. Not checked itself: it restates that rule's
+# equation.
 [[derive]]
 key = "PaidAmount"
 rule = "BR-CO-16"
@@ -81,6 +83,7 @@ add = ["InvoiceTotalWithVat", "RoundingAmount"]
 subtract = ["PayableAmount"]
 requires = ["PayableAmount"]
 skip_zero = true
+skip_negative = true
 check = "off"
 
 # BR-33 / BR-42: an allowance without reason or reason code is a discount, code

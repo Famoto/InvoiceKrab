@@ -45,7 +45,8 @@ the CPU-bound transforms, so it bounds transform parallelism.
 | `GET /analyze[?from=<f>[&to=<f>]][&deny_lossy=1]` | text loss/error matrix, row or pair report (the CLI's `--analyze`); `422` + report when `deny_lossy` and not lossless |
 | `GET /health`                              | `200 ok` — the engine is stateless, alive = healthy |
 
-`krab-server --healthcheck` probes `GET /health` on loopback and exits 0/1 —
+`krab-server --healthcheck` probes `GET /health` on the bound address (see
+*Behavior* below) and exits 0/1 —
 the Docker `HEALTHCHECK` for the `FROM scratch` image, where no curl exists.
 
 ## Behavior

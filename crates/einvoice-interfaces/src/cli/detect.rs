@@ -29,19 +29,21 @@ pub fn resolve_spoke(name: &str) -> Result<Spoke, CliError> {
 
 /// The index in `names` of the display name `name` selects (see
 /// [`resolve_spoke`]).
+///
+/// Every display name `name` matches counts — case-insensitively, in full or
+/// as the bare prefix before the version colon — so a name is refused as
+/// ambiguous whenever it could mean two spokes: two versions sharing a
+/// prefix, a mapping whose display name *is* that bare prefix next to a
+/// versioned one, or two display names differing only in case.
 fn resolve_name(name: &str, names: &[&str]) -> Result<usize, CliError> {
-    if let Some(index) = names
-        .iter()
-        .position(|full| full.eq_ignore_ascii_case(name))
-    {
-        return Ok(index);
-    }
     let versions: Vec<usize> = names
         .iter()
         .enumerate()
         .filter(|(_, full)| {
-            full.split_once(':')
-                .is_some_and(|(prefix, _)| prefix.eq_ignore_ascii_case(name))
+            full.eq_ignore_ascii_case(name)
+                || full
+                    .split_once(':')
+                    .is_some_and(|(prefix, _)| prefix.eq_ignore_ascii_case(name))
         })
         .map(|(index, _)| index)
         .collect();
@@ -52,7 +54,7 @@ fn resolve_name(name: &str, names: &[&str]) -> Result<usize, CliError> {
             names.join(", ")
         ))),
         many => Err(CliError::Usage(format!(
-            "format {name:?} has several versions; name one: {}",
+            "format {name:?} names several formats; name one: {}",
             many.iter()
                 .map(|&index| names[index])
                 .collect::<Vec<_>>()
@@ -321,6 +323,21 @@ mod tests {
             text.contains("xrechnung-invoice:3.0.2, xrechnung-invoice:3.1"),
             "lists the versions: {text}"
         );
+    }
+
+    #[test]
+    fn test_resolve_name_bare_display_name_next_to_a_version_is_ambiguous() {
+        // A mapping whose display name is the bare `foo` (its `source_model`)
+        // and a `foo:2`: `foo` could mean either, so it means neither.
+        let err = resolve_name("foo", &["foo", "foo:2"]).expect_err("ambiguous");
+        assert!(err.to_string().contains("foo, foo:2"), "{err}");
+        assert_eq!(resolve_name("foo:2", &["foo", "foo:2"]).expect("full"), 1);
+    }
+
+    #[test]
+    fn test_resolve_name_names_differing_only_in_case_are_ambiguous() {
+        let err = resolve_name("foo:1", &["Foo:1", "foo:1"]).expect_err("ambiguous");
+        assert_eq!(err.exit_code(), 64);
     }
 
     #[test]

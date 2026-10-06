@@ -1876,7 +1876,11 @@ mod tests {
             out.contains("if self.payable_amount.is_none() && self.payable_amount.is_some() {"),
             "{out}"
         );
-        assert!(out.contains("pub fn check_derived(&self)"), "{out}");
+        assert!(out.contains("pub fn check_derived("), "{out}");
+        assert!(
+            !out.contains("unwrap_or_default() +") && !out.contains("unwrap_or_default() -"),
+            "no unchecked decimal arithmetic: {out}"
+        );
         assert!(
             out.contains(
                 "if let Some(carried) = self.payable_amount && self.payable_amount.is_some() {"
@@ -1912,6 +1916,7 @@ mod tests {
             add = ["PayableAmount"]
             requires = ["PayableAmount"]
             skip_zero = true
+            skip_negative = true
             check = "off"
             "#,
         )
@@ -1929,7 +1934,14 @@ mod tests {
             out.contains("i0.quantity = Some(<Decimal as std::str::FromStr>::from_str(\"1\")"),
             "{out}"
         );
-        assert!(out.contains("if !value.is_zero() {"), "{out}");
+        assert!(
+            out.contains("if !value.is_zero() && !value.is_sign_negative() {"),
+            "{out}"
+        );
+        assert!(
+            out.contains("if let Some(value) = Some(self.payable_amount.unwrap_or_default()) {"),
+            "arithmetic yields an Option, `None` on overflow: {out}"
+        );
         assert!(
             !out.contains("mismatches.push("),
             "neither a `value` rule nor a `check = \"off\"` rule is checked: {out}"

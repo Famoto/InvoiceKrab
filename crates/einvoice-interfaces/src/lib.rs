@@ -188,7 +188,15 @@ impl Engine {
                     severity,
                     "VALUE_INCONSISTENT",
                     rule,
-                    format!("`{label}` is {carried} but {rule} computes {computed}"),
+                    match computed {
+                        Some(computed) => {
+                            format!("`{label}` is {carried} but {rule} computes {computed}")
+                        }
+                        None => format!(
+                            "`{label}` is {carried} but {rule} cannot be computed: \
+                             the result exceeds the decimal range"
+                        ),
+                    },
                 );
                 d.canonical_key = Some(label.to_string());
                 d
@@ -403,6 +411,64 @@ mod tests {
             .map(|d| d.source_node.as_str())
             .collect();
         assert_eq!(rules, ["BR-CO-15"], "{:?}", out.diagnostics);
+    }
+
+    #[test]
+    fn test_wrong_amount_due_without_paid_amount_is_reported() {
+        // No paid amount: BR-CO-16 solved for it would infer -880.99, which
+        // would make the amount due consistent with itself. A negative
+        // prepayment is never derived (`skip_negative`), so the amount due
+        // is checked against the totals and reported.
+        let engine = Engine::new();
+        let mut hub = engine
+            .to_hub(Spoke::UblInvoice, UBL)
+            .unwrap()
+            .value
+            .unwrap();
+        hub.payable_amount = Some(Decimal::from_str("999.99").unwrap());
+        hub.paid_amount = None;
+        let out = engine.from_hub(Spoke::UblInvoice, hub).unwrap();
+        assert!(
+            out.diagnostics
+                .iter()
+                .all(|d| d.canonical_key.as_deref() != Some("PaidAmount")),
+            "no paid amount is derived: {:?}",
+            out.diagnostics
+        );
+        let rules: Vec<_> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "VALUE_INCONSISTENT")
+            .map(|d| d.source_node.as_str())
+            .collect();
+        assert_eq!(rules, ["BR-CO-16"], "{:?}", out.diagnostics);
+    }
+
+    #[test]
+    fn test_totals_beyond_the_decimal_range_are_reported_not_panicking() {
+        // Two line amounts at the decimal maximum: their sum overflows. The
+        // engine must not panic (decimal `+` would): the sum is not derived,
+        // and the carried total cannot be confirmed.
+        let engine = Engine::new();
+        let mut hub = engine
+            .to_hub(Spoke::UblInvoice, UBL)
+            .unwrap()
+            .value
+            .unwrap();
+        for line in &mut hub.invoice_lines {
+            line.line_net_amount = Some(Decimal::MAX);
+        }
+        let out = engine.from_hub(Spoke::UblInvoice, hub).unwrap();
+        let overflow = out
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "VALUE_INCONSISTENT" && d.source_node == "BR-CO-10")
+            .unwrap_or_else(|| panic!("BR-CO-10 reported: {:?}", out.diagnostics));
+        assert!(
+            overflow.message.contains("decimal range"),
+            "{}",
+            overflow.message
+        );
     }
 
     #[test]

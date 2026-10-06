@@ -59,7 +59,11 @@
 //! - `add` / `subtract` computes from root keys: the first `add` operand and
 //!   every `requires` key must be present, any other operand that is absent
 //!   counts as zero. `skip_zero = true` derives nothing when the result is
-//!   zero. Every key involved is a root-scope `decimal`.
+//!   zero, `skip_negative = true` nothing when it is negative. Every key
+//!   involved is a root-scope `decimal`.
+//!
+//! Sums and arithmetic are checked: a result outside the decimal range
+//! derives nothing, and a check that overflows is reported as a mismatch.
 //! - `value` sets a literal on the target — a root key, or an item key named
 //!   by its label (`Collection/…/Key`) on every item matching `where` — when
 //!   neither the target nor any `unless` key of the item is present.
@@ -135,6 +139,8 @@ pub enum DerivationKind {
         requires: Vec<String>,
         /// Whether a zero result derives nothing.
         skip_zero: bool,
+        /// Whether a negative result derives nothing.
+        skip_negative: bool,
     },
     /// A literal for the target on every item satisfying `filter` that has
     /// neither the target nor any `unless` key.
@@ -197,6 +203,8 @@ struct RawDerivation {
     #[serde(default)]
     skip_zero: Option<bool>,
     #[serde(default)]
+    skip_negative: Option<bool>,
+    #[serde(default)]
     value: Option<String>,
     #[serde(default)]
     unless: Option<Vec<String>>,
@@ -210,7 +218,7 @@ struct RawDerivation {
 ///
 /// A TOML error, an unknown field, a rule that declares not exactly one of
 /// `sum`, `add` and `value`, a field beside the wrong kind (`where` on `add`;
-/// `subtract`, `requires`, `skip_zero` off `add`; `unless` off `value`), a
+/// `subtract`, `requires`, `skip_zero`, `skip_negative` off `add`; `unless` off `value`), a
 /// `sum` that is not `Collection/Key`, an empty `add`, or a non-string `where`
 /// value.
 pub fn parse_derivations(src: &str) -> Result<Vec<Derivation>, ConfigError> {
@@ -229,9 +237,15 @@ fn build(raw: RawDerivation) -> Result<Derivation, String> {
     if kinds.iter().filter(|k| **k).count() != 1 {
         return Err("declare exactly one of `sum`, `add` and `value`".to_string());
     }
-    let off_add = raw.subtract.is_some() || raw.requires.is_some() || raw.skip_zero.is_some();
+    let off_add = raw.subtract.is_some()
+        || raw.requires.is_some()
+        || raw.skip_zero.is_some()
+        || raw.skip_negative.is_some();
     if raw.add.is_none() && off_add {
-        return Err("`subtract`, `requires` and `skip_zero` belong to an `add` rule".to_string());
+        return Err(
+            "`subtract`, `requires`, `skip_zero` and `skip_negative` belong to an `add` rule"
+                .to_string(),
+        );
     }
     if raw.value.is_none() && raw.unless.is_some() {
         return Err("`unless` belongs to a `value` rule".to_string());
@@ -281,6 +295,7 @@ fn build(raw: RawDerivation) -> Result<Derivation, String> {
             subtract: raw.subtract.clone().unwrap_or_default(),
             requires: raw.requires.clone().unwrap_or_default(),
             skip_zero: raw.skip_zero.unwrap_or(false),
+            skip_negative: raw.skip_negative.unwrap_or(false),
         }
     } else {
         DerivationKind::Value {
@@ -652,6 +667,7 @@ mod tests {
         "belongs to a `sum` or `value`"
     )]
     #[case::subtract_on_sum("sum = \"L/X\"\nsubtract = [\"A\"]", "belong to an `add`")]
+    #[case::skip_negative_on_sum("sum = \"L/X\"\nskip_negative = true", "belong to an `add`")]
     #[case::non_string_where("sum = \"L/X\"\nwhere = { K = true }", "string literal")]
     #[case::check_on_value("value = \"1\"\ncheck = \"error\"", "belongs to a `sum` or `add`")]
     #[case::check_unknown("sum = \"L/X\"\ncheck = \"loud\"", "\"warning\", \"error\" or \"off\"")]

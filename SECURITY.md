@@ -25,6 +25,9 @@ document or request that crashes or hangs the server, exceeds its memory
 budget, or reads files it should not.
 
 Out of scope: the correctness of the bundled demo mappings against the
-invoice standards (see the README's disclaimer), and deployments that expose
-`krab-server` without the authenticating reverse proxy it requires (it has no
-authentication or TLS of its own).
+invoice standards (see the README's disclaimer), and the absence of
+authentication and TLS in `krab-server`, which has neither of its own: as the
+README says, run it in a private network or behind an authenticating reverse
+proxy. A vulnerability reachable in either of those deployments is in scope;
+one that only exists because the server is exposed to untrusted clients
+without either is not.

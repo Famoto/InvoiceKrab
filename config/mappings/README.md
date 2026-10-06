@@ -820,9 +820,16 @@ value is still written unchanged. `check` sets the severity per rule:
 
 Turn `check` off for a rule that restates another rule's equation. The bundled
 file does this for BR-CO-16 solved for the paid amount, which the
-`PayableAmount` rule already checks. That rule also limits what can be checked:
-a source stating an amount due but no paid amount gets the difference derived
-as its paid amount, so its amount due is consistent by construction.
+`PayableAmount` rule already checks. That inverse rule is also
+`skip_negative`: a source stating an amount due larger than its total with VAT
+and no paid amount would otherwise get a negative prepayment derived, which
+makes the wrong amount due consistent by construction. Left absent, the
+`PayableAmount` rule reports it.
+
+All sums and arithmetic are computed with checked decimal operations. A
+result outside the decimal range (about ±7.9 × 10²⁸, reachable only by a
+hostile or broken document) derives nothing, and a check that overflows is
+reported as `VALUE_INCONSISTENT` saying the rule cannot be computed.
 
 ```toml
 # BR-CO-10: sum of invoice line net amounts.
@@ -862,6 +869,7 @@ unless = ["LineAllowanceChargeReason"]
 | `add` / `subtract` | Root `decimal` keys: the first `add` operand must be present, any other absent operand counts as zero |
 | `requires` | Root keys that must be present for the rule to apply |
 | `skip_zero` | Derive nothing when the result is zero (default `false`) |
+| `skip_negative` | Derive nothing when the result is negative (default `false`) |
 | `check` | `sum` / `add` only: how a carried value that contradicts the rule is reported, `"warning"` (default), `"error"` or `"off"` |
 | `value` | A literal set on the target (on every item matching `where`) when neither it nor any `unless` key is present |
 | `where` | `{ Key = "literal" }`: an item filter on another key of the item |

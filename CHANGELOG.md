@@ -19,7 +19,12 @@ versioning. The bundled mappings remain demos (see the README's disclaimer).
 - **Added** `check` on `sum` / `add` rules in `derivations.toml`
   (`"warning"` by default, `"error"` or `"off"`): a total the document carries
   is recomputed by its rule, and a contradiction is reported as
-  `VALUE_INCONSISTENT` (#44).
+  `VALUE_INCONSISTENT` (#44). Derivation sums and arithmetic use checked
+  decimal operations: an overflowing result derives nothing and an
+  overflowing check is reported, instead of panicking.
+- **Added** `skip_negative` on `add` rules: a negative result derives
+  nothing. The bundled BR-CO-16-for-the-paid-amount rule uses it, so a wrong
+  amount due is reported rather than balanced by a negative prepayment.
 - **Added** several versions of one format: mappings may share a `doc_format`
   with different `format_version`s; their slugs and `Spoke` variants are then
   version-qualified (`XrechnungInvoiceV3_0_2`), and a sample `source` naming
@@ -49,9 +54,11 @@ versioning. The bundled mappings remain demos (see the README's disclaimer).
 
 ### Changed
 
-- A bare format name (`xrechnung-invoice`) shared by several compiled versions
-  is refused with the list of versions (exit 64 / `400`) instead of resolving
-  to the first one (#24).
+- A format name that matches several compiled formats — a bare name
+  (`xrechnung-invoice`) shared by several versions, a display name equal to
+  another's bare prefix, or display names differing only in case — is refused
+  with the list of matches (exit 64 / `400`) instead of resolving to the first
+  one (#24).
 - `krab-server` query parameters are URL-decoded (`to=xrechnung-invoice%3A3.0.2`),
   and a repeated parameter is a `400` (#43).
 - Minimum supported Rust version: 1.88 (`rust-version`).
