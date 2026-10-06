@@ -39,7 +39,7 @@ toml = { version = "1.1", features = ["preserve_order"] }
 thiserror = "2"
 # Dev-only: parses generated code in the DSL's tests, so "what `check` accepts,
 # the build accepts" is asserted without running rustc.
-syn = { version = "2", features = ["full"] }
+syn = { version = "3", features = ["full"] }
 # Scale-preserving decimal for canonical decimal values.
 rust_decimal = "1"
 # Inline small strings (≤24 bytes stay on the stack) for the generated source
@@ -47,7 +47,7 @@ rust_decimal = "1"
 # "10.00"), so per-field heap allocations were the bulk of peak memory.
 compact_str = { version = "0.10", features = ["serde"] }
 # Source-XML (de)serialization for the typed source models.
-quick-xml = "0.41"
+quick-xml = "0.42"
 # HTTP stack for the krab-server binary. Plain dependencies (no feature
 # gate) so the crate's feature fingerprint never flips between CLI and server
 # builds — a flip would re-run the codegen build script every time.
@@ -79,7 +79,7 @@ einvoice-transformator = { path = "crates/einvoice-transformator" }
 einvoice-dsl = { path = "crates/einvoice-dsl" }
 
 # dev-dependencies
-rstest = "0.26"
+rstest = "0.27"
 pretty_assertions = "1"
 insta = "1"
 criterion = "0.8"
