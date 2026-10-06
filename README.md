@@ -806,7 +806,10 @@ Third-party material is under its own terms: the XSD schemas in
 [testfiles/xsd/](testfiles/xsd/) (see
 [testfiles/xsd/SOURCES.md](testfiles/xsd/SOURCES.md) for their origins) and
 the OASIS UBL 2.1 example invoice
-([testfiles/UBL-Invoice-2.1.xml](testfiles/UBL-Invoice-2.1.xml)).
+([testfiles/UBL-Invoice-2.1.xml](testfiles/UBL-Invoice-2.1.xml)). The other
+sample invoices in [testfiles/](testfiles/) are based on examples of the
+[KoSIT XRechnung test suite](https://github.com/itplr-kosit/xrechnung-testsuite)
+and, like it, are under the [Apache License 2.0](LICENSES/Apache-2.0.txt).
 
 Every file's copyright and license are recorded in [REUSE.toml](REUSE.toml)
 ([REUSE](https://reuse.software/) 3.3), with the license texts in

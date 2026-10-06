@@ -23,6 +23,21 @@ precedence = "override"
 SPDX-FileCopyrightText = "2026 The KrabInvoice authors"
 SPDX-License-Identifier = "CC0-1.0"
 
+# Sample invoices based on examples of the KoSIT XRechnung test suite
+# (Apache-2.0), modified by KrabInvoice; the FatturaPA one is the same invoice
+# in FatturaPA syntax. Each file carries the Apache-2.0 change notice.
+[[annotations]]
+path = [
+    "testfiles/en16931-full-*.xml",
+    "testfiles/xrechnung-3.0.2-beispiel.xml",
+]
+precedence = "override"
+SPDX-FileCopyrightText = [
+    "Koordinierungsstelle für IT-Standards (KoSIT)",
+    "2026 The KrabInvoice authors",
+]
+SPDX-License-Identifier = "Apache-2.0"
+
 # OASIS UBL 2.1 schemas (vendored unmodified).
 [[annotations]]
 path = [

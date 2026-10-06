@@ -19,6 +19,10 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   compliant. `REUSE.toml` records every file's copyright and license,
   including the vendored third-party schemas, and `LICENSES/` holds the
   license texts; CI and pre-commit run `reuse lint`.
+- Licensing: the sample invoices based on the KoSIT XRechnung test suite
+  (`testfiles/en16931-full-*.xml`, `testfiles/xrechnung-3.0.2-beispiel.xml`)
+  are marked Apache-2.0, as their source is, and note that KrabInvoice
+  modified them.
 
 ### Documentation
 
