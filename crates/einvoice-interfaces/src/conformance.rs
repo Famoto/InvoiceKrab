@@ -1163,4 +1163,225 @@ mod tests {
         assert!(lines[1].starts_with(&" ".repeat(7 + "dropped (30): ".len())));
         assert!(out.trim_end().ends_with("Key29"), "{out}");
     }
+
+    /// A fresh scratch directory under the system temp dir, holding an XSD
+    /// that declares only `<Other/>`: every invoice is invalid against it.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("krab-conformance-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("other.xsd"),
+            r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="Other"/></xs:schema>"#,
+        )
+        .unwrap();
+        dir
+    }
+
+    const OTHER: Schema = Schema {
+        xsd: "other.xsd",
+        catalog: None,
+        known_gaps: &[],
+        refuses: &[],
+    };
+
+    fn xrechnung_sample() -> Vec<u8> {
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testfiles/xrechnung-3.0.2-beispiel.xml"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn test_xmllint_validates_and_separates_schema_errors_from_failures() {
+        let Some(xmllint) = Xmllint::detect() else {
+            eprintln!("skipped: xmllint not on PATH");
+            return;
+        };
+        let root = scratch("validate");
+        assert_eq!(xmllint.validate(&root, &OTHER, b"<Other/>"), Ok(vec![]));
+        // A catalog is handed to xmllint; an unused one changes nothing.
+        let with_catalog = Schema {
+            catalog: Some("no-such-catalog.xml"),
+            ..OTHER
+        };
+        assert_eq!(
+            xmllint.validate(&root, &with_catalog, b"<Other/>"),
+            Ok(vec![])
+        );
+
+        let errors = xmllint.validate(&root, &OTHER, b"<Invoice/>").unwrap();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].contains("No matching global declaration"),
+            "{errors:?}"
+        );
+
+        let malformed = xmllint.validate(&root, &OTHER, b"<Other>").unwrap_err();
+        assert!(
+            malformed.starts_with("xmllint failed without a schema error"),
+            "{malformed}"
+        );
+        let missing = Schema {
+            xsd: "missing.xsd",
+            ..OTHER
+        };
+        assert!(xmllint.validate(&root, &missing, b"<Other/>").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_check_pair_validates_the_written_document_against_its_gaps() {
+        let Some(xmllint) = Xmllint::detect() else {
+            eprintln!("skipped: xmllint not on PATH");
+            return;
+        };
+        let root = scratch("pair");
+        let hub = read_clean(Spoke::XrechnungInvoice, &xrechnung_sample()).unwrap();
+
+        let mut errors = Vec::new();
+        let failing = check_pair(
+            &root,
+            Some(xmllint),
+            "doc.xml",
+            &hub,
+            Spoke::UblInvoice,
+            &OTHER,
+            &mut errors,
+        );
+        assert!(failing.validated);
+        assert_eq!(failing.schema_errors.len(), 1, "{failing:?}");
+        assert!(failing.round_trip.is_some(), "the round trip still runs");
+        assert_eq!(errors, failing.schema_errors, "errors are the gap evidence");
+        let mut out = String::new();
+        render_pair(&mut out, &failing);
+        assert!(
+            out.contains("invalid: 1 schema error(s) beyond its known gaps"),
+            "{out}"
+        );
+
+        let gapped = Schema {
+            known_gaps: &["No matching global declaration"],
+            ..OTHER
+        };
+        let tolerated = check_pair(
+            &root,
+            Some(xmllint),
+            "doc.xml",
+            &hub,
+            Spoke::UblInvoice,
+            &gapped,
+            &mut errors,
+        );
+        assert!(tolerated.schema_errors.is_empty(), "{tolerated:?}");
+        assert_eq!(tolerated.known_gap_errors.len(), 1);
+        assert_eq!(errors.len(), 2, "known-gap errors count as evidence too");
+
+        let unloadable = Schema {
+            xsd: "missing.xsd",
+            ..OTHER
+        };
+        let broken = check_pair(
+            &root,
+            Some(xmllint),
+            "doc.xml",
+            &hub,
+            Spoke::UblInvoice,
+            &unloadable,
+            &mut errors,
+        );
+        assert!(!broken.validated);
+        assert!(
+            broken
+                .failures()
+                .iter()
+                .any(|f| f.contains("xmllint failed")),
+            "{:?}",
+            broken.failures()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_check_pair_undeclared_write_failure_fails() {
+        let mut errors = Vec::new();
+        let pair = check_pair(
+            Path::new("."),
+            None,
+            "doc.xml",
+            &MainKey::default(),
+            Spoke::UblInvoice,
+            &OTHER,
+            &mut errors,
+        );
+        assert!(pair.refused.is_empty());
+        assert!(pair.round_trip.is_none());
+        assert!(
+            pair.failures()
+                .iter()
+                .any(|f| f.starts_with("write: [REQUIRED_MISSING]")),
+            "{:?}",
+            pair.failures()
+        );
+    }
+
+    #[test]
+    fn test_check_sample_stops_at_an_unreadable_or_unparsable_sample() {
+        let root = scratch("sample");
+        let targets = [(Spoke::UblInvoice, &OTHER)];
+        let mut errors = vec![Vec::new()];
+
+        let absent = check_sample(
+            &root,
+            None,
+            Spoke::UblInvoice,
+            "absent.xml",
+            &targets,
+            &mut errors,
+        );
+        assert!(
+            absent.errors[0].starts_with("cannot read the sample"),
+            "{absent:?}"
+        );
+        assert!(absent.pairs.is_empty());
+
+        std::fs::write(root.join("junk.xml"), b"not xml at all").unwrap();
+        let junk = check_sample(
+            &root,
+            None,
+            Spoke::UblInvoice,
+            "junk.xml",
+            &targets,
+            &mut errors,
+        );
+        assert!(
+            junk.errors.iter().all(|e| e.starts_with("read: ")),
+            "{junk:?}"
+        );
+        assert!(!junk.errors.is_empty());
+        assert!(
+            junk.pairs.is_empty(),
+            "nothing is written from an unread sample"
+        );
+
+        // The reader's own schema does not load under this root: a failure,
+        // so the sample is not written through the targets.
+        if let Some(xmllint) = Xmllint::detect() {
+            std::fs::write(root.join("x.xml"), xrechnung_sample()).unwrap();
+            let unvalidated = check_sample(
+                &root,
+                Some(xmllint),
+                Spoke::XrechnungInvoice,
+                "x.xml",
+                &targets,
+                &mut errors,
+            );
+            assert_eq!(unvalidated.validated_against, None);
+            assert!(!unvalidated.failures().is_empty());
+            assert!(unvalidated.pairs.is_empty(), "{unvalidated:?}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -507,4 +507,44 @@ mod tests {
         let body = format!("{PROFILE}<Content/><Version>9</Version><broken");
         assert_eq!(ID.check(doc(&body).as_bytes()), Ok(()));
     }
+
+    #[test]
+    fn test_check_rejects_an_unknown_entity_in_a_captured_value() {
+        let body = "<Context><Profile>urn:a&nope;b</Profile></Context>";
+        let err = ID.check(doc(body).as_bytes()).unwrap_err();
+        assert!(matches!(err, IdentityError::NotXml(_)), "{err:?}");
+        assert!(err.to_string().contains("unknown entity `&nope;`"), "{err}");
+    }
+
+    #[test]
+    fn test_check_truncated_header_is_not_an_identity() {
+        // The document ends before its profile closes: nothing was captured.
+        let truncated = r#"<d:Doc xmlns:d="urn:doc" kind="K1"><Context><Profile>urn:a&amp;b"#;
+        let err = ID.check(truncated.as_bytes()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                IdentityError::ProfileMissing { .. } | IdentityError::NotXml(_)
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn test_check_stops_at_an_empty_element_that_completes_the_header() {
+        // Without a version path, the profile alone completes the header; an
+        // empty profile element is found (as empty) and rejected as such.
+        let id = Identity {
+            version: None,
+            versions: &[],
+            ..ID
+        };
+        let err = id
+            .check(doc("<Context><Profile/></Context><Rest/>").as_bytes())
+            .unwrap_err();
+        assert!(
+            matches!(err, IdentityError::ProfileUnsupported { .. }),
+            "{err:?}"
+        );
+    }
 }

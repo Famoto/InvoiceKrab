@@ -1,37 +1,33 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  The invoice of en16931-full-ubl.xml, itself based on an example of the
-  KoSIT XRechnung test suite (https://github.com/itplr-kosit/xrechnung-testsuite),
-  written in FatturaPA syntax by the KrabInvoice authors. Licensed under the
-  Apache License, Version 2.0 (see LICENSES/Apache-2.0.txt); the changes are
-  recorded in the KrabInvoice git history.
--->
+<!-- A fictitious invoice written for KrabInvoice: the invoice of
+     en16931-full-ubl.xml in FatturaPA syntax, as far as the FatturaPA spoke
+     carries it (no document-level allowance or charge, so its totals differ). -->
 <p:FatturaElettronica xmlns:p="http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2" versione="FPR12">
   <FatturaElettronicaHeader>
     <DatiTrasmissione>
       <IdTrasmittente>
         <IdPaese>DE</IdPaese>
-        <IdCodice>123456789</IdCodice>
+        <IdCodice>987650001</IdCodice>
       </IdTrasmittente>
-      <ProgressivoInvio>00001</ProgressivoInvio>
+      <ProgressivoInvio>00317</ProgressivoInvio>
       <FormatoTrasmissione>FPR12</FormatoTrasmissione>
-      <CodiceDestinatario>0000000</CodiceDestinatario>
+      <CodiceDestinatario>XXXXXXX</CodiceDestinatario>
     </DatiTrasmissione>
     <CedentePrestatore>
       <DatiAnagrafici>
         <IdFiscaleIVA>
           <IdPaese>DE</IdPaese>
-          <IdCodice>123456789</IdCodice>
+          <IdCodice>987650001</IdCodice>
         </IdFiscaleIVA>
         <Anagrafica>
-          <Denominazione>Seller GmbH</Denominazione>
+          <Denominazione>Hafenkran Service GmbH</Denominazione>
         </Anagrafica>
         <RegimeFiscale>RF01</RegimeFiscale>
       </DatiAnagrafici>
       <Sede>
-        <Indirizzo>Hauptstrasse 1</Indirizzo>
-        <CAP>10115</CAP>
-        <Comune>Berlin</Comune>
+        <Indirizzo>Am Kaiserhafen 12</Indirizzo>
+        <CAP>27568</CAP>
+        <Comune>Bremerhaven</Comune>
         <Nazione>DE</Nazione>
       </Sede>
     </CedentePrestatore>
@@ -39,16 +35,16 @@
       <DatiAnagrafici>
         <IdFiscaleIVA>
           <IdPaese>DE</IdPaese>
-          <IdCodice>987654321</IdCodice>
+          <IdCodice>876540002</IdCodice>
         </IdFiscaleIVA>
         <Anagrafica>
-          <Denominazione>Buyer AG</Denominazione>
+          <Denominazione>Möwe Logistik AG</Denominazione>
         </Anagrafica>
       </DatiAnagrafici>
       <Sede>
-        <Indirizzo>Marktplatz 2</Indirizzo>
-        <CAP>80331</CAP>
-        <Comune>Munich</Comune>
+        <Indirizzo>Skandinavienkai 7</Indirizzo>
+        <CAP>23570</CAP>
+        <Comune>Lübeck</Comune>
         <Nazione>DE</Nazione>
       </Sede>
     </CessionarioCommittente>
@@ -58,75 +54,84 @@
       <DatiGeneraliDocumento>
         <TipoDocumento>TD01</TipoDocumento>
         <Divisa>EUR</Divisa>
-        <Data>2026-01-31</Data>
-        <Numero>INV-2026-001</Numero>
-        <ImportoTotaleDocumento>219.00</ImportoTotaleDocumento>
-        <Causale>Thank you for your business</Causale>
+        <Data>2026-03-17</Data>
+        <Numero>HK-2026-0317</Numero>
+        <ImportoTotaleDocumento>1021.83</ImportoTotaleDocumento>
+        <Causale>Maintenance of quay cranes 3 and 4, March 2026</Causale>
       </DatiGeneraliDocumento>
       <DatiOrdineAcquisto>
-        <IdDocumento>PO-1</IdDocumento>
+        <IdDocumento>ML-PO-88213</IdDocumento>
       </DatiOrdineAcquisto>
       <DatiContratto>
-        <IdDocumento>CON-1</IdDocumento>
+        <IdDocumento>RV-2025-019</IdDocumento>
       </DatiContratto>
       <DatiFattureCollegate>
-        <IdDocumento>INV-2025-099</IdDocumento>
-        <Data>2025-12-15</Data>
+        <IdDocumento>HK-2026-0244</IdDocumento>
+        <Data>2026-02-27</Data>
       </DatiFattureCollegate>
     </DatiGenerali>
     <DatiBeniServizi>
       <DettaglioLinee>
         <NumeroLinea>1</NumeroLinea>
-        <Descrizione>Widget</Descrizione>
-        <Quantita>2.00</Quantita>
+        <Descrizione>Hydraulic hose set</Descrizione>
+        <Quantita>4.00</Quantita>
         <UnitaMisura>C62</UnitaMisura>
-        <DataInizioPeriodo>2026-01-01</DataInizioPeriodo>
-        <DataFinePeriodo>2026-01-31</DataFinePeriodo>
-        <PrezzoUnitario>50.00</PrezzoUnitario>
+        <DataInizioPeriodo>2026-03-02</DataInizioPeriodo>
+        <DataFinePeriodo>2026-03-06</DataFinePeriodo>
+        <PrezzoUnitario>35.00</PrezzoUnitario>
         <ScontoMaggiorazione>
           <Tipo>SC</Tipo>
-          <Percentuale>10.00</Percentuale>
-          <Importo>10.00</Importo>
+          <Percentuale>5.00</Percentuale>
+          <Importo>7.00</Importo>
         </ScontoMaggiorazione>
         <ScontoMaggiorazione>
           <Tipo>MG</Tipo>
           <Percentuale>10.00</Percentuale>
-          <Importo>10.00</Importo>
+          <Importo>14.00</Importo>
         </ScontoMaggiorazione>
-        <PrezzoTotale>100.00</PrezzoTotale>
+        <PrezzoTotale>147.00</PrezzoTotale>
         <AliquotaIVA>19.00</AliquotaIVA>
       </DettaglioLinee>
       <DettaglioLinee>
         <NumeroLinea>2</NumeroLinea>
-        <Descrizione>Consulting hour</Descrizione>
-        <Quantita>1.00</Quantita>
+        <Descrizione>Crane inspection</Descrizione>
+        <Quantita>6.00</Quantita>
         <UnitaMisura>HUR</UnitaMisura>
-        <PrezzoUnitario>100.00</PrezzoUnitario>
-        <PrezzoTotale>100.00</PrezzoTotale>
+        <PrezzoUnitario>85.00</PrezzoUnitario>
+        <PrezzoTotale>510.00</PrezzoTotale>
+        <AliquotaIVA>19.00</AliquotaIVA>
+      </DettaglioLinee>
+      <DettaglioLinee>
+        <NumeroLinea>3</NumeroLinea>
+        <Descrizione>Crane operator safety training</Descrizione>
+        <Quantita>1.00</Quantita>
+        <UnitaMisura>C62</UnitaMisura>
+        <PrezzoUnitario>240.00</PrezzoUnitario>
+        <PrezzoTotale>240.00</PrezzoTotale>
         <AliquotaIVA>0.00</AliquotaIVA>
         <Natura>N4</Natura>
       </DettaglioLinee>
       <DatiRiepilogo>
         <AliquotaIVA>19.00</AliquotaIVA>
-        <ImponibileImporto>100.00</ImponibileImporto>
-        <Imposta>19.00</Imposta>
+        <ImponibileImporto>657.00</ImponibileImporto>
+        <Imposta>124.83</Imposta>
       </DatiRiepilogo>
       <DatiRiepilogo>
         <AliquotaIVA>0.00</AliquotaIVA>
         <Natura>N4</Natura>
-        <ImponibileImporto>100.00</ImponibileImporto>
+        <ImponibileImporto>240.00</ImponibileImporto>
         <Imposta>0.00</Imposta>
-        <RiferimentoNormativo>Exempt under Article 132 of Directive 2006/112/EC</RiferimentoNormativo>
+        <RiferimentoNormativo>Vocational training, exempt under Article 132(1)(i) of Directive 2006/112/EC</RiferimentoNormativo>
       </DatiRiepilogo>
     </DatiBeniServizi>
     <DatiPagamento>
       <CondizioniPagamento>TP02</CondizioniPagamento>
       <DettaglioPagamento>
         <ModalitaPagamento>MP05</ModalitaPagamento>
-        <DataScadenzaPagamento>2026-02-28</DataScadenzaPagamento>
-        <ImportoPagamento>200.00</ImportoPagamento>
-        <IBAN>DE75512108001245126199</IBAN>
-        <BIC>SOGEDEFFXXX</BIC>
+        <DataScadenzaPagamento>2026-04-16</DataScadenzaPagamento>
+        <ImportoPagamento>921.83</ImportoPagamento>
+        <IBAN>DE02120300000000202051</IBAN>
+        <BIC>BYLADEM1001</BIC>
       </DettaglioPagamento>
     </DatiPagamento>
   </FatturaElettronicaBody>

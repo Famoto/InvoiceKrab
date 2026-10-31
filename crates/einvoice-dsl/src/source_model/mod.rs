@@ -44,6 +44,8 @@ pub use meta::{
     AliasBinding, FieldMeta, FieldType, NamespaceMeta, PathError, ResolvedField, SourceModelMeta,
     StructMeta, qualify,
 };
+#[cfg(test)]
+pub(crate) use meta::{SourceModelBuilder, ubl};
 pub use resolve::{resolve_path, resolve_path_from};
 pub(crate) use synth::xml_field_name;
 pub use synth::{NamespaceConfig, synthesize_source_model, synthesize_source_model_with};

@@ -817,10 +817,11 @@ Third-party schemas are not part of the repository: the XSDs the mappings
 validate against are fetched from their publishers' distributions by
 `scripts/fetch-schemas.sh` (see
 [testfiles/xsd/SOURCES.md](testfiles/xsd/SOURCES.md)) and are under their own
-terms. The sample invoices in [testfiles/](testfiles/) are based on examples
-of the
-[KoSIT XRechnung test suite](https://github.com/itplr-kosit/xrechnung-testsuite)
-and, like it, are under the [Apache License 2.0](LICENSES/Apache-2.0.txt).
+terms. So are the third-party test invoices `scripts/fetch-corpus.sh`
+fetches for the correctness tests (see
+[testfiles/corpus/SOURCES.md](testfiles/corpus/SOURCES.md)). The sample
+invoices in [testfiles/](testfiles/) are fictitious and written for
+KrabInvoice.
 
 Every file's copyright and license are recorded in [REUSE.toml](REUSE.toml)
 ([REUSE](https://reuse.software/) 3.3), with the license texts in

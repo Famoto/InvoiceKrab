@@ -270,4 +270,100 @@ mod tests {
         });
         assert_eq!(rendered.exit_code, 0, "{}", rendered.stdout);
     }
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn config_dir() -> String {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../config")
+            .display()
+            .to_string()
+    }
+
+    #[test]
+    fn test_run_dispatches_check_and_report_over_real_config() {
+        let check = run(&args(&["check", &config_dir()]));
+        assert_eq!(check.exit_code, 0, "{}", check.stdout);
+        assert!(check.stdout.contains(" 0 error(s)"), "{}", check.stdout);
+        let report = run(&args(&["report", &config_dir()]));
+        assert_eq!(report.exit_code, 0);
+        assert!(report.stdout.starts_with("## Canonical coverage matrix"));
+        assert!(report.stdout.contains("## Gaps"), "{}", report.stdout);
+    }
+
+    #[test]
+    fn test_run_rejects_unknown_command_missing_dir_and_bad_dir() {
+        let unknown = run(&args(&["frobnicate", "config"]));
+        assert_eq!(unknown, usage());
+
+        let missing = run(&args(&["check"]));
+        assert_eq!(missing.exit_code, 2);
+        assert!(
+            missing
+                .stdout
+                .starts_with("error: a config directory is required")
+        );
+        assert!(missing.stdout.contains(USAGE));
+
+        let bad = run(&args(&["report", "/definitely/not/a/config/dir"]));
+        assert_eq!(bad.exit_code, 2);
+        assert!(bad.stdout.starts_with("error: "), "{}", bad.stdout);
+    }
+
+    #[test]
+    fn test_check_counts_warnings_but_only_errors_fail() {
+        use einvoice_dsl::error::Diagnostic;
+        let mut out = output(&[(
+            "ubl",
+            r#"[Doc.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber""#,
+        )]);
+        for severity in [Severity::Warning, Severity::Info] {
+            out.diagnostics.push(Diagnostic {
+                code: "W999".into(),
+                severity,
+                source_node: None,
+                message: "note".into(),
+                span: None,
+            });
+        }
+        let rendered = render_check(&out);
+        assert_eq!(rendered.exit_code, 0, "{}", rendered.stdout);
+        assert!(
+            rendered.stdout.contains("[warning] W999 (-): note"),
+            "{}",
+            rendered.stdout
+        );
+        assert!(
+            rendered.stdout.contains("[info] W999 (-): note"),
+            "{}",
+            rendered.stdout
+        );
+        assert!(
+            rendered.stdout.contains("0 error(s), 1 warning(s)"),
+            "an info diagnostic is not a warning: {}",
+            rendered.stdout
+        );
+    }
+
+    #[test]
+    fn test_report_without_gaps_says_none() {
+        let out = output(&[(
+            "a",
+            r#"[Doc.ID]
+            type = "identifier"
+            canonical_key = "InvoiceNumber""#,
+        )]);
+        let rendered = render_report(&out);
+        assert!(
+            rendered
+                .stdout
+                .ends_with("## Gaps (spoke does not map field)\n\nnone\n"),
+            "{}",
+            rendered.stdout
+        );
+    }
 }

@@ -299,3 +299,179 @@ pub(super) fn collection_item_struct(
         .and_then(|segs| segs.last().and_then(|s| s.struct_name.clone()))
         .unwrap_or_else(|| source.root.clone())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source_model::{SourceModelBuilder, ubl};
+    use FieldType::{Scalar, Struct};
+
+    const UNRESOLVED: &str = "compile_error!(\"unresolved source path";
+
+    /// `Doc { lines: Vec<Line>, wrap: W }`, `W { lines: Vec<Line> }`,
+    /// `Line { id: String }`: a collection directly on the root and one
+    /// under a boxed (hence optional) interior.
+    fn nested_collections() -> SourceModelMeta {
+        SourceModelBuilder::new("t:1", "Doc")
+            .struct_def(
+                "Doc",
+                &[
+                    ("lines", false, true, Struct("Line".into())),
+                    ("wrap", false, false, Struct("W".into())),
+                ],
+            )
+            .struct_def("W", &[("lines", false, true, Struct("Line".into()))])
+            .struct_def("Line", &[("id", false, false, Scalar)])
+            .build()
+    }
+
+    #[test]
+    fn test_walk_segments_marks_boxed_interiors_optional() {
+        let segs = walk_segments(&ubl(), "Invoice", "monetary_total.payable_amount.value").unwrap();
+        let flags: Vec<_> = segs.iter().map(|s| (s.name.as_str(), s.optional)).collect();
+        assert_eq!(
+            flags,
+            [
+                ("monetary_total", true),
+                ("payable_amount", true),
+                ("value", false)
+            ]
+        );
+        assert_eq!(segs[0].struct_name.as_deref(), Some("LegalMonetaryTotal"));
+        assert_eq!(segs[2].struct_name, None);
+        // A repeated struct is a `Vec`, not boxed: not optional.
+        let lines = walk_segments(&ubl(), "Invoice", "invoice_lines").unwrap();
+        assert!(lines[0].repeated && !lines[0].optional);
+    }
+
+    #[test]
+    fn test_walk_segments_rejects_bad_paths() {
+        let src = ubl();
+        assert!(
+            walk_segments(&src, "Nope", "id").is_err(),
+            "unknown start struct"
+        );
+        assert!(
+            walk_segments(&src, "Invoice", "missing").is_err(),
+            "unknown field"
+        );
+        assert!(
+            walk_segments(&src, "Invoice", "id.deeper").is_err(),
+            "descends into a scalar"
+        );
+    }
+
+    #[test]
+    fn test_access_expr_shapes() {
+        let src = ubl();
+        assert_eq!(
+            access_expr(&src, "Invoice", "id", "source"),
+            "Some(source.id.as_str())"
+        );
+        assert_eq!(
+            access_expr(&src, "Invoice", "uuid", "source"),
+            "source.uuid.as_ref().and_then(|v0| Some(v0.as_str()))"
+        );
+        // A required leaf under optional interiors wraps only itself.
+        assert_eq!(
+            access_expr(
+                &src,
+                "Invoice",
+                "monetary_total.payable_amount.value",
+                "element"
+            ),
+            "element.monetary_total.as_ref().and_then(|v0| \
+             v0.payable_amount.as_ref().and_then(|v1| Some(v1.value.as_str())))"
+        );
+        assert!(access_expr(&src, "Invoice", "missing", "source").starts_with(UNRESOLVED));
+    }
+
+    #[test]
+    fn test_take_expr_shapes() {
+        let src = ubl();
+        assert_eq!(
+            take_expr(&src, "Invoice", "id", "source"),
+            "Some(std::mem::take(&mut source.id))"
+        );
+        assert_eq!(
+            take_expr(&src, "Invoice", "uuid", "source"),
+            "source.uuid.take()"
+        );
+        assert_eq!(
+            take_expr(
+                &src,
+                "Invoice",
+                "monetary_total.payable_amount.currency_id",
+                "source"
+            ),
+            "source.monetary_total.as_mut().and_then(|v0| \
+             v0.payable_amount.as_mut().and_then(|v1| Some(std::mem::take(&mut v1.currency_id))))"
+        );
+        let err = take_expr(&src, "Invoice", "id.deeper", "source");
+        assert!(err.starts_with(UNRESOLVED), "{err}");
+        assert!(err.contains("`id.deeper` against `Invoice`"), "{err}");
+    }
+
+    #[test]
+    fn test_collection_exprs_direct_and_under_optional_interior() {
+        let src = nested_collections();
+        assert_eq!(
+            collection_take_expr(&src, "Doc", "lines", "source"),
+            "std::mem::take(&mut source.lines)"
+        );
+        assert_eq!(
+            collection_take_expr(&src, "Doc", "wrap.lines", "source"),
+            "source.wrap.as_mut().and_then(|v0| Some(std::mem::take(&mut v0.lines))).unwrap_or_default()"
+        );
+        assert_eq!(
+            collection_slice_expr(&src, "Doc", "lines", "source"),
+            "source.lines.as_slice()"
+        );
+        assert_eq!(
+            collection_slice_expr(&src, "Doc", "wrap.lines", "source"),
+            "source.wrap.as_ref().and_then(|v0| Some(v0.lines.as_slice())).unwrap_or(&[])"
+        );
+        assert!(collection_take_expr(&src, "Doc", "nope", "source").starts_with(UNRESOLVED));
+        assert!(collection_slice_expr(&src, "Doc", "nope", "source").starts_with(UNRESOLVED));
+    }
+
+    #[test]
+    fn test_assign_target_materializes_boxed_interiors_only() {
+        let src = ubl();
+        assert_eq!(
+            assign_target_expr(&src, "Invoice", "uuid", "target"),
+            "target.uuid"
+        );
+        assert_eq!(
+            assign_target_expr(
+                &src,
+                "Invoice",
+                "monetary_total.payable_amount.value",
+                "target"
+            ),
+            "target.monetary_total.get_or_insert_default().payable_amount.get_or_insert_default().value"
+        );
+        assert!(assign_target_expr(&src, "Invoice", "nope", "target").starts_with(UNRESOLVED));
+    }
+
+    #[test]
+    fn test_normalize_chain_applies_ops_in_order() {
+        use NormalizeOp::*;
+        assert_eq!(
+            normalize_chain("a", &[Trim, Uppercase, Lowercase, EmptyAsMissing], false),
+            "a.map(CompactString::from).map(normalize::trim).map(normalize::uppercase)\
+             .map(normalize::lowercase).and_then(normalize::empty_as_missing)"
+        );
+        // An owned access is already `Option<CompactString>`: no copy.
+        assert_eq!(normalize_chain("a", &[], true), "a");
+    }
+
+    #[test]
+    fn test_collection_item_struct_falls_back_to_root() {
+        let src = nested_collections();
+        assert_eq!(collection_item_struct(&src, "Doc", "wrap.lines"), "Line");
+        // A scalar leaf or an unresolvable path names no element struct.
+        assert_eq!(collection_item_struct(&src, "Line", "id"), "Doc");
+        assert_eq!(collection_item_struct(&src, "Doc", "nope"), "Doc");
+    }
+}
