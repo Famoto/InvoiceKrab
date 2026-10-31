@@ -456,4 +456,22 @@ mod tests {
         assert_eq!(parse_meminfo("MemFree: 12 kB\n"), None);
         assert_eq!(parse_meminfo(""), None);
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_detect_memory_reads_the_host() {
+        // Linux always has `/proc/meminfo`, whatever the cgroup says.
+        assert!(detect_memory().is_some_and(|bytes| bytes > 0));
+    }
+
+    #[test]
+    fn test_from_env_without_overrides_resolves() {
+        // Only meaningful when the test runner sets none of the variables.
+        if std::env::vars().any(|(k, _)| k.starts_with("KRAB_")) {
+            return;
+        }
+        let cfg = Config::from_env().expect("hardware defaults resolve");
+        assert!(cfg.workers >= 1);
+        assert_eq!(cfg.addr, "0.0.0.0:8080");
+    }
 }

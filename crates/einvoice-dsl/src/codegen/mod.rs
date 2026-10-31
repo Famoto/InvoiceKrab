@@ -1950,6 +1950,115 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_hub_sum_rules_filter_and_check_with_checked_arithmetic() {
+        let mapping = parse_mapping(
+            r#"
+            [meta]
+            doc_format = "f"
+            format_version = "1"
+            mapping_version = "1"
+            canonical_model = "c:1"
+            root = "Doc"
+            [Doc.A]
+            type = "decimal"
+            canonical_key = "LineTotal"
+            [Doc.B]
+            type = "decimal"
+            canonical_key = "Allowances"
+            [Doc.T]
+            type = "decimal"
+            canonical_key = "NetTotal"
+            [Doc.L]
+            type = "collection"
+            canonical_key = "Lines"
+            [Doc.L.X]
+            type = "decimal"
+            canonical_key = "Amount"
+            [Doc.L.C]
+            type = "boolean"
+            canonical_key = "IsCharge"
+            [Doc.L.K]
+            type = "string"
+            canonical_key = "Kind"
+            [Doc.L.R]
+            type = "decimal"
+            canonical_key = "Rate"
+            "#,
+        )
+        .unwrap();
+        let (ir, _, diags) = build_ir(&[mapping]);
+        assert!(diags.is_empty(), "{diags:?}");
+        let hub = derive_hub(std::slice::from_ref(&ir)).0;
+        let rules = crate::derive::parse_derivations(
+            r#"
+            [[derive]]
+            key = "LineTotal"
+            rule = "SUM"
+            sum = "Lines/Amount"
+            where = { IsCharge = "false", Kind = "net" }
+            check = "error"
+
+            [[derive]]
+            key = "NetTotal"
+            rule = "NET"
+            add = ["LineTotal"]
+            subtract = ["Allowances"]
+
+            [[derive]]
+            key = "Lines/Rate"
+            rule = "RATE"
+            value = "0.5"
+            "#,
+        )
+        .unwrap();
+        let diags = crate::derive::check_derivations(&hub, &rules);
+        assert!(diags.is_empty(), "{diags:?}");
+        let out = generate_hub_with(&hub, &rules);
+
+        // The `where` filter compares a boolean natively and a string by `as_deref`.
+        assert!(out.contains("if item.is_charge != Some(false) {"), "{out}");
+        assert!(
+            out.contains(r#"if item.kind.as_deref() != Some("net") {"#),
+            "{out}"
+        );
+        // Summation is checked: an overflow stops the loop and derives nothing.
+        assert!(
+            out.contains("match sum.unwrap_or_default().checked_add(value) {"),
+            "{out}"
+        );
+        assert!(
+            out.contains("if !overflow && let Some(value) = sum {"),
+            "{out}"
+        );
+        // The sum is recomputed against a carried target, at error level.
+        assert!(
+            out.contains("if let Some(carried) = self.line_total {"),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"mismatches.push(("LineTotal", "SUM", true, carried, computed));"#),
+            "{out}"
+        );
+        assert!(
+            out.contains("let computed = None;"),
+            "overflow is reported: {out}"
+        );
+        // `subtract` is a checked subtraction, never a bare `-`.
+        assert!(
+            out.contains(
+                ".and_then(|v: Decimal| v.checked_sub(self.allowances.unwrap_or_default()))"
+            ),
+            "{out}"
+        );
+        // A decimal literal is parsed, not spliced in as a float.
+        assert!(
+            out.contains(r#"i0.rate = Some(<Decimal as std::str::FromStr>::from_str("0.5")"#),
+            "{out}"
+        );
+        syn::parse_file(&out).expect("valid Rust");
+    }
+
+    #[test]
     fn test_generation_is_deterministic() {
         let (ir, hub, source) = compiled();
         assert_eq!(generate_hub(&hub), generate_hub(&hub));
