@@ -37,6 +37,7 @@ use std::str::FromStr as _;
 
 use einvoice_interfaces::cli::detect_source;
 use einvoice_interfaces::{Engine, Spoke};
+use einvoice_transformator::result::Severity;
 use quick_xml::escape::resolve_predefined_entity;
 use quick_xml::events::Event;
 use quick_xml::{Reader, XmlVersion};
@@ -568,14 +569,15 @@ fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Every source: the declared samples, then `KRAB_CORPUS_DIR`'s documents.
-fn sources() -> Vec<(String, Spoke, Vec<u8>)> {
+/// Every source: the declared samples, then `KRAB_CORPUS_DIR`'s documents
+/// (flagged `true`).
+fn sources() -> Vec<(String, Spoke, Vec<u8>, bool)> {
     let mut sources = Vec::new();
     for &spoke in Spoke::ALL {
         for &file in spoke.samples() {
             let bytes =
                 std::fs::read(workspace().join(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
-            sources.push((file.to_string(), spoke, bytes));
+            sources.push((file.to_string(), spoke, bytes, false));
         }
     }
     if let Some(dir) = std::env::var_os("KRAB_CORPUS_DIR") {
@@ -585,7 +587,7 @@ fn sources() -> Vec<(String, Spoke, Vec<u8>)> {
         for file in files {
             let bytes = std::fs::read(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
             match detect_source(&bytes) {
-                Ok(spoke) => sources.push((file.display().to_string(), spoke, bytes)),
+                Ok(spoke) => sources.push((file.display().to_string(), spoke, bytes, true)),
                 Err(e) => eprintln!("skipped {}: {e}", file.display()),
             }
         }
@@ -597,9 +599,10 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
     let entries =
         std::fs::read_dir(dir).unwrap_or_else(|e| panic!("KRAB_CORPUS_DIR {}: {e}", dir.display()));
     entries
-        .flatten()
         .flat_map(|e| {
-            let p = e.path();
+            let p = e
+                .unwrap_or_else(|e| panic!("KRAB_CORPUS_DIR {}: {e}", dir.display()))
+                .path();
             if p.is_dir() {
                 walk(&p)
             } else if p.extension().is_some_and(|x| x == "xml") {
@@ -613,25 +616,35 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
 
 /// The transform's output, or `None` when the target refuses it.
 fn transform(from: Spoke, to: Spoke, bytes: &[u8]) -> Option<String> {
-    let result = Engine::new().transform(from, to, bytes).ok()?;
-    if result.has_errors() {
-        return None;
+    refusal(from, to, bytes).ok()
+}
+
+/// The transform's output, or why it was refused.
+fn refusal(from: Spoke, to: Spoke, bytes: &[u8]) -> Result<String, String> {
+    let result = Engine::new()
+        .transform(from, to, bytes)
+        .map_err(|e| e.to_string())?;
+    if let Some(d) = result
+        .diagnostics
+        .iter()
+        .find(|d| d.severity == Severity::Error)
+    {
+        return Err(format!("[{}] {}", d.code, d.message));
     }
-    result.value
+    result.value.ok_or_else(|| "no output".to_string())
 }
 
 #[test]
 fn test_transformations_carry_their_source_correctly() {
-    let mut failures: Vec<String> = Vec::new();
+    let mut failures: Vec<Failure> = Vec::new();
     let mut report: Vec<String> = Vec::new();
-    let mut checked = 0;
     let sources = sources();
     assert!(
         !sources.is_empty(),
         "no mapping declares a [[meta.samples]] document"
     );
 
-    for (name, reader, bytes) in &sources {
+    for (name, reader, bytes, corpus) in &sources {
         let source = match std::str::from_utf8(bytes)
             .map_err(|e| e.to_string())
             .and_then(Doc::parse)
@@ -639,11 +652,24 @@ fn test_transformations_carry_their_source_correctly() {
             Ok(doc) => doc,
             Err(e) => {
                 // Never skip silently: an unreadable source would pass vacuously.
-                failures.push(format!("{name}: the oracle cannot read the source: {e}"));
+                failures.push(Failure {
+                    text: format!("{name}: the oracle cannot read the source: {e}"),
+                    corpus: *corpus,
+                    doc_allowances: false,
+                });
                 continue;
             }
         };
-        let mut fail = |what: String| failures.push(format!("{name}: {what}"));
+        let doc_allowances = source
+            .by_bt("BT-92/99")
+            .is_some_and(|amounts| !amounts.is_empty());
+        let mut fail = |what: String| {
+            failures.push(Failure {
+                text: format!("{name}: {what}"),
+                corpus: *corpus,
+                doc_allowances,
+            })
+        };
         for (rule, holds) in totals(&source) {
             if !holds {
                 report.push(format!("{name}: source itself violates {rule}"));
@@ -657,11 +683,16 @@ fn test_transformations_carry_their_source_correctly() {
 
         // Direct transforms, kept for the chains.
         let mut outputs: Vec<(Spoke, String, Doc)> = Vec::new();
+        let mut refusals: Vec<String> = Vec::new();
         for &target in Spoke::ALL {
             let pair = format!("{} -> {}", reader.name(), target.name());
-            let Some(out) = transform(*reader, target, bytes) else {
-                report.push(format!("{name}: {pair}: refused, skipped"));
-                continue;
+            let out = match refusal(*reader, target, bytes) {
+                Ok(out) => out,
+                Err(why) => {
+                    report.push(format!("{name}: {pair}: refused, skipped: {why}"));
+                    refusals.push(why);
+                    continue;
+                }
             };
             // 3. Determinism.
             if transform(*reader, target, bytes).as_deref() != Some(out.as_str()) {
@@ -698,8 +729,15 @@ fn test_transformations_carry_their_source_correctly() {
                 "{name}: {pair}: checked, {} total rule(s)",
                 rules.len()
             ));
-            checked += 1;
             outputs.push((target, out, doc));
+        }
+        // Not vacuous: every source must reach at least one format.
+        if outputs.is_empty() {
+            refusals.dedup();
+            fail(format!(
+                "no transform checked, every target refuses it: {}",
+                refusals.join("; ")
+            ));
         }
 
         // 5. Path independence over every intermediate format.
@@ -738,12 +776,6 @@ fn test_transformations_carry_their_source_correctly() {
     let (known, failures, stale) = split_known(failures, corpus);
     report.extend(known.iter().map(|k| format!("known issue: {k}")));
     eprintln!("{}", report.join("\n"));
-    // Not vacuous: every source reaches at least its own format.
-    assert!(
-        checked >= sources.len(),
-        "only {checked} transform(s) checked for {} source(s)",
-        sources.len()
-    );
     assert!(
         stale.is_empty(),
         "\nknown issue(s) no failure shows any more (fixed? remove them from KNOWN_ISSUES):\n{}",
@@ -757,15 +789,35 @@ fn test_transformations_carry_their_source_correctly() {
     );
 }
 
+/// One failed check, with the source context the known issues match on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Failure {
+    text: String,
+    /// The source is a `KRAB_CORPUS_DIR` document, not a declared sample.
+    corpus: bool,
+    /// The source carries document-level allowances or charges (BG-20/21).
+    doc_allowances: bool,
+}
+
 /// An engine issue this harness found that is not fixed yet: a failure line
 /// containing every one of `matches` is reported as known instead of failing.
 /// An issue no failure matches any more fails the test, so its fix is noticed
-/// and the entry removed. A `corpus_only` issue shows only with
-/// `KRAB_CORPUS_DIR`, and is only held to that then.
+/// and the entry removed. A `corpus_only` issue matches only corpus failures
+/// (it shows only with `KRAB_CORPUS_DIR`, and is only held to that then); a
+/// `doc_allowances` one only failures of sources with BG-20/21.
 struct KnownIssue {
     matches: &'static [&'static str],
     why: &'static str,
     corpus_only: bool,
+    doc_allowances: bool,
+}
+
+impl KnownIssue {
+    fn absorbs(&self, f: &Failure) -> bool {
+        (f.corpus || !self.corpus_only)
+            && (f.doc_allowances || !self.doc_allowances)
+            && self.matches.iter().all(|m| f.text.contains(m))
+    }
 }
 
 const KNOWN_ISSUES: &[KnownIssue] = &[
@@ -775,18 +827,21 @@ const KNOWN_ISSUES: &[KnownIssue] = &[
               but counts them in DatiRiepilogo, so the lines no longer add up to \
               ImponibileImporto (SdI rejects that with 00422)",
         corpus_only: false,
+        doc_allowances: true,
     },
     KnownIssue {
         matches: &["-> fatturapa:1.2.2 -> ", "BT-109 total without VAT"],
         why: "the same dropped document-level allowances and charges: read back from \
               FatturaPA, BT-109 is derived from the lines alone",
         corpus_only: false,
+        doc_allowances: true,
     },
     KnownIssue {
         matches: &["-> fatturapa:1.2.2 -> ", "BT-113 paid amount"],
         why: "FatturaPA carries neither BT-113 nor BT-114: read back, BR-CO-16 derives the \
               paid amount as BT-112 - BT-115, so a rounding amount becomes a prepayment",
         corpus_only: false,
+        doc_allowances: false,
     },
     KnownIssue {
         matches: &["BT-31/32 seller VAT/tax id"],
@@ -794,26 +849,43 @@ const KNOWN_ISSUES: &[KnownIssue] = &[
               for Peppol); EN 16931 allows any value but `VAT`, so others (KoSIT uses `???` \
               and `ID`) are dropped without a diagnostic",
         corpus_only: true,
+        doc_allowances: false,
+    },
+    KnownIssue {
+        matches: &[
+            "no transform checked",
+            "source deserialization failed: duplicate field",
+        ],
+        why: "the UBL readers bind PaymentMeans, TaxTotal, BillingReference and \
+              CommodityClassification as single elements, so a document repeating one \
+              (as UBL and EN 16931 allow) is not read at all",
+        corpus_only: true,
+        doc_allowances: false,
+    },
+    KnownIssue {
+        matches: &[
+            "GR-base-example-TaxRepresentative.xml: no transform checked",
+            "[REQUIRED_MISSING]",
+        ],
+        why: "the Peppol reader reports a required value missing in the Greek tax \
+              representative example, so no target accepts it (not yet diagnosed)",
+        corpus_only: true,
+        doc_allowances: false,
     },
 ];
 
 /// Splits `failures` into known issues (one line per issue, with its count),
 /// the remaining failures, and the issues no failure matched any more.
-fn split_known(failures: Vec<String>, corpus: bool) -> (Vec<String>, Vec<String>, Vec<String>) {
+fn split_known(failures: Vec<Failure>, corpus: bool) -> (Vec<String>, Vec<String>, Vec<String>) {
     let mut hits = vec![0usize; KNOWN_ISSUES.len()];
     let unknown = failures
         .into_iter()
-        .filter(|f| {
-            match KNOWN_ISSUES
-                .iter()
-                .position(|k| k.matches.iter().all(|m| f.contains(m)))
-            {
-                Some(i) => {
-                    hits[i] += 1;
-                    false
-                }
-                None => true,
+        .filter_map(|f| match KNOWN_ISSUES.iter().position(|k| k.absorbs(&f)) {
+            Some(i) => {
+                hits[i] += 1;
+                None
             }
+            None => Some(f.text),
         })
         .collect();
     let mut known = Vec::new();
@@ -949,9 +1021,14 @@ fn test_fatturapa_summary_must_equal_its_lines_per_rate() {
 
 #[test]
 fn test_known_issues_absorb_their_failures_and_go_stale_once_fixed() {
-    let fpa = "x.xml: ubl-invoice:2.1 -> fatturapa:1.2.2: output violates FatturaPA 00422 at 19%";
+    let fpa = failure(
+        "x.xml: ubl-invoice:2.1 -> fatturapa:1.2.2: output violates FatturaPA 00422 at 19%",
+        false,
+        true,
+    );
     let other = "x.xml: ubl-invoice:2.1 -> facturx-invoice:1.0: BT-1 invoice number: dropped";
-    let (known, unknown, stale) = split_known(vec![fpa.into(), fpa.into(), other.into()], false);
+    let (known, unknown, stale) =
+        split_known(vec![fpa.clone(), fpa, failure(other, false, true)], false);
     assert_eq!(
         unknown,
         vec![other.to_string()],
@@ -969,6 +1046,42 @@ fn test_known_issues_absorb_their_failures_and_go_stale_once_fixed() {
         KNOWN_ISSUES.len(),
         "with a corpus, every issue must show"
     );
+}
+
+fn failure(text: &str, corpus: bool, doc_allowances: bool) -> Failure {
+    Failure {
+        text: text.into(),
+        corpus,
+        doc_allowances,
+    }
+}
+
+#[test]
+fn test_corpus_only_issue_does_not_absorb_a_sample_failure() {
+    let seller = "x.xml: ubl-invoice:2.1 -> cii:2.3: BT-31/32 seller VAT/tax id: dropped";
+    let (known, unknown, _) = split_known(vec![failure(seller, false, false)], true);
+    assert_eq!(
+        unknown,
+        vec![seller.to_string()],
+        "a sample failure still fails"
+    );
+    assert!(known.is_empty(), "{known:?}");
+    let (known, unknown, _) = split_known(vec![failure(seller, true, false)], true);
+    assert!(unknown.is_empty(), "{unknown:?}");
+    assert_eq!(known.len(), 1);
+}
+
+#[test]
+fn test_fatturapa_00422_issue_needs_document_level_allowances() {
+    // An 00422 mismatch from a source without BG-20/21 is not the dropped
+    // allowances: it fails.
+    let fpa = "x.xml: ubl-invoice:2.1 -> fatturapa:1.2.2: output violates FatturaPA 00422 at 19%";
+    let (_, unknown, _) = split_known(vec![failure(fpa, false, false)], false);
+    assert_eq!(unknown, vec![fpa.to_string()]);
+    let bt109 =
+        "x.xml: ubl-invoice:2.1 -> fatturapa:1.2.2 -> cii:2.3: BT-109 total without VAT: changed";
+    let (_, unknown, _) = split_known(vec![failure(bt109, true, false)], true);
+    assert_eq!(unknown, vec![bt109.to_string()]);
 }
 
 #[test]

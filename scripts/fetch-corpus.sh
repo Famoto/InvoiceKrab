@@ -11,7 +11,8 @@
 #
 # Every file is downloaded from its upstream repository pinned to a commit and
 # verified against testfiles/corpus/SHA256SUMS; a file already present with
-# the right checksum is kept. Safe to re-run.
+# the right checksum is kept, and XML the manifest does not list is removed.
+# Safe to re-run.
 #
 # Usage: scripts/fetch-corpus.sh   (from anywhere)
 set -eu
@@ -56,4 +57,16 @@ while read -r sum path; do
     fetched=$((fetched + 1))
 done < "$dir/SHA256SUMS"
 
-echo "corpus: $fetched fetched, all verified in $dir"
+# Every listed file is in place and verified: drop the XML the manifest no
+# longer lists (e.g. a test case removed upstream), so the harness never runs
+# an unpinned document.
+removed=0
+listed="$(sed 's/^[^ ]* *//; s|^\./||' "$dir/SHA256SUMS")"
+for file in $(cd "$dir" && find . -type f -name '*.xml' | sed 's|^\./||'); do
+    if ! printf '%s\n' "$listed" | grep -Fqx -- "$file"; then
+        rm -f "$dir/$file"
+        removed=$((removed + 1))
+    fi
+done
+
+echo "corpus: $fetched fetched, $removed unlisted removed, all verified in $dir"
