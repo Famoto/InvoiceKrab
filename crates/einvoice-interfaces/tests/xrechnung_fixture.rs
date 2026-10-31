@@ -1,4 +1,4 @@
-//! Integration test: read the real XRechnung 3.0.2 sample through the
+//! Integration test: read the checked-in XRechnung 3.0.2 sample through the
 //! XRechnung spoke.
 //!
 //! The UBL-syntax mappings bind to namespace-*local* element names below the
@@ -50,12 +50,12 @@ fn test_to_hub_reads_namespaced_xrechnung() {
     assert!(!result.has_errors(), "{:?}", result.diagnostics);
     let hub = result.value.expect("reader always yields a hub");
 
-    assert_eq!(hub.invoice_number.as_deref(), Some("RE-2026-04-0042"));
-    assert_eq!(hub.issue_date.as_deref(), Some("2026-04-15"));
+    assert_eq!(hub.invoice_number.as_deref(), Some("LS-2026-0588"));
+    assert_eq!(hub.issue_date.as_deref(), Some("2026-06-30"));
     assert_eq!(hub.document_currency.as_deref(), Some("EUR"));
     assert_eq!(
         hub.payable_amount,
-        Some(Decimal::from_str("1190.00").unwrap())
+        Some(Decimal::from_str("3082.10").unwrap())
     );
     // EN 16931 scheme and unit attributes are carried (BT-34-1, BT-130).
     assert_eq!(hub.seller_electronic_address_scheme.as_deref(), Some("EM"));
@@ -68,11 +68,11 @@ fn test_to_hub_reads_namespaced_xrechnung() {
     );
     assert_eq!(
         hub.invoice_lines[0].item_name.as_deref(),
-        Some("Beratungsleistung — Senior Consultant")
+        Some("Anpassungsentwicklung – Schnittstelle Zählerfernauslesung")
     );
     assert_eq!(
         hub.invoice_lines[1].item_name.as_deref(),
-        Some("Schulungs-Workshop (Pauschale)")
+        Some("Wartungspauschale Fachverfahren")
     );
 }
 
@@ -88,11 +88,11 @@ fn test_cii_dates_are_written_in_the_format_102_wire_form() {
     assert!(!facturx.has_errors(), "{:?}", facturx.diagnostics);
     let xml = facturx.value.expect("writer yields a document");
     assert!(
-        xml.contains(r#"<udt:DateTimeString format="102">20260415</udt:DateTimeString>"#),
+        xml.contains(r#"<udt:DateTimeString format="102">20260630</udt:DateTimeString>"#),
         "{xml}"
     );
     assert!(
-        xml.contains(r#"<udt:DateTimeString format="102">20260515</udt:DateTimeString>"#),
+        xml.contains(r#"<udt:DateTimeString format="102">20260730</udt:DateTimeString>"#),
         "due date: {xml}"
     );
 }
@@ -155,11 +155,11 @@ fn test_ubl_amounts_carry_the_document_currency_and_tax_schemes_are_pinned() {
     // Every emitted amount carries the document currency, derived through
     // `$root.DocumentCurrency` inside the lines and tax subtotals.
     for amount in [
-        "<cbc:LineExtensionAmount currencyID=\"EUR\">1000.00</cbc:LineExtensionAmount>",
-        "<cbc:TaxExclusiveAmount currencyID=\"EUR\">1000.00</cbc:TaxExclusiveAmount>",
-        "<cbc:TaxableAmount currencyID=\"EUR\">1000.00</cbc:TaxableAmount>",
-        "<cbc:PriceAmount currencyID=\"EUR\">80.00</cbc:PriceAmount>",
-        "<cbc:LineExtensionAmount currencyID=\"EUR\">800.00</cbc:LineExtensionAmount>",
+        "<cbc:LineExtensionAmount currencyID=\"EUR\">2590.00</cbc:LineExtensionAmount>",
+        "<cbc:TaxExclusiveAmount currencyID=\"EUR\">2590.00</cbc:TaxExclusiveAmount>",
+        "<cbc:TaxableAmount currencyID=\"EUR\">2590.00</cbc:TaxableAmount>",
+        "<cbc:PriceAmount currencyID=\"EUR\">95.00</cbc:PriceAmount>",
+        "<cbc:LineExtensionAmount currencyID=\"EUR\">1140.00</cbc:LineExtensionAmount>",
     ] {
         assert!(xml.contains(amount), "{amount}\n{xml}");
     }

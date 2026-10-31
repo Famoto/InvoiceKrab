@@ -151,3 +151,5 @@ rustc-ice-*.txt
 CLAUDE.md
 # Third-party XSDs, fetched by scripts/fetch-schemas.sh
 /testfiles/xsd/**/*.xsd
+# Third-party test invoices, fetched by scripts/fetch-corpus.sh
+/testfiles/corpus/**/*.xml

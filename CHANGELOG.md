@@ -34,10 +34,25 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   compliant. `REUSE.toml` records every file's copyright and license,
   including the vendored third-party schemas, and `LICENSES/` holds the
   license texts; CI and pre-commit run `reuse lint`.
-- Licensing: the sample invoices based on the KoSIT XRechnung test suite
-  (`testfiles/en16931-full-*.xml`, `testfiles/xrechnung-3.0.2-beispiel.xml`)
-  are marked Apache-2.0, as their source is, and note that KrabInvoice
-  modified them.
+- The sample invoices (`testfiles/en16931-full-*.xml`,
+  `testfiles/xrechnung-3.0.2-beispiel.xml`) are replaced by fictitious
+  invoices written for KrabInvoice, covering the same business terms. They
+  are no longer based on the KoSIT XRechnung test suite, so they fall under
+  the repository's own license and `LICENSES/Apache-2.0.txt` is removed.
+
+### Added
+
+- A transformation correctness test
+  (`crates/einvoice-interfaces/tests/transformation_correctness.rs`). It reads
+  source and output through the EN 16931 syntax bindings rather than the
+  mappings, so it catches a mapping that reads and writes a term on the same
+  wrong element, and checks the EN 16931 totals rules, FatturaPA's
+  per-rate totals, determinism, idempotence and path independence. Known
+  engine issues are listed in the test and fail it once they are fixed.
+- `scripts/fetch-corpus.sh` fetches the KoSIT XRechnung test suite and the
+  Peppol BIS Billing 3.0 examples, pinned and checksummed, into
+  `testfiles/corpus/` (not in the repository). With
+  `KRAB_CORPUS_DIR=testfiles/corpus`, the correctness test runs them too.
 
 ### Documentation
 

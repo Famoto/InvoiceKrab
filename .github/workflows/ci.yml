@@ -51,8 +51,13 @@ jobs:
       - name: Fetch the XSD schemas (pinned, checksummed)
         run: scripts/fetch-schemas.sh
 
+      - name: Fetch the third-party test corpus (pinned, checksummed)
+        run: scripts/fetch-corpus.sh
+
       - name: Test workspace
         run: cargo test --workspace --locked
+        env:
+          KRAB_CORPUS_DIR: testfiles/corpus
 
       - name: Build with a custom mapping configuration
         run: scripts/check-custom-config.sh

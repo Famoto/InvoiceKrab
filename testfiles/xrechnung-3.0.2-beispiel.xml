@@ -1,95 +1,80 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Based on an example of the KoSIT XRechnung test suite
-  (https://github.com/itplr-kosit/xrechnung-testsuite), licensed under the
-  Apache License, Version 2.0 (see LICENSES/Apache-2.0.txt).
-  Modified by the KrabInvoice authors; the changes are recorded in the
-  KrabInvoice git history.
--->
+<!-- A fictitious XRechnung 3.0 invoice written for KrabInvoice: a minimal
+     CIUS document with e-mail endpoints and one non-Latin-1 item name. -->
 <Invoice
   xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
   xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
   xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2">
-
-  <!-- ===== Rechnungskopf (BT-1 bis BT-25) ===== -->
   <cbc:CustomizationID>urn:cen.eu:en16931:2017#compliant#urn:xoev-de:kosit:standard:xrechnung_3.0</cbc:CustomizationID>
   <cbc:ProfileID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</cbc:ProfileID>
-  <cbc:ID>RE-2026-04-0042</cbc:ID>
-  <cbc:IssueDate>2026-04-15</cbc:IssueDate>
-  <cbc:DueDate>2026-05-15</cbc:DueDate>
+  <cbc:ID>LS-2026-0588</cbc:ID>
+  <cbc:IssueDate>2026-06-30</cbc:IssueDate>
+  <cbc:DueDate>2026-07-30</cbc:DueDate>
   <cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
   <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
-  <cbc:BuyerReference>04011000-1234512345-67</cbc:BuyerReference>
-
-  <!-- ===== Verkäufer (BT-27 bis BT-43) ===== -->
+  <cbc:BuyerReference>992-90009-96</cbc:BuyerReference>
   <cac:AccountingSupplierParty>
     <cac:Party>
-      <cbc:EndpointID schemeID="EM">rechnung@beispiel-gmbh.de</cbc:EndpointID>
+      <cbc:EndpointID schemeID="EM">rechnungen@lindenhof-software.example.org</cbc:EndpointID>
       <cac:PostalAddress>
-        <cbc:StreetName>Musterstraße 12</cbc:StreetName>
-        <cbc:CityName>Berlin</cbc:CityName>
-        <cbc:PostalZone>10115</cbc:PostalZone>
+        <cbc:StreetName>Karl-Heine-Straße 54</cbc:StreetName>
+        <cbc:CityName>Leipzig</cbc:CityName>
+        <cbc:PostalZone>04229</cbc:PostalZone>
         <cac:Country>
           <cbc:IdentificationCode>DE</cbc:IdentificationCode>
         </cac:Country>
       </cac:PostalAddress>
       <cac:PartyTaxScheme>
-        <cbc:CompanyID>DE123456789</cbc:CompanyID>
+        <cbc:CompanyID>DE654320004</cbc:CompanyID>
         <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
       </cac:PartyTaxScheme>
       <cac:PartyLegalEntity>
-        <cbc:RegistrationName>Beispiel GmbH</cbc:RegistrationName>
-        <cbc:CompanyID schemeID="0002">HRB 12345</cbc:CompanyID>
+        <cbc:RegistrationName>Lindenhof Softwarehaus GmbH</cbc:RegistrationName>
+        <cbc:CompanyID schemeID="0002">HRB 30981</cbc:CompanyID>
       </cac:PartyLegalEntity>
       <cac:Contact>
-        <cbc:Name>Buchhaltung Beispiel GmbH</cbc:Name>
-        <cbc:Telephone>+49 30 12345678</cbc:Telephone>
-        <cbc:ElectronicMail>rechnung@beispiel-gmbh.de</cbc:ElectronicMail>
+        <cbc:Name>Finanzbuchhaltung</cbc:Name>
+        <cbc:Telephone>+49 341 555 0190</cbc:Telephone>
+        <cbc:ElectronicMail>rechnungen@lindenhof-software.example.org</cbc:ElectronicMail>
       </cac:Contact>
     </cac:Party>
   </cac:AccountingSupplierParty>
-
-  <!-- ===== Käufer (BT-44 bis BT-60) ===== -->
   <cac:AccountingCustomerParty>
     <cac:Party>
-      <cbc:EndpointID schemeID="EM">einkauf@kunde-ag.de</cbc:EndpointID>
+      <cbc:EndpointID schemeID="EM">eingangsrechnung@stadtwerke-talheim.example.org</cbc:EndpointID>
       <cac:PostalAddress>
-        <cbc:StreetName>Industrieweg 88</cbc:StreetName>
-        <cbc:CityName>Hamburg</cbc:CityName>
-        <cbc:PostalZone>20457</cbc:PostalZone>
+        <cbc:StreetName>Am Wasserturm 3</cbc:StreetName>
+        <cbc:CityName>Talheim</cbc:CityName>
+        <cbc:PostalZone>74388</cbc:PostalZone>
         <cac:Country>
           <cbc:IdentificationCode>DE</cbc:IdentificationCode>
         </cac:Country>
       </cac:PostalAddress>
       <cac:PartyTaxScheme>
-        <cbc:CompanyID>DE987654321</cbc:CompanyID>
+        <cbc:CompanyID>DE543210005</cbc:CompanyID>
         <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
       </cac:PartyTaxScheme>
       <cac:PartyLegalEntity>
-        <cbc:RegistrationName>Kunde AG</cbc:RegistrationName>
+        <cbc:RegistrationName>Stadtwerke Talheim</cbc:RegistrationName>
       </cac:PartyLegalEntity>
     </cac:Party>
   </cac:AccountingCustomerParty>
-
-  <!-- ===== Zahlungsmodalitäten (BT-81 bis BT-86) ===== -->
   <cac:PaymentMeans>
     <cbc:PaymentMeansCode>58</cbc:PaymentMeansCode>
-    <cbc:PaymentID>RE-2026-04-0042</cbc:PaymentID>
+    <cbc:PaymentID>LS-2026-0588</cbc:PaymentID>
     <cac:PayeeFinancialAccount>
-      <cbc:ID>DE89370400440532013000</cbc:ID>
-      <cbc:Name>Beispiel GmbH</cbc:Name>
+      <cbc:ID>DE02120300000000202051</cbc:ID>
+      <cbc:Name>Lindenhof Softwarehaus GmbH</cbc:Name>
       <cac:FinancialInstitutionBranch>
-        <cbc:ID>COBADEFFXXX</cbc:ID>
+        <cbc:ID>BYLADEM1001</cbc:ID>
       </cac:FinancialInstitutionBranch>
     </cac:PayeeFinancialAccount>
   </cac:PaymentMeans>
-
-  <!-- ===== Steuerübersicht (BG-23) ===== -->
   <cac:TaxTotal>
-    <cbc:TaxAmount currencyID="EUR">190.00</cbc:TaxAmount>
+    <cbc:TaxAmount currencyID="EUR">492.10</cbc:TaxAmount>
     <cac:TaxSubtotal>
-      <cbc:TaxableAmount currencyID="EUR">1000.00</cbc:TaxableAmount>
-      <cbc:TaxAmount currencyID="EUR">190.00</cbc:TaxAmount>
+      <cbc:TaxableAmount currencyID="EUR">2590.00</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="EUR">492.10</cbc:TaxAmount>
       <cac:TaxCategory>
         <cbc:ID>S</cbc:ID>
         <cbc:Percent>19</cbc:Percent>
@@ -97,23 +82,19 @@
       </cac:TaxCategory>
     </cac:TaxSubtotal>
   </cac:TaxTotal>
-
-  <!-- ===== Summen (BT-106 bis BT-115) ===== -->
   <cac:LegalMonetaryTotal>
-    <cbc:LineExtensionAmount currencyID="EUR">1000.00</cbc:LineExtensionAmount>
-    <cbc:TaxExclusiveAmount currencyID="EUR">1000.00</cbc:TaxExclusiveAmount>
-    <cbc:TaxInclusiveAmount currencyID="EUR">1190.00</cbc:TaxInclusiveAmount>
-    <cbc:PayableAmount currencyID="EUR">1190.00</cbc:PayableAmount>
+    <cbc:LineExtensionAmount currencyID="EUR">2590.00</cbc:LineExtensionAmount>
+    <cbc:TaxExclusiveAmount currencyID="EUR">2590.00</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount currencyID="EUR">3082.10</cbc:TaxInclusiveAmount>
+    <cbc:PayableAmount currencyID="EUR">3082.10</cbc:PayableAmount>
   </cac:LegalMonetaryTotal>
-
-  <!-- ===== Positionen (BG-25) ===== -->
   <cac:InvoiceLine>
     <cbc:ID>1</cbc:ID>
-    <cbc:InvoicedQuantity unitCode="HUR">10</cbc:InvoicedQuantity>
-    <cbc:LineExtensionAmount currencyID="EUR">800.00</cbc:LineExtensionAmount>
+    <cbc:InvoicedQuantity unitCode="HUR">12</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="EUR">1140.00</cbc:LineExtensionAmount>
     <cac:Item>
-      <cbc:Description>April 2026, Projekt #PRJ-2026-014</cbc:Description>
-      <cbc:Name>Beratungsleistung — Senior Consultant</cbc:Name>
+      <cbc:Description>June 2026, ticket LS-4410</cbc:Description>
+      <cbc:Name>Anpassungsentwicklung – Schnittstelle Zählerfernauslesung</cbc:Name>
       <cac:ClassifiedTaxCategory>
         <cbc:ID>S</cbc:ID>
         <cbc:Percent>19</cbc:Percent>
@@ -121,17 +102,16 @@
       </cac:ClassifiedTaxCategory>
     </cac:Item>
     <cac:Price>
-      <cbc:PriceAmount currencyID="EUR">80.00</cbc:PriceAmount>
+      <cbc:PriceAmount currencyID="EUR">95.00</cbc:PriceAmount>
     </cac:Price>
   </cac:InvoiceLine>
-
   <cac:InvoiceLine>
     <cbc:ID>2</cbc:ID>
     <cbc:InvoicedQuantity unitCode="C62">1</cbc:InvoicedQuantity>
-    <cbc:LineExtensionAmount currencyID="EUR">200.00</cbc:LineExtensionAmount>
+    <cbc:LineExtensionAmount currencyID="EUR">1450.00</cbc:LineExtensionAmount>
     <cac:Item>
-      <cbc:Description>1 Tag, on-site, max. 12 Teilnehmer</cbc:Description>
-      <cbc:Name>Schulungs-Workshop (Pauschale)</cbc:Name>
+      <cbc:Description>Q3 2026, hotline and updates</cbc:Description>
+      <cbc:Name>Wartungspauschale Fachverfahren</cbc:Name>
       <cac:ClassifiedTaxCategory>
         <cbc:ID>S</cbc:ID>
         <cbc:Percent>19</cbc:Percent>
@@ -139,8 +119,7 @@
       </cac:ClassifiedTaxCategory>
     </cac:Item>
     <cac:Price>
-      <cbc:PriceAmount currencyID="EUR">200.00</cbc:PriceAmount>
+      <cbc:PriceAmount currencyID="EUR">1450.00</cbc:PriceAmount>
     </cac:Price>
   </cac:InvoiceLine>
-
 </Invoice>

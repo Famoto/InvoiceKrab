@@ -417,14 +417,69 @@ fn sum(doc: &Doc, bt: &str) -> Option<Decimal> {
     decimals(doc.by_bt(bt)).map(|v| v.iter().sum())
 }
 
-/// Check 2: the EN 16931 calculation rules the oracle can see, as
-/// `(rule, holds)`; a rule whose operands are absent is not listed.
+/// The raw decimals at a path, in document order (unparsable values skipped).
+fn raw_decimals(doc: &Doc, path: &str) -> Vec<Decimal> {
+    let values = doc.values.get(path).into_iter().flatten();
+    values
+        .filter_map(|v| Decimal::from_str(v.trim()).ok())
+        .collect()
+}
+
+/// FatturaPA's own consistency rule (SdI check 00422): per VAT rate, the
+/// summary's `ImponibileImporto` is the sum of the lines' `PrezzoTotale` at
+/// that rate plus the summary's `Arrotondamento`. Rates are summed rather
+/// than matched one to one, since one rate may have several summaries (one
+/// per `Natura`). Line and summary fields are mandatory per element, so the
+/// lists align by position; when they do not, the rule is not listed.
+fn fatturapa_totals(doc: &Doc) -> Vec<(String, bool)> {
+    let goods = "/FatturaElettronica/FatturaElettronicaBody/DatiBeniServizi";
+    let line_rate = raw_decimals(doc, &format!("{goods}/DettaglioLinee/AliquotaIVA"));
+    let line_total = raw_decimals(doc, &format!("{goods}/DettaglioLinee/PrezzoTotale"));
+    let sum_rate = raw_decimals(doc, &format!("{goods}/DatiRiepilogo/AliquotaIVA"));
+    let sum_base = raw_decimals(doc, &format!("{goods}/DatiRiepilogo/ImponibileImporto"));
+    if line_rate.len() != line_total.len()
+        || sum_rate.len() != sum_base.len()
+        || sum_rate.is_empty()
+    {
+        return Vec::new();
+    }
+    // Arrotondamento is optional, so it can only be attributed when every
+    // summary carries one; otherwise it is left out (and may show as a gap).
+    let rounding = raw_decimals(doc, &format!("{goods}/DatiRiepilogo/Arrotondamento"));
+    let rounding = if rounding.len() == sum_rate.len() {
+        rounding
+    } else {
+        vec![Decimal::ZERO; sum_rate.len()]
+    };
+    let mut by_rate: BTreeMap<String, (Decimal, Decimal)> = BTreeMap::new();
+    for (rate, total) in line_rate.iter().zip(&line_total) {
+        by_rate.entry(rate.normalize().to_string()).or_default().1 += total;
+    }
+    for ((rate, base), round) in sum_rate.iter().zip(&sum_base).zip(&rounding) {
+        let entry = by_rate.entry(rate.normalize().to_string()).or_default();
+        entry.0 += base;
+        entry.1 += round;
+    }
+    by_rate
+        .into_iter()
+        .map(|(rate, (base, lines))| {
+            (
+                format!("FatturaPA 00422 ImponibileImporto at {rate}% = Σ PrezzoTotale + Arrotondamento: carried {base}, computed {lines}"),
+                base == lines,
+            )
+        })
+        .collect()
+}
+
+/// Check 2: the EN 16931 calculation rules the oracle can see (FatturaPA's
+/// own rule for FatturaPA), as `(rule, holds)`; a rule whose operands are
+/// absent is not listed.
 fn totals(doc: &Doc) -> Vec<(String, bool)> {
+    if doc.syntax == Syntax::FatturaPa {
+        return fatturapa_totals(doc);
+    }
     let mut rules = Vec::new();
     let zero = Decimal::ZERO;
-    if doc.syntax == Syntax::FatturaPa {
-        return rules; // FatturaPA has no BR-CO totals to hold it to
-    }
     let mut rule = |name: &str, carried: Option<Decimal>, computed: Option<Decimal>| {
         if let (Some(c), Some(k)) = (carried, computed) {
             rules.push((format!("{name}: carried {c}, computed {k}"), c == k));
@@ -679,6 +734,9 @@ fn test_transformations_carry_their_source_correctly() {
         }
     }
 
+    let corpus = std::env::var_os("KRAB_CORPUS_DIR").is_some();
+    let (known, failures, stale) = split_known(failures, corpus);
+    report.extend(known.iter().map(|k| format!("known issue: {k}")));
     eprintln!("{}", report.join("\n"));
     // Not vacuous: every source reaches at least its own format.
     assert!(
@@ -687,11 +745,91 @@ fn test_transformations_carry_their_source_correctly() {
         sources.len()
     );
     assert!(
+        stale.is_empty(),
+        "\nknown issue(s) no failure shows any more (fixed? remove them from KNOWN_ISSUES):\n{}",
+        stale.join("\n")
+    );
+    assert!(
         failures.is_empty(),
         "\n{} failure(s):\n{}",
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// An engine issue this harness found that is not fixed yet: a failure line
+/// containing every one of `matches` is reported as known instead of failing.
+/// An issue no failure matches any more fails the test, so its fix is noticed
+/// and the entry removed. A `corpus_only` issue shows only with
+/// `KRAB_CORPUS_DIR`, and is only held to that then.
+struct KnownIssue {
+    matches: &'static [&'static str],
+    why: &'static str,
+    corpus_only: bool,
+}
+
+const KNOWN_ISSUES: &[KnownIssue] = &[
+    KnownIssue {
+        matches: &["-> fatturapa:1.2.2: output violates FatturaPA 00422"],
+        why: "the FatturaPA writer drops document-level allowances and charges (BG-20, BG-21) \
+              but counts them in DatiRiepilogo, so the lines no longer add up to \
+              ImponibileImporto (SdI rejects that with 00422)",
+        corpus_only: false,
+    },
+    KnownIssue {
+        matches: &["-> fatturapa:1.2.2 -> ", "BT-109 total without VAT"],
+        why: "the same dropped document-level allowances and charges: read back from \
+              FatturaPA, BT-109 is derived from the lines alone",
+        corpus_only: false,
+    },
+    KnownIssue {
+        matches: &["-> fatturapa:1.2.2 -> ", "BT-113 paid amount"],
+        why: "FatturaPA carries neither BT-113 nor BT-114: read back, BR-CO-16 derives the \
+              paid amount as BT-112 - BT-115, so a rounding amount becomes a prepayment",
+        corpus_only: false,
+    },
+    KnownIssue {
+        matches: &["BT-31/32 seller VAT/tax id"],
+        why: "the UBL readers bind BT-32 only for PartyTaxScheme/TaxScheme/ID `FC` (`TAX` \
+              for Peppol); EN 16931 allows any value but `VAT`, so others (KoSIT uses `???` \
+              and `ID`) are dropped without a diagnostic",
+        corpus_only: true,
+    },
+];
+
+/// Splits `failures` into known issues (one line per issue, with its count),
+/// the remaining failures, and the issues no failure matched any more.
+fn split_known(failures: Vec<String>, corpus: bool) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut hits = vec![0usize; KNOWN_ISSUES.len()];
+    let unknown = failures
+        .into_iter()
+        .filter(|f| {
+            match KNOWN_ISSUES
+                .iter()
+                .position(|k| k.matches.iter().all(|m| f.contains(m)))
+            {
+                Some(i) => {
+                    hits[i] += 1;
+                    false
+                }
+                None => true,
+            }
+        })
+        .collect();
+    let mut known = Vec::new();
+    let mut stale = Vec::new();
+    for (issue, &n) in KNOWN_ISSUES.iter().zip(&hits) {
+        if n > 0 {
+            known.push(format!(
+                "{} ({n} failure(s)): {}",
+                issue.matches.join(" … "),
+                issue.why
+            ));
+        } else if corpus || !issue.corpus_only {
+            stale.push(format!("{}: {}", issue.matches.join(" … "), issue.why));
+        }
+    }
+    (known, unknown, stale)
 }
 
 /// A rule's id, its text up to the first `:` (`"BR-CO-10 BT-106 = Σ BT-131"`).
@@ -776,6 +914,60 @@ fn test_oracle_catches_changed_dropped_reordered_and_inconsistent() {
         independence(&ubl, &dropped, false),
         Vec::<String>::new(),
         "a lossy hop may drop"
+    );
+}
+
+#[test]
+fn test_fatturapa_summary_must_equal_its_lines_per_rate() {
+    let doc = |charge: &str| {
+        format!(
+            "<p:FatturaElettronica xmlns:p=\"urn:p\"><FatturaElettronicaBody><DatiBeniServizi>\
+             <DettaglioLinee><PrezzoTotale>100.00</PrezzoTotale><AliquotaIVA>22.00</AliquotaIVA></DettaglioLinee>\
+             <DettaglioLinee><PrezzoTotale>50.00</PrezzoTotale><AliquotaIVA>0.00</AliquotaIVA></DettaglioLinee>{charge}\
+             <DatiRiepilogo><AliquotaIVA>22.00</AliquotaIVA><ImponibileImporto>125.00</ImponibileImporto></DatiRiepilogo>\
+             <DatiRiepilogo><AliquotaIVA>0.00</AliquotaIVA><ImponibileImporto>50</ImponibileImporto></DatiRiepilogo>\
+             </DatiBeniServizi></FatturaElettronicaBody></p:FatturaElettronica>"
+        )
+    };
+    let charge = "<DettaglioLinee><PrezzoTotale>25</PrezzoTotale><AliquotaIVA>22</AliquotaIVA></DettaglioLinee>";
+    let with_charge = Doc::parse(&doc(charge)).unwrap();
+    assert_eq!(with_charge.syntax, Syntax::FatturaPa);
+    let rules = totals(&with_charge);
+    assert_eq!(rules.len(), 2, "{rules:?}");
+    assert!(rules.iter().all(|(_, holds)| *holds), "{rules:?}");
+    // The charge dropped from the lines, still counted in the summary.
+    let broken: Vec<_> = totals(&Doc::parse(&doc("")).unwrap())
+        .into_iter()
+        .filter(|(_, h)| !h)
+        .collect();
+    assert_eq!(broken.len(), 1, "{broken:?}");
+    assert!(
+        broken[0].0.contains("at 22%") && broken[0].0.contains("carried 125.00, computed 100.00"),
+        "{broken:?}"
+    );
+}
+
+#[test]
+fn test_known_issues_absorb_their_failures_and_go_stale_once_fixed() {
+    let fpa = "x.xml: ubl-invoice:2.1 -> fatturapa:1.2.2: output violates FatturaPA 00422 at 19%";
+    let other = "x.xml: ubl-invoice:2.1 -> facturx-invoice:1.0: BT-1 invoice number: dropped";
+    let (known, unknown, stale) = split_known(vec![fpa.into(), fpa.into(), other.into()], false);
+    assert_eq!(
+        unknown,
+        vec![other.to_string()],
+        "an unlisted failure still fails"
+    );
+    assert_eq!(known.len(), 1);
+    assert!(known[0].contains("(2 failure(s))"), "{known:?}");
+    // The other non-corpus issues matched nothing: stale. The corpus-only one
+    // is not held to it without a corpus.
+    let expected_stale = KNOWN_ISSUES.iter().filter(|k| !k.corpus_only).count() - 1;
+    assert_eq!(stale.len(), expected_stale, "{stale:?}");
+    let (_, _, stale) = split_known(Vec::new(), true);
+    assert_eq!(
+        stale.len(),
+        KNOWN_ISSUES.len(),
+        "with a corpus, every issue must show"
     );
 }
 

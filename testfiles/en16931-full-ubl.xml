@@ -1,204 +1,199 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Based on an example of the KoSIT XRechnung test suite
-  (https://github.com/itplr-kosit/xrechnung-testsuite), licensed under the
-  Apache License, Version 2.0 (see LICENSES/Apache-2.0.txt).
-  Modified by the KrabInvoice authors; the changes are recorded in the
-  KrabInvoice git history.
--->
+<!-- A fictitious invoice written for KrabInvoice: every EN 16931 business term
+     the UBL spoke covers, once. The same invoice as en16931-full-cii.xml. -->
 <Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
   <cbc:CustomizationID>urn:cen.eu:en16931:2017</cbc:CustomizationID>
   <cbc:ProfileID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</cbc:ProfileID>
-  <cbc:ID>INV-2026-001</cbc:ID>
-  <cbc:IssueDate>2026-01-31</cbc:IssueDate>
-  <cbc:DueDate>2026-02-28</cbc:DueDate>
+  <cbc:ID>HK-2026-0317</cbc:ID>
+  <cbc:IssueDate>2026-03-17</cbc:IssueDate>
+  <cbc:DueDate>2026-04-16</cbc:DueDate>
   <cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
-  <cbc:Note>Thank you for your business</cbc:Note>
-  <cbc:TaxPointDate>2026-01-31</cbc:TaxPointDate>
+  <cbc:Note>Maintenance of quay cranes 3 and 4, March 2026</cbc:Note>
+  <cbc:TaxPointDate>2026-03-15</cbc:TaxPointDate>
   <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
-  <cbc:AccountingCost>ACC-1</cbc:AccountingCost>
-  <cbc:BuyerReference>04011000-12345-34</cbc:BuyerReference>
+  <cbc:AccountingCost>KST-4711</cbc:AccountingCost>
+  <cbc:BuyerReference>ML-EINKAUF-22</cbc:BuyerReference>
   <cac:InvoicePeriod>
-    <cbc:StartDate>2026-01-01</cbc:StartDate>
-    <cbc:EndDate>2026-01-31</cbc:EndDate>
+    <cbc:StartDate>2026-03-01</cbc:StartDate>
+    <cbc:EndDate>2026-03-15</cbc:EndDate>
   </cac:InvoicePeriod>
   <cac:OrderReference>
-    <cbc:ID>PO-1</cbc:ID>
-    <cbc:SalesOrderID>SO-1</cbc:SalesOrderID>
+    <cbc:ID>ML-PO-88213</cbc:ID>
+    <cbc:SalesOrderID>HK-AB-0931</cbc:SalesOrderID>
   </cac:OrderReference>
   <cac:BillingReference>
     <cac:InvoiceDocumentReference>
-      <cbc:ID>INV-2025-099</cbc:ID>
-      <cbc:IssueDate>2025-12-15</cbc:IssueDate>
+      <cbc:ID>HK-2026-0244</cbc:ID>
+      <cbc:IssueDate>2026-02-27</cbc:IssueDate>
     </cac:InvoiceDocumentReference>
   </cac:BillingReference>
   <cac:DespatchDocumentReference>
-    <cbc:ID>DA-1</cbc:ID>
+    <cbc:ID>HK-LS-5520</cbc:ID>
   </cac:DespatchDocumentReference>
   <cac:ReceiptDocumentReference>
-    <cbc:ID>RA-1</cbc:ID>
+    <cbc:ID>ML-WE-0412</cbc:ID>
   </cac:ReceiptDocumentReference>
   <cac:OriginatorDocumentReference>
-    <cbc:ID>LOT-1</cbc:ID>
+    <cbc:ID>LOS-2025-07</cbc:ID>
   </cac:OriginatorDocumentReference>
   <cac:ContractDocumentReference>
-    <cbc:ID>CON-1</cbc:ID>
+    <cbc:ID>RV-2025-019</cbc:ID>
   </cac:ContractDocumentReference>
   <cac:AdditionalDocumentReference>
-    <cbc:ID>TS-1</cbc:ID>
-    <cbc:DocumentDescription>Timesheet</cbc:DocumentDescription>
+    <cbc:ID>PRUEF-0317</cbc:ID>
+    <cbc:DocumentDescription>Inspection report</cbc:DocumentDescription>
     <cac:Attachment>
-      <cbc:EmbeddedDocumentBinaryObject mimeCode="application/pdf" filename="timesheet.pdf">aGVsbG8gd29ybGQ=</cbc:EmbeddedDocumentBinaryObject>
+      <cbc:EmbeddedDocumentBinaryObject mimeCode="text/csv" filename="inspection.csv">Y3JhbmUsc3RhdHVzCjMsb2sKNCxvawo=</cbc:EmbeddedDocumentBinaryObject>
     </cac:Attachment>
   </cac:AdditionalDocumentReference>
   <cac:AdditionalDocumentReference>
-    <cbc:ID>SPEC-1</cbc:ID>
-    <cbc:DocumentDescription>Specification</cbc:DocumentDescription>
+    <cbc:ID>WARTUNGSPLAN-26</cbc:ID>
+    <cbc:DocumentDescription>Maintenance schedule</cbc:DocumentDescription>
     <cac:Attachment>
       <cac:ExternalReference>
-        <cbc:URI>https://example.com/spec.pdf</cbc:URI>
+        <cbc:URI>https://docs.example.org/wartungsplan-2026.pdf</cbc:URI>
       </cac:ExternalReference>
     </cac:Attachment>
   </cac:AdditionalDocumentReference>
   <cac:AdditionalDocumentReference>
-    <cbc:ID schemeID="AAA">OBJ-1</cbc:ID>
+    <cbc:ID schemeID="AAA">KRAN-03</cbc:ID>
     <cbc:DocumentTypeCode>130</cbc:DocumentTypeCode>
   </cac:AdditionalDocumentReference>
   <cac:ProjectReference>
-    <cbc:ID>PRJ-1</cbc:ID>
+    <cbc:ID>KAI-NORD-26</cbc:ID>
   </cac:ProjectReference>
   <cac:AccountingSupplierParty>
     <cac:Party>
-      <cbc:EndpointID schemeID="0088">4000001000012</cbc:EndpointID>
+      <cbc:EndpointID schemeID="0088">4012345670011</cbc:EndpointID>
       <cac:PartyIdentification>
-        <cbc:ID schemeID="0088">4000001123452</cbc:ID>
+        <cbc:ID schemeID="0088">4012345670028</cbc:ID>
       </cac:PartyIdentification>
       <cac:PartyName>
-        <cbc:Name>Seller Trading</cbc:Name>
+        <cbc:Name>Hafenkran Service</cbc:Name>
       </cac:PartyName>
       <cac:PostalAddress>
-        <cbc:StreetName>Hauptstrasse 1</cbc:StreetName>
-        <cbc:AdditionalStreetName>Building A</cbc:AdditionalStreetName>
-        <cbc:CityName>Berlin</cbc:CityName>
-        <cbc:PostalZone>10115</cbc:PostalZone>
-        <cbc:CountrySubentity>BE</cbc:CountrySubentity>
+        <cbc:StreetName>Am Kaiserhafen 12</cbc:StreetName>
+        <cbc:AdditionalStreetName>Halle B</cbc:AdditionalStreetName>
+        <cbc:CityName>Bremerhaven</cbc:CityName>
+        <cbc:PostalZone>27568</cbc:PostalZone>
+        <cbc:CountrySubentity>HB</cbc:CountrySubentity>
         <cac:AddressLine>
-          <cbc:Line>Floor 3</cbc:Line>
+          <cbc:Line>Tor 2</cbc:Line>
         </cac:AddressLine>
         <cac:Country>
           <cbc:IdentificationCode>DE</cbc:IdentificationCode>
         </cac:Country>
       </cac:PostalAddress>
       <cac:PartyTaxScheme>
-        <cbc:CompanyID>DE123456789</cbc:CompanyID>
+        <cbc:CompanyID>DE987650001</cbc:CompanyID>
         <cac:TaxScheme>
           <cbc:ID>VAT</cbc:ID>
         </cac:TaxScheme>
       </cac:PartyTaxScheme>
       <cac:PartyTaxScheme>
-        <cbc:CompanyID>201/113/40209</cbc:CompanyID>
+        <cbc:CompanyID>75/218/04411</cbc:CompanyID>
         <cac:TaxScheme>
           <cbc:ID>FC</cbc:ID>
         </cac:TaxScheme>
       </cac:PartyTaxScheme>
       <cac:PartyLegalEntity>
-        <cbc:RegistrationName>Seller GmbH</cbc:RegistrationName>
-        <cbc:CompanyID>HRB 12345</cbc:CompanyID>
-        <cbc:CompanyLegalForm>Registered at Amtsgericht Berlin</cbc:CompanyLegalForm>
+        <cbc:RegistrationName>Hafenkran Service GmbH</cbc:RegistrationName>
+        <cbc:CompanyID>HRB 4521 BHV</cbc:CompanyID>
+        <cbc:CompanyLegalForm>Amtsgericht Bremen, managing director Ilka Brandt</cbc:CompanyLegalForm>
       </cac:PartyLegalEntity>
       <cac:Contact>
-        <cbc:Name>Jane Seller</cbc:Name>
-        <cbc:Telephone>+49 30 123456</cbc:Telephone>
-        <cbc:ElectronicMail>jane@seller.example.com</cbc:ElectronicMail>
+        <cbc:Name>Ilka Brandt</cbc:Name>
+        <cbc:Telephone>+49 471 555 0130</cbc:Telephone>
+        <cbc:ElectronicMail>rechnung@hafenkran.example.org</cbc:ElectronicMail>
       </cac:Contact>
     </cac:Party>
   </cac:AccountingSupplierParty>
   <cac:AccountingCustomerParty>
     <cac:Party>
-      <cbc:EndpointID schemeID="0088">4000001000029</cbc:EndpointID>
+      <cbc:EndpointID schemeID="0088">4012345670035</cbc:EndpointID>
       <cac:PartyIdentification>
-        <cbc:ID schemeID="0088">4000001987658</cbc:ID>
+        <cbc:ID schemeID="0088">4012345670042</cbc:ID>
       </cac:PartyIdentification>
       <cac:PartyName>
-        <cbc:Name>Buyer Trading</cbc:Name>
+        <cbc:Name>Möwe Logistik</cbc:Name>
       </cac:PartyName>
       <cac:PostalAddress>
-        <cbc:StreetName>Marktplatz 2</cbc:StreetName>
-        <cbc:AdditionalStreetName>Suite 5</cbc:AdditionalStreetName>
-        <cbc:CityName>Munich</cbc:CityName>
-        <cbc:PostalZone>80331</cbc:PostalZone>
-        <cbc:CountrySubentity>BY</cbc:CountrySubentity>
+        <cbc:StreetName>Skandinavienkai 7</cbc:StreetName>
+        <cbc:AdditionalStreetName>Verwaltung</cbc:AdditionalStreetName>
+        <cbc:CityName>Lübeck</cbc:CityName>
+        <cbc:PostalZone>23570</cbc:PostalZone>
+        <cbc:CountrySubentity>SH</cbc:CountrySubentity>
         <cac:AddressLine>
-          <cbc:Line>Rear building</cbc:Line>
+          <cbc:Line>3. Stock</cbc:Line>
         </cac:AddressLine>
         <cac:Country>
           <cbc:IdentificationCode>DE</cbc:IdentificationCode>
         </cac:Country>
       </cac:PostalAddress>
       <cac:PartyTaxScheme>
-        <cbc:CompanyID>DE987654321</cbc:CompanyID>
+        <cbc:CompanyID>DE876540002</cbc:CompanyID>
         <cac:TaxScheme>
           <cbc:ID>VAT</cbc:ID>
         </cac:TaxScheme>
       </cac:PartyTaxScheme>
       <cac:PartyLegalEntity>
-        <cbc:RegistrationName>Buyer AG</cbc:RegistrationName>
-        <cbc:CompanyID>HRB 98765</cbc:CompanyID>
+        <cbc:RegistrationName>Möwe Logistik AG</cbc:RegistrationName>
+        <cbc:CompanyID>HRB 1187 HL</cbc:CompanyID>
       </cac:PartyLegalEntity>
       <cac:Contact>
-        <cbc:Name>John Buyer</cbc:Name>
-        <cbc:Telephone>+49 89 654321</cbc:Telephone>
-        <cbc:ElectronicMail>john@buyer.example.com</cbc:ElectronicMail>
+        <cbc:Name>Jonas Petersen</cbc:Name>
+        <cbc:Telephone>+49 451 555 0177</cbc:Telephone>
+        <cbc:ElectronicMail>einkauf@moewe-logistik.example.org</cbc:ElectronicMail>
       </cac:Contact>
     </cac:Party>
   </cac:AccountingCustomerParty>
   <cac:PayeeParty>
     <cac:PartyIdentification>
-      <cbc:ID schemeID="0088">4000001555550</cbc:ID>
+      <cbc:ID schemeID="0088">4012345670059</cbc:ID>
     </cac:PartyIdentification>
     <cac:PartyName>
-      <cbc:Name>Payee Factoring GmbH</cbc:Name>
+      <cbc:Name>Elbe Factoring GmbH</cbc:Name>
     </cac:PartyName>
     <cac:PartyLegalEntity>
-      <cbc:CompanyID>HRB 55555</cbc:CompanyID>
+      <cbc:CompanyID>HRB 90210 HH</cbc:CompanyID>
     </cac:PartyLegalEntity>
   </cac:PayeeParty>
   <cac:TaxRepresentativeParty>
     <cac:PartyName>
-      <cbc:Name>Tax Rep GmbH</cbc:Name>
+      <cbc:Name>Steuerkontor Weser GmbH</cbc:Name>
     </cac:PartyName>
     <cac:PostalAddress>
-      <cbc:StreetName>Steuerweg 3</cbc:StreetName>
-      <cbc:AdditionalStreetName>Office 7</cbc:AdditionalStreetName>
-      <cbc:CityName>Cologne</cbc:CityName>
-      <cbc:PostalZone>50667</cbc:PostalZone>
-      <cbc:CountrySubentity>NW</cbc:CountrySubentity>
+      <cbc:StreetName>Schlachte 31</cbc:StreetName>
+      <cbc:AdditionalStreetName>Kontorhaus</cbc:AdditionalStreetName>
+      <cbc:CityName>Bremen</cbc:CityName>
+      <cbc:PostalZone>28195</cbc:PostalZone>
+      <cbc:CountrySubentity>HB</cbc:CountrySubentity>
       <cac:AddressLine>
-        <cbc:Line>Annex</cbc:Line>
+        <cbc:Line>Eingang C</cbc:Line>
       </cac:AddressLine>
       <cac:Country>
         <cbc:IdentificationCode>DE</cbc:IdentificationCode>
       </cac:Country>
     </cac:PostalAddress>
     <cac:PartyTaxScheme>
-      <cbc:CompanyID>DE111222333</cbc:CompanyID>
+      <cbc:CompanyID>DE765430003</cbc:CompanyID>
       <cac:TaxScheme>
         <cbc:ID>VAT</cbc:ID>
       </cac:TaxScheme>
     </cac:PartyTaxScheme>
   </cac:TaxRepresentativeParty>
   <cac:Delivery>
-    <cbc:ActualDeliveryDate>2026-01-20</cbc:ActualDeliveryDate>
+    <cbc:ActualDeliveryDate>2026-03-12</cbc:ActualDeliveryDate>
     <cac:DeliveryLocation>
-      <cbc:ID schemeID="0088">4000001000005</cbc:ID>
+      <cbc:ID schemeID="0088">4012345670066</cbc:ID>
       <cac:Address>
-        <cbc:StreetName>Lagerstrasse 9</cbc:StreetName>
-        <cbc:AdditionalStreetName>Gate 2</cbc:AdditionalStreetName>
-        <cbc:CityName>Hamburg</cbc:CityName>
-        <cbc:PostalZone>20095</cbc:PostalZone>
-        <cbc:CountrySubentity>HH</cbc:CountrySubentity>
+        <cbc:StreetName>Seehafenstraße 4</cbc:StreetName>
+        <cbc:AdditionalStreetName>Liegeplatz 31</cbc:AdditionalStreetName>
+        <cbc:CityName>Rostock</cbc:CityName>
+        <cbc:PostalZone>18147</cbc:PostalZone>
+        <cbc:CountrySubentity>MV</cbc:CountrySubentity>
         <cac:AddressLine>
-          <cbc:Line>Dock 4</cbc:Line>
+          <cbc:Line>Kranbahn Nord</cbc:Line>
         </cac:AddressLine>
         <cac:Country>
           <cbc:IdentificationCode>DE</cbc:IdentificationCode>
@@ -207,31 +202,31 @@
     </cac:DeliveryLocation>
     <cac:DeliveryParty>
       <cac:PartyName>
-        <cbc:Name>Buyer Warehouse</cbc:Name>
+        <cbc:Name>Möwe Logistik Terminal Rostock</cbc:Name>
       </cac:PartyName>
     </cac:DeliveryParty>
   </cac:Delivery>
   <cac:PaymentMeans>
     <cbc:PaymentMeansCode name="SEPA credit transfer">58</cbc:PaymentMeansCode>
-    <cbc:PaymentID>INV-2026-001</cbc:PaymentID>
+    <cbc:PaymentID>HK-2026-0317</cbc:PaymentID>
     <cac:PayeeFinancialAccount>
-      <cbc:ID>DE75512108001245126199</cbc:ID>
-      <cbc:Name>Seller GmbH</cbc:Name>
+      <cbc:ID>DE02120300000000202051</cbc:ID>
+      <cbc:Name>Elbe Factoring GmbH</cbc:Name>
       <cac:FinancialInstitutionBranch>
-        <cbc:ID>SOGEDEFFXXX</cbc:ID>
+        <cbc:ID>BYLADEM1001</cbc:ID>
       </cac:FinancialInstitutionBranch>
     </cac:PayeeFinancialAccount>
   </cac:PaymentMeans>
   <cac:PaymentTerms>
-    <cbc:Note>30 days net</cbc:Note>
+    <cbc:Note>Payable within 30 days without deduction</cbc:Note>
   </cac:PaymentTerms>
   <cac:AllowanceCharge>
     <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
     <cbc:AllowanceChargeReasonCode>95</cbc:AllowanceChargeReasonCode>
-    <cbc:AllowanceChargeReason>Loyalty discount</cbc:AllowanceChargeReason>
-    <cbc:MultiplierFactorNumeric>10.00</cbc:MultiplierFactorNumeric>
-    <cbc:Amount currencyID="EUR">10.00</cbc:Amount>
-    <cbc:BaseAmount currencyID="EUR">100.00</cbc:BaseAmount>
+    <cbc:AllowanceChargeReason>Framework contract rebate</cbc:AllowanceChargeReason>
+    <cbc:MultiplierFactorNumeric>5.00</cbc:MultiplierFactorNumeric>
+    <cbc:Amount currencyID="EUR">25.50</cbc:Amount>
+    <cbc:BaseAmount currencyID="EUR">510.00</cbc:BaseAmount>
     <cac:TaxCategory>
       <cbc:ID>S</cbc:ID>
       <cbc:Percent>19.00</cbc:Percent>
@@ -245,8 +240,8 @@
     <cbc:AllowanceChargeReasonCode>FC</cbc:AllowanceChargeReasonCode>
     <cbc:AllowanceChargeReason>Freight</cbc:AllowanceChargeReason>
     <cbc:MultiplierFactorNumeric>10.00</cbc:MultiplierFactorNumeric>
-    <cbc:Amount currencyID="EUR">10.00</cbc:Amount>
-    <cbc:BaseAmount currencyID="EUR">100.00</cbc:BaseAmount>
+    <cbc:Amount currencyID="EUR">30.00</cbc:Amount>
+    <cbc:BaseAmount currencyID="EUR">300.00</cbc:BaseAmount>
     <cac:TaxCategory>
       <cbc:ID>S</cbc:ID>
       <cbc:Percent>19.00</cbc:Percent>
@@ -256,10 +251,10 @@
     </cac:TaxCategory>
   </cac:AllowanceCharge>
   <cac:TaxTotal>
-    <cbc:TaxAmount currencyID="EUR">19.00</cbc:TaxAmount>
+    <cbc:TaxAmount currencyID="EUR">125.69</cbc:TaxAmount>
     <cac:TaxSubtotal>
-      <cbc:TaxableAmount currencyID="EUR">100.00</cbc:TaxableAmount>
-      <cbc:TaxAmount currencyID="EUR">19.00</cbc:TaxAmount>
+      <cbc:TaxableAmount currencyID="EUR">661.50</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="EUR">125.69</cbc:TaxAmount>
       <cac:TaxCategory>
         <cbc:ID>S</cbc:ID>
         <cbc:Percent>19.00</cbc:Percent>
@@ -269,13 +264,13 @@
       </cac:TaxCategory>
     </cac:TaxSubtotal>
     <cac:TaxSubtotal>
-      <cbc:TaxableAmount currencyID="EUR">100.00</cbc:TaxableAmount>
+      <cbc:TaxableAmount currencyID="EUR">240.00</cbc:TaxableAmount>
       <cbc:TaxAmount currencyID="EUR">0.00</cbc:TaxAmount>
       <cac:TaxCategory>
         <cbc:ID>E</cbc:ID>
         <cbc:Percent>0.00</cbc:Percent>
         <cbc:TaxExemptionReasonCode>VATEX-EU-132</cbc:TaxExemptionReasonCode>
-        <cbc:TaxExemptionReason>Exempt under Article 132 of Directive 2006/112/EC</cbc:TaxExemptionReason>
+        <cbc:TaxExemptionReason>Vocational training, exempt under Article 132(1)(i) of Directive 2006/112/EC</cbc:TaxExemptionReason>
         <cac:TaxScheme>
           <cbc:ID>VAT</cbc:ID>
         </cac:TaxScheme>
@@ -283,65 +278,65 @@
     </cac:TaxSubtotal>
   </cac:TaxTotal>
   <cac:LegalMonetaryTotal>
-    <cbc:LineExtensionAmount currencyID="EUR">200.00</cbc:LineExtensionAmount>
-    <cbc:TaxExclusiveAmount currencyID="EUR">200.00</cbc:TaxExclusiveAmount>
-    <cbc:TaxInclusiveAmount currencyID="EUR">219.00</cbc:TaxInclusiveAmount>
-    <cbc:AllowanceTotalAmount currencyID="EUR">10.00</cbc:AllowanceTotalAmount>
-    <cbc:ChargeTotalAmount currencyID="EUR">10.00</cbc:ChargeTotalAmount>
-    <cbc:PrepaidAmount currencyID="EUR">19.00</cbc:PrepaidAmount>
-    <cbc:PayableRoundingAmount currencyID="EUR">0.00</cbc:PayableRoundingAmount>
-    <cbc:PayableAmount currencyID="EUR">200.00</cbc:PayableAmount>
+    <cbc:LineExtensionAmount currencyID="EUR">897.00</cbc:LineExtensionAmount>
+    <cbc:TaxExclusiveAmount currencyID="EUR">901.50</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount currencyID="EUR">1027.19</cbc:TaxInclusiveAmount>
+    <cbc:AllowanceTotalAmount currencyID="EUR">25.50</cbc:AllowanceTotalAmount>
+    <cbc:ChargeTotalAmount currencyID="EUR">30.00</cbc:ChargeTotalAmount>
+    <cbc:PrepaidAmount currencyID="EUR">100.00</cbc:PrepaidAmount>
+    <cbc:PayableRoundingAmount currencyID="EUR">0.01</cbc:PayableRoundingAmount>
+    <cbc:PayableAmount currencyID="EUR">927.20</cbc:PayableAmount>
   </cac:LegalMonetaryTotal>
   <cac:InvoiceLine>
     <cbc:ID>1</cbc:ID>
-    <cbc:Note>First line</cbc:Note>
-    <cbc:InvoicedQuantity unitCode="C62">2.00</cbc:InvoicedQuantity>
-    <cbc:LineExtensionAmount currencyID="EUR">100.00</cbc:LineExtensionAmount>
-    <cbc:AccountingCost>ACC-LINE-1</cbc:AccountingCost>
+    <cbc:Note>Replaced on crane 3</cbc:Note>
+    <cbc:InvoicedQuantity unitCode="C62">4.00</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="EUR">147.00</cbc:LineExtensionAmount>
+    <cbc:AccountingCost>KST-4711-03</cbc:AccountingCost>
     <cac:InvoicePeriod>
-      <cbc:StartDate>2026-01-01</cbc:StartDate>
-      <cbc:EndDate>2026-01-31</cbc:EndDate>
+      <cbc:StartDate>2026-03-02</cbc:StartDate>
+      <cbc:EndDate>2026-03-06</cbc:EndDate>
     </cac:InvoicePeriod>
     <cac:OrderLineReference>
-      <cbc:LineID>10</cbc:LineID>
+      <cbc:LineID>20</cbc:LineID>
     </cac:OrderLineReference>
     <cac:DocumentReference>
-      <cbc:ID schemeID="AAA">OBJ-LINE-1</cbc:ID>
+      <cbc:ID schemeID="AAA">KRAN-03-HYD</cbc:ID>
       <cbc:DocumentTypeCode>130</cbc:DocumentTypeCode>
     </cac:DocumentReference>
     <cac:AllowanceCharge>
       <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
       <cbc:AllowanceChargeReasonCode>95</cbc:AllowanceChargeReasonCode>
-      <cbc:AllowanceChargeReason>Discount</cbc:AllowanceChargeReason>
-      <cbc:MultiplierFactorNumeric>10.00</cbc:MultiplierFactorNumeric>
-      <cbc:Amount currencyID="EUR">10.00</cbc:Amount>
-      <cbc:BaseAmount currencyID="EUR">100.00</cbc:BaseAmount>
+      <cbc:AllowanceChargeReason>Volume discount</cbc:AllowanceChargeReason>
+      <cbc:MultiplierFactorNumeric>5.00</cbc:MultiplierFactorNumeric>
+      <cbc:Amount currencyID="EUR">7.00</cbc:Amount>
+      <cbc:BaseAmount currencyID="EUR">140.00</cbc:BaseAmount>
     </cac:AllowanceCharge>
     <cac:AllowanceCharge>
       <cbc:ChargeIndicator>true</cbc:ChargeIndicator>
       <cbc:AllowanceChargeReasonCode>ABL</cbc:AllowanceChargeReasonCode>
-      <cbc:AllowanceChargeReason>Packing</cbc:AllowanceChargeReason>
+      <cbc:AllowanceChargeReason>Protective packaging</cbc:AllowanceChargeReason>
       <cbc:MultiplierFactorNumeric>10.00</cbc:MultiplierFactorNumeric>
-      <cbc:Amount currencyID="EUR">10.00</cbc:Amount>
-      <cbc:BaseAmount currencyID="EUR">100.00</cbc:BaseAmount>
+      <cbc:Amount currencyID="EUR">14.00</cbc:Amount>
+      <cbc:BaseAmount currencyID="EUR">140.00</cbc:BaseAmount>
     </cac:AllowanceCharge>
     <cac:Item>
-      <cbc:Description>A standard widget</cbc:Description>
-      <cbc:Name>Widget</cbc:Name>
+      <cbc:Description>High-pressure hydraulic hose, 2 m, DN 16</cbc:Description>
+      <cbc:Name>Hydraulic hose set</cbc:Name>
       <cac:BuyersItemIdentification>
-        <cbc:ID>B-100</cbc:ID>
+        <cbc:ID>ML-ET-3301</cbc:ID>
       </cac:BuyersItemIdentification>
       <cac:SellersItemIdentification>
-        <cbc:ID>W-100</cbc:ID>
+        <cbc:ID>HKS-HYD-16-2</cbc:ID>
       </cac:SellersItemIdentification>
       <cac:StandardItemIdentification>
-        <cbc:ID schemeID="0160">4012345000009</cbc:ID>
+        <cbc:ID schemeID="0160">4012345678901</cbc:ID>
       </cac:StandardItemIdentification>
       <cac:OriginCountry>
-        <cbc:IdentificationCode>DE</cbc:IdentificationCode>
+        <cbc:IdentificationCode>NL</cbc:IdentificationCode>
       </cac:OriginCountry>
       <cac:CommodityClassification>
-        <cbc:ItemClassificationCode listID="STI" listVersionID="2.1">43211503</cbc:ItemClassificationCode>
+        <cbc:ItemClassificationCode listID="STI" listVersionID="2.1">40142004</cbc:ItemClassificationCode>
       </cac:CommodityClassification>
       <cac:ClassifiedTaxCategory>
         <cbc:ID>S</cbc:ID>
@@ -351,30 +346,48 @@
         </cac:TaxScheme>
       </cac:ClassifiedTaxCategory>
       <cac:AdditionalItemProperty>
-        <cbc:Name>Colour</cbc:Name>
-        <cbc:Value>Blue</cbc:Value>
+        <cbc:Name>Pressure rating</cbc:Name>
+        <cbc:Value>350 bar</cbc:Value>
       </cac:AdditionalItemProperty>
       <cac:AdditionalItemProperty>
-        <cbc:Name>Size</cbc:Name>
-        <cbc:Value>M</cbc:Value>
+        <cbc:Name>Fitting</cbc:Name>
+        <cbc:Value>DKOL M22x1.5</cbc:Value>
       </cac:AdditionalItemProperty>
     </cac:Item>
     <cac:Price>
-      <cbc:PriceAmount currencyID="EUR">50.00</cbc:PriceAmount>
+      <cbc:PriceAmount currencyID="EUR">35.00</cbc:PriceAmount>
       <cbc:BaseQuantity unitCode="C62">1.00</cbc:BaseQuantity>
       <cac:AllowanceCharge>
         <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
-        <cbc:Amount currencyID="EUR">5.00</cbc:Amount>
-        <cbc:BaseAmount currencyID="EUR">55.00</cbc:BaseAmount>
+        <cbc:Amount currencyID="EUR">2.50</cbc:Amount>
+        <cbc:BaseAmount currencyID="EUR">37.50</cbc:BaseAmount>
       </cac:AllowanceCharge>
     </cac:Price>
   </cac:InvoiceLine>
   <cac:InvoiceLine>
     <cbc:ID>2</cbc:ID>
-    <cbc:InvoicedQuantity unitCode="HUR">1.00</cbc:InvoicedQuantity>
-    <cbc:LineExtensionAmount currencyID="EUR">100.00</cbc:LineExtensionAmount>
+    <cbc:InvoicedQuantity unitCode="HUR">6.00</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="EUR">510.00</cbc:LineExtensionAmount>
     <cac:Item>
-      <cbc:Name>Consulting hour</cbc:Name>
+      <cbc:Name>Crane inspection</cbc:Name>
+      <cac:ClassifiedTaxCategory>
+        <cbc:ID>S</cbc:ID>
+        <cbc:Percent>19.00</cbc:Percent>
+        <cac:TaxScheme>
+          <cbc:ID>VAT</cbc:ID>
+        </cac:TaxScheme>
+      </cac:ClassifiedTaxCategory>
+    </cac:Item>
+    <cac:Price>
+      <cbc:PriceAmount currencyID="EUR">85.00</cbc:PriceAmount>
+    </cac:Price>
+  </cac:InvoiceLine>
+  <cac:InvoiceLine>
+    <cbc:ID>3</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="C62">1.00</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="EUR">240.00</cbc:LineExtensionAmount>
+    <cac:Item>
+      <cbc:Name>Crane operator safety training</cbc:Name>
       <cac:ClassifiedTaxCategory>
         <cbc:ID>E</cbc:ID>
         <cbc:Percent>0.00</cbc:Percent>
@@ -384,7 +397,7 @@
       </cac:ClassifiedTaxCategory>
     </cac:Item>
     <cac:Price>
-      <cbc:PriceAmount currencyID="EUR">100.00</cbc:PriceAmount>
+      <cbc:PriceAmount currencyID="EUR">240.00</cbc:PriceAmount>
     </cac:Price>
   </cac:InvoiceLine>
 </Invoice>
