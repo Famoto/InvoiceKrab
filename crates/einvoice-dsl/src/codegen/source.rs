@@ -30,7 +30,9 @@ use std::fmt::Write as _;
 
 use crate::source_model::{FieldMeta, FieldType, NamespaceMeta, SourceModelMeta, StructMeta};
 
-use super::access::{access_expr, assign_target_expr};
+use crate::cond::Condition;
+
+use super::access::{access_expr, assign_target_expr, presence_expr};
 
 /// Emits the namespace marker types and the typed source structs (with
 /// serde/XML binding) for every struct in the source model, in deterministic
@@ -74,6 +76,42 @@ fn alias_io_structs(source: &SourceModelMeta) -> BTreeMap<String, bool> {
     cache
 }
 
+/// The `let match_refs = [..];` statement reading every `$root.Key` value the
+/// selectors compare against from `base_var` (trimmed, in
+/// [`SourceModelMeta::match_refs`] order), and the leading argument passing
+/// them to `demux`/`mux`. Both empty when no selector references a value.
+pub(super) fn match_refs_binding(
+    source: &SourceModelMeta,
+    base_var: &str,
+) -> (String, &'static str) {
+    if source.match_refs.is_empty() {
+        return (String::new(), "");
+    }
+    let reads: Vec<String> = source
+        .match_refs
+        .values()
+        .map(|path| {
+            format!(
+                "{}.map(|v| v.trim().to_string())",
+                access_expr(source, &source.root, path, base_var)
+            )
+        })
+        .collect();
+    (
+        format!("    let match_refs = [{}];\n", reads.join(", ")),
+        "&match_refs.each_ref().map(|r| r.as_deref())",
+    )
+}
+
+/// The index of `reference` in the `refs` slice `demux`/`mux` receive.
+fn ref_index(source: &SourceModelMeta, reference: &str) -> usize {
+    source
+        .match_refs
+        .keys()
+        .position(|k| k == reference)
+        .expect("synthesis resolves every reference")
+}
+
 /// Whether the root struct of `source` has a `demux`/`mux` pair (so the
 /// mappers must call them).
 pub(super) fn root_has_alias_io(source: &SourceModelMeta) -> bool {
@@ -113,6 +151,12 @@ fn generate_alias_io_impl(
         })
         .collect();
 
+    // `refs`: the referenced document values, threaded through every level.
+    let (refs_param, refs_arg) = if source.match_refs.is_empty() {
+        ("", "")
+    } else {
+        ("refs: &[Option<&str>], ", "refs, ")
+    };
     let _ = writeln!(out, "impl {name} {{");
     out.push_str("    /// Partitions each aliased element's items into its logical fields by\n");
     out.push_str(
@@ -121,9 +165,9 @@ fn generate_alias_io_impl(
     out.push_str(
         "    /// a single-valued logical node that matched `extra` items beyond the one kept.\n",
     );
-    out.push_str(
-        "    pub fn demux(&mut self, overflow: &mut dyn FnMut(&'static str, usize)) {
-",
+    let _ = writeln!(
+        out,
+        "    pub fn demux(&mut self, {refs_param}overflow: &mut dyn FnMut(&'static str, usize)) {{"
     );
     for (physical, logical) in &groups {
         let item_struct = match &meta.fields[*physical].ty {
@@ -155,12 +199,7 @@ fn generate_alias_io_impl(
             let cond: Vec<String> = alias
                 .selector
                 .iter()
-                .map(|(path, value)| {
-                    format!(
-                        "{}.is_some_and(|v| v.trim() == {value:?})",
-                        access_expr(source, &item_struct, path, "item")
-                    )
-                })
+                .map(|(path, cond)| condition_expr(source, &item_struct, path, cond))
                 .collect();
             let _ = writeln!(out, "            if {} {{", cond.join(" && "));
             if f.repeated {
@@ -222,14 +261,14 @@ fn generate_alias_io_impl(
             let _ = writeln!(
                 out,
                 "        for child in &mut self.{fname} {{
-            child.demux(overflow);
+            child.demux({refs_arg}overflow);
         }}"
             );
         } else {
             let _ = writeln!(
                 out,
                 "        if let Some(child) = self.{fname}.as_mut() {{
-            child.demux(overflow);
+            child.demux({refs_arg}overflow);
         }}"
             );
         }
@@ -244,23 +283,29 @@ fn generate_alias_io_impl(
         "    /// Moves every logical field's items back into its physical element, writing\n",
     );
     out.push_str("    /// the `match` selector values as discriminators; children first.\n");
-    out.push_str(
-        "    pub fn mux(&mut self) {
-",
+    let _ = writeln!(
+        out,
+        "    pub fn mux(&mut self{}) {{",
+        if refs_param.is_empty() {
+            ""
+        } else {
+            ", refs: &[Option<&str>]"
+        }
     );
+    let refs_arg_mux = refs_arg.trim_end_matches(", ");
     for (fname, f) in &children {
         if f.repeated {
             let _ = writeln!(
                 out,
                 "        for child in &mut self.{fname} {{
-            child.mux();
+            child.mux({refs_arg_mux});
         }}"
             );
         } else {
             let _ = writeln!(
                 out,
                 "        if let Some(child) = self.{fname}.as_mut() {{
-            child.mux();
+            child.mux({refs_arg_mux});
         }}"
             );
         }
@@ -275,11 +320,25 @@ fn generate_alias_io_impl(
             let discriminators: Vec<String> = alias
                 .selector
                 .iter()
-                .map(|(path, value)| {
-                    format!(
-                        "{} = Some(CompactString::from({value:?}));",
-                        assign_target_expr(source, &item_struct, path, "item")
-                    )
+                .filter_map(|(path, cond)| {
+                    let target = assign_target_expr(source, &item_struct, path, "item");
+                    match cond {
+                        Condition::Is(reference) if cond.reference().is_some() => Some(format!(
+                            "if let Some(v) = refs[{}] {{ {target} = Some(CompactString::from(v)); }}",
+                            ref_index(source, reference)
+                        )),
+                        Condition::Is(value) => {
+                            Some(format!("{target} = Some(CompactString::from({value:?}));"))
+                        }
+                        // A list writes its first value unless the item already
+                        // has one of its own; presence writes nothing.
+                        Condition::OneOf(values) => values.first().map(|value| {
+                            format!(
+                                "{{ let slot = &mut {target}; if slot.is_none() {{ *slot = Some(CompactString::from({value:?})); }} }}"
+                            )
+                        }),
+                        Condition::Present(_) => None,
+                    }
                 })
                 .collect();
             let binding = if discriminators.is_empty() {
@@ -322,6 +381,43 @@ fn generate_alias_io_impl(
         "}
 ",
     );
+}
+
+/// The `bool` expression testing one selector entry against `item`.
+fn condition_expr(
+    source: &SourceModelMeta,
+    item_struct: &str,
+    path: &str,
+    cond: &Condition,
+) -> String {
+    match cond {
+        Condition::Is(reference) if cond.reference().is_some() => format!(
+            "{}.is_some_and(|v| refs[{}] == Some(v.trim()))",
+            access_expr(source, item_struct, path, "item"),
+            ref_index(source, reference)
+        ),
+        Condition::Is(value) => format!(
+            "{}.is_some_and(|v| v.trim() == {value:?})",
+            access_expr(source, item_struct, path, "item")
+        ),
+        Condition::OneOf(values) => format!(
+            "{}.is_some_and(|v| matches!(v.trim(), {}))",
+            access_expr(source, item_struct, path, "item"),
+            values
+                .iter()
+                .map(|v| format!("{v:?}"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ),
+        Condition::Present(p) => {
+            let present = presence_expr(source, item_struct, path, "item");
+            if p.present {
+                present
+            } else {
+                format!("!({present})")
+            }
+        }
+    }
 }
 
 /// Emits one `#[derive(...)]` source struct, fields in emission order. The root

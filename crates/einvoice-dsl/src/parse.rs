@@ -184,8 +184,8 @@ mod tests {
         .expect("parses");
         let node = &parsed.nodes[&NodeId::new("Invoice.Ref")];
         let selector = node.match_.as_ref().expect("match is a node field");
-        assert_eq!(selector["DocumentTypeCode"], "130");
-        assert_eq!(selector["ID.@schemeID"], "ABZ");
+        assert_eq!(selector["DocumentTypeCode"], "130".into());
+        assert_eq!(selector["ID.@schemeID"], "ABZ".into());
         assert!(
             !parsed.nodes.contains_key(&NodeId::new("Invoice.Ref.match")),
             "the selector table is not a child node"

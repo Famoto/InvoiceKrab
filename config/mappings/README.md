@@ -310,7 +310,7 @@ A node plays one of five roles, depending on which fields it declares:
 | `description` | string | Human note, reports only. |
 | `disabled` | bool | Remove this node from the effective mapping (useful with [inheritance](#inheritance)). |
 | `ns` | string | Namespace prefix of this node's own element on write (see [Namespaces](#namespaces)). Alone on a `type`-less table it makes a structural node. |
-| `match` | inline table | Selector on a collection or structural node: child value → literal, e.g. `{ "TypeCode" = "130" }` (see [Structural matching](#structural-matching-one-element-several-nodes)). Not valid on a scalar (E091). |
+| `match` | inline table | Selector on a collection or structural node: child value → condition, e.g. `{ "TypeCode" = "130" }`, `["50", "130"]`, `{ present = true }` or `"$root.Key"` (see [Structural matching](#structural-matching-one-element-several-nodes)). Not valid on a scalar (E091). |
 | `replace` | bool | Under [inheritance](#inheritance), replace the inherited node whole instead of merging over it. |
 
 Any other field is rejected (E001) — typos never silently no-op.
@@ -512,18 +512,49 @@ discriminators** — so a node needs no `constant` for its own discriminator; a
 `constant` is only how the selector-less default node pins its code (`916`
 above).
 
+Each `match` entry is a condition on one child value; all entries must hold:
+
+| Form | Holds when the child value | Written back as |
+|---|---|---|
+| `Code = "50"` | equals `50` | `50` |
+| `Code = ["50", "130"]` | equals one of them | `50`, unless the occurrence has its own value |
+| `Code = { present = true }` | exists (`false`: does not exist) | nothing |
+| `Code = "$root.Key"` | equals the document's value for the root key `Key` | that value |
+
+A presence test tells apart occurrences that differ in shape rather than in a
+code, like UBL's two `TaxTotal`s: the one with `TaxSubtotal`s is BT-110, the
+one without is BT-111. A reference compares against another value of the same
+document, like CII's two `TaxTotalAmount`s, of which BT-111 is the one in the
+VAT accounting currency:
+
+```toml
+[Summation.TaxTotalInTaxCurrency]
+xml = "TaxTotalAmount"
+match = { "@currencyID" = "$root.TaxCurrency" }
+```
+
 Rules:
 
 - `match` keys are child paths inside the element — an element (`TypeCode`), a
   nested one (`TaxScheme.ID`), an attribute (`@schemeID`, `ID.@schemeID`) or
   `$text`; values are compared trimmed and exactly. Every key must name a
-  single scalar declared beneath one of the element's logical nodes (E092);
-  declare the discriminator as a node (a helper is enough) under the *first*
-  logical node, in its schema position, because the shared item struct orders
-  each child by its first declaration.
+  single scalar declared beneath one of the element's logical nodes, and a
+  list must not be empty or hold a reference (E092); a presence test may also
+  name a repeated element or one with children. Declare the discriminator as
+  a node (a helper is enough) under the *first* logical node, in its schema
+  position, because the shared item struct orders each child by its first
+  declaration.
+- A reference names a root key (`$root.Key`) that a root-level node of the
+  mapping reads from one path of its own, without fallbacks (E130). That
+  value is read from the document before any occurrence is sorted (and on
+  write, after the root values are written), so its node must not lie beneath
+  a repeated or matched element (E131). Reference and document value are both
+  compared as written in the document, trimmed.
 - The logical nodes of one element must be **disjoint**: two selectors must
-  share a key with different values, and at most one node may have no
-  selector (E090). `match` belongs on a collection or structural node, never
+  share a key whose conditions no value satisfies both (different literals,
+  disjoint lists, present against absent, or absent against any value), and
+  at most one node may have no selector (E090). A reference may equal
+  anything, so it never makes two selectors disjoint on its own. `match` belongs on a collection or structural node, never
   a scalar (E091). The logical nodes must agree on `ns` (E024 otherwise), and
   a child element declared under several of them must have the same shape.
 - A structural node with a selector is single-valued: its children are
@@ -1328,7 +1359,7 @@ Validation reports **every** problem in one run, never just the first error.
 | `E087` | Codec wire attribute collides with an attribute node on the same element |
 | `E090` | Two logical nodes of one element overlap: identical or non-disjoint `match` selectors, or two nodes without one |
 | `E091` | `match` on a scalar node |
-| `E092` | `match` key does not name a single scalar declared beneath the element's logical nodes (or the selector is empty) |
+| `E092` | `match` key does not name a single scalar declared beneath the element's logical nodes, the selector is empty, or a list is empty or holds a reference |
 | `E093` | Malformed `clone_of` derivation (`$sibling.Key`, `$root.A.B`), or `$parent` at root scope |
 | `W095` | A `required` node needs a hub key no other spoke maps (warning): no transform into this spoke, except from itself, can supply it |
 | `E100` | A `[meta.schema]` (`xsd`, `catalog`, `refuses`) or `[[meta.samples]]` path is absolute or leaves the workspace root, or a sample path (`refuses`, `samples.file`) names no file there |
@@ -1340,6 +1371,8 @@ Validation reports **every** problem in one run, never just the first error.
 | `E112` | A `where` key is unknown, or its literal does not fit the key's type |
 | `E113` | An `add` / `subtract` / `requires` operand is no root `decimal` key, or a required operand is derived by this or a later rule |
 | `E114` | A `value` literal does not fit the target key's type |
+| `E130` | A `match` reference is not `$root.Key`, or no root-level node reads `Key` from one path of its own (no fallbacks) |
+| `E131` | A `match` reference's node lies beneath a repeated or matched element |
 | `E136` | A lifted `canonical_key` (`$root.Key`, `$parent.Key`) outside a collection, on a collection, with `multiple = "join"`, or with an unknown prefix |
 
 Runtime (per-document) diagnostics — missing required values, type validation

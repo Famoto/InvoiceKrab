@@ -115,7 +115,14 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
         // Aliased elements: sort every physical element's items into the
         // logical fields the mapping reads, warning when a single-valued
         // logical node matched more than one item.
-        out.push_str("    source.demux(&mut |node, extra| {\n");
+        // `$root.Key` references are read before the items are sorted.
+        let (refs, refs_arg) = super::source::match_refs_binding(ctx.source, "source");
+        out.push_str(&refs);
+        if refs_arg.is_empty() {
+            out.push_str("    source.demux(&mut |node, extra| {\n");
+        } else {
+            let _ = writeln!(out, "    source.demux({refs_arg}, &mut |node, extra| {{");
+        }
         out.push_str("        diagnostics.push(MappingDiagnostic::new(\n");
         out.push_str("            Severity::Warning,\n");
         out.push_str("            \"MATCH_MULTIPLE\",\n");

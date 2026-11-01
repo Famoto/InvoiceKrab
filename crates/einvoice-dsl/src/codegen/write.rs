@@ -56,7 +56,7 @@ use crate::node::{DerivationScope, Scope, SourceNode};
 use crate::source_model::{FieldType, SourceModelMeta, xml_field_name};
 use crate::types::MappingType;
 
-use super::access::{assign_target_expr, collection_item_struct, walk_segments};
+use super::access::{assign_target_expr, collection_item_struct, struct_ref_expr, walk_segments};
 use super::diag::DiagSpec;
 use super::naming::snake_case;
 use super::plan::{Frame, GenCtx};
@@ -200,8 +200,11 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
     if super::source::root_has_alias_io(ctx.source) {
         // Aliased elements: move every logical field's items back into the
         // physical element, with the selector values as discriminators.
+        // `$root.Key` references read back what the scalars above wrote.
         out.push('\n');
-        out.push_str("    source.mux();\n");
+        let (refs, refs_arg) = super::source::match_refs_binding(ctx.source, "source");
+        out.push_str(&refs);
+        let _ = writeln!(out, "    source.mux({refs_arg});");
     }
 
     out.push('\n');
@@ -588,30 +591,6 @@ fn constant_owner(path: &str, scope_content: &[&str]) -> Option<String> {
             .any(|p| p.starts_with(&under))
             .then_some(prefix)
     })
-}
-
-/// The `Option<&Struct>` expression reaching the interior struct at `path`
-/// without materializing anything: `Some(&src).and_then(|v0| v0.a.as_ref())…`.
-fn struct_ref_expr(
-    source: &SourceModelMeta,
-    start_struct: &str,
-    path: &str,
-    src_var: &str,
-) -> String {
-    let Ok(segs) = walk_segments(source, start_struct, path) else {
-        return format!(
-            "compile_error!(\"unresolved owner path `{path}` against `{start_struct}`\")"
-        );
-    };
-    let mut expr = format!("Some(&{src_var})");
-    for (i, seg) in segs.iter().enumerate() {
-        if seg.optional {
-            expr = format!("{expr}.and_then(|v{i}| v{i}.{}.as_ref())", seg.name);
-        } else {
-            expr = format!("{expr}.map(|v{i}| &v{i}.{})", seg.name);
-        }
-    }
-    expr
 }
 
 /// Emits the write of one canonical field back to its source path, rendering the

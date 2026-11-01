@@ -296,6 +296,15 @@ fn test_shipped_config_is_clean_and_generates_well_formed_code() {
     "[Doc.L.S.Unit]\ntype=\"unit_code\"\ncanonical_key=\"$parent.Unit\"\n",
     "[Doc.L.S.Amount]\ntype=\"decimal\"\ncanonical_key=\"$root.Amount\"\nrequired=true\n"
 ))]
+// `match` forms: a list, absence, and a reference to a root value.
+#[case::match_conditions(concat!(
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.Ref.Code]\ntype=\"string\"\ncanonical_key=\"RefCode\"\n",
+    "[Doc.Tender]\nxml=\"Ref\"\nmatch={\"Code\"=[\"50\",\"51\"]}\n[Doc.Tender.ID]\ntype=\"identifier\"\ncanonical_key=\"TenderRef\"\n",
+    "[Doc.Bare]\nxml=\"Ref\"\nmatch={\"Code\"={present=false}}\n[Doc.Bare.ID]\ntype=\"identifier\"\ncanonical_key=\"BareRef\"\n",
+    "[Doc.Own]\nxml=\"Ref\"\nmatch={\"Code\"=\"70\",\"ID\"=\"$root.Cur\"}\n[Doc.Own.ID]\ntype=\"identifier\"\ncanonical_key=\"OwnRef\"\n"
+))]
 #[case::datetime_constant_with_zone(
     "[Doc.A]\ntype=\"datetime\"\nconstant=\"2024-01-01T10:00:00+01:00\"\n"
 )]
@@ -588,12 +597,45 @@ fn test_rejected(#[case] code: &str, #[case] body: &str) {
     assert_rejected(&one(body), code);
 }
 
-/// Two logical nodes with identical selectors overlap.
+/// Two logical nodes with identical selectors overlap; malformed conditions
+/// and references.
 #[rstest]
 #[case::e090_identical_selectors("E090", concat!(
     "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
     "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"=\"50\"}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n",
     "[Doc.T2]\nxml=\"Ref\"\nmatch={\"ID\"=\"50\"}\n[Doc.T2.X]\ntype=\"identifier\"\ncanonical_key=\"T2\"\n"
+))]
+#[case::e092_empty_list("E092", concat!(
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"=[]}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n"
+))]
+#[case::e092_reference_in_list("E092", concat!(
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"=[\"$root.Cur\"]}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n"
+))]
+#[case::e090_both_present("E090", concat!(
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.T0]\nxml=\"Ref\"\nmatch={\"ID\"={present=true}}\n[Doc.T0.X]\ntype=\"identifier\"\ncanonical_key=\"T0\"\n",
+    "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"={present=true}}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n"
+))]
+#[case::e130_unknown_reference("E130", concat!(
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"=\"$root.Nope\"}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n"
+))]
+#[case::e130_parent_reference("E130", concat!(
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"=\"$parent.Cur\"}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n"
+))]
+#[case::e131_reference_beneath_a_matched_element("E131", concat!(
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.T0]\nxml=\"Ref\"\nmatch={\"ID\"=\"0\"}\n[Doc.T0.X]\ntype=\"identifier\"\ncanonical_key=\"T0\"\n",
+    "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"=\"$root.T0\"}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n"
 ))]
 fn test_rejected_selectors(#[case] code: &str, #[case] body: &str) {
     assert_rejected(&one(body), code);

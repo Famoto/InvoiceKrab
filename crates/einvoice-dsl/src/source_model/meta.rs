@@ -24,6 +24,11 @@ pub struct SourceModelMeta {
     pub structs: BTreeMap<String, StructMeta>,
     /// The namespaces the written document declares and the root's prefix.
     pub namespaces: NamespaceMeta,
+    /// The `$root.Key` references `match` selectors compare against, each with
+    /// the root-struct path of the node that maps `Key`. The generated mappers
+    /// read these values from the document and pass them to `demux`/`mux` in
+    /// this (sorted) order.
+    pub match_refs: BTreeMap<String, String>,
 }
 
 /// The namespace declarations of a source model: what the root element emits
@@ -160,10 +165,10 @@ pub struct AliasBinding {
     pub physical: String,
     /// The id of the logical mapping node (named in runtime diagnostics).
     pub node: String,
-    /// The selector as `(field path inside the item struct, expected text)`
-    /// pairs, in key order. Empty for the default bucket: the logical field
-    /// that takes every item no selector matched.
-    pub selector: Vec<(String, String)>,
+    /// The selector as `(field path inside the item struct, condition)` pairs,
+    /// in key order. Empty for the default bucket: the logical field that
+    /// takes every item no selector matched.
+    pub selector: Vec<(String, crate::cond::Condition)>,
 }
 
 impl FieldMeta {
@@ -314,6 +319,7 @@ impl SourceModelBuilder {
             root: self.root,
             structs: self.structs,
             namespaces: NamespaceMeta::default(),
+            match_refs: BTreeMap::new(),
         }
     }
 }
@@ -470,7 +476,7 @@ mod tests {
                 node: node.into(),
                 selector: selector
                     .iter()
-                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                    .map(|(k, v)| ((*k).to_string(), (*v).into()))
                     .collect(),
             }),
             xml: None,

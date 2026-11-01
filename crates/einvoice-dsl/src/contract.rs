@@ -175,7 +175,11 @@ pub fn spoke_contract(spoke: &str, ir: &MappingIr, source: &SourceModelMeta) -> 
                 selectors.push(Selector {
                     node: alias.node.clone(),
                     element: element.clone(),
-                    selector: alias.selector.clone(),
+                    selector: alias
+                        .selector
+                        .iter()
+                        .map(|(path, cond)| (path.clone(), cond.display()))
+                        .collect(),
                     single: !field.repeated,
                 });
             }

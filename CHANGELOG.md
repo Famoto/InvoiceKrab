@@ -22,6 +22,12 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   must agree on it (`SCOPE_DISAGREE`; `multiple = "first"` keeps the first
   with a warning), and the writer puts it into every occurrence, writing one
   when the collection has no items. Misuse is E136.
+- **Added** `match` conditions beyond a literal: a list (`["50", "130"]`,
+  written back as its first value), presence (`{ present = true }` /
+  `false`) and a reference to a root value of the same document
+  (`"$root.TaxCurrency"`). An empty list or a reference in a list is E092; a
+  reference to no root node, or to one with fallbacks, is E130; one beneath a
+  repeated or matched element is E131.
 - **Changed** `join_with` alone implies `multiple = "join"`; E040 now only
   reports `join` without a separator, or a separator with another policy.
 - **Changed** the FatturaPA text nodes use length-limited codecs

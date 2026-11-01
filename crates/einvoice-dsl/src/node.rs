@@ -74,6 +74,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+use crate::cond::Condition;
 use crate::multiple::MultiplePolicy;
 use crate::normalize::NormalizeOp;
 use crate::types::MappingType;
@@ -212,16 +213,17 @@ pub struct RawNode {
     /// `type`-less table this alone makes the table a structural node.
     pub ns: Option<String>,
     /// Structural selector on a collection or structural node: the node binds
-    /// only the occurrences of its element whose child values equal these.
+    /// only the occurrences of its element whose child values satisfy these.
     /// Keys are child element paths inside the element (`TypeCode`,
-    /// `TaxScheme.ID`, `ID.@schemeID`, `@schemeID`), values are the literal
-    /// text to match (trimmed, exact). Several logical nodes may bind one
+    /// `TaxScheme.ID`, `ID.@schemeID`, `@schemeID`), values are
+    /// [`Condition`]s: a literal text (trimmed, exact), a list of them, or
+    /// `{ present = … }`. Several logical nodes may bind one
     /// physical element with disjoint selectors; at most one may carry none
     /// and takes what no selector matched. Not valid on a scalar node (E091);
     /// every key must name a scalar declared beneath one of the element's
     /// logical nodes (E092); selectors on one element must be disjoint (E090).
     #[serde(rename = "match")]
-    pub match_: Option<BTreeMap<String, String>>,
+    pub match_: Option<BTreeMap<String, Condition>>,
     /// Declaration position within the mapping document (0-based, document
     /// order). Assigned by the parser, never authored — a `position` key in the
     /// TOML is rejected like any unknown field. It drives the order of sibling
@@ -553,8 +555,8 @@ mod tests {
         assert!(n.has_active_field());
         assert!(!n.is_always_present());
         let sel = n.match_.as_ref().unwrap();
-        assert_eq!(sel["TypeCode"], "130");
-        assert_eq!(sel["ID.@schemeID"], "X");
+        assert_eq!(sel["TypeCode"], "130".into());
+        assert_eq!(sel["ID.@schemeID"], "X".into());
         let aliased: RawNode = toml::from_str(r#"xml = "AdditionalReferencedDocument""#).unwrap();
         assert!(aliased.is_structural(), "xml alone aliases an element");
         let coll: RawNode =
@@ -573,7 +575,7 @@ mod tests {
         let override_: RawNode = toml::from_str(r#"match = { "TypeCode" = "51" }"#).unwrap();
         assert_eq!(
             base.merged_with(&override_).match_.unwrap()["TypeCode"],
-            "51",
+            "51".into(),
             "child wins"
         );
     }
