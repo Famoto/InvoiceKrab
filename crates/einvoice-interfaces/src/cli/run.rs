@@ -108,15 +108,17 @@ pub fn analyze_output(
     target: Option<&str>,
     deny_lossy: bool,
 ) -> Result<String, CliError> {
-    let sources: Vec<Spoke> = match source {
-        Some(name) => vec![resolve_spoke(name)?],
-        None => Spoke::ALL.to_vec(),
-    };
-    let targets: Vec<Spoke> = match target {
-        Some(name) => vec![resolve_spoke(name)?],
-        None => Spoke::ALL.to_vec(),
-    };
-    let reports = crate::analysis::analyze_all(&sources, &targets);
+    let source = source.map(resolve_spoke).transpose()?;
+    let target = target.map(resolve_spoke).transpose()?;
+    let (rendered, lossy) = analyze_report(source, target);
+    deny_lossy_gate(rendered, lossy, deny_lossy)
+}
+
+/// The `--analyze` report of every transform from `source` to `target`
+/// (`None`: every spoke), and how many of them are not lossless.
+pub(crate) fn analyze_report(source: Option<Spoke>, target: Option<Spoke>) -> (String, usize) {
+    let scope = |spoke: Option<Spoke>| spoke.map_or_else(|| Spoke::ALL.to_vec(), |s| vec![s]);
+    let reports = crate::analysis::analyze_all(&scope(source), &scope(target));
     let rendered = match (source, target) {
         (Some(_), Some(_)) => crate::analysis::render_pair(&reports[0]),
         _ => crate::analysis::render_table(&reports),
@@ -125,6 +127,16 @@ pub fn analyze_output(
         .iter()
         .filter(|r| r.state != TransformState::Lossless)
         .count();
+    (rendered, lossy)
+}
+
+/// `rendered`, or with `deny_lossy` and `lossy` transforms that are not
+/// lossless, [`CliError::Lossy`] carrying it.
+pub(crate) fn deny_lossy_gate(
+    rendered: String,
+    lossy: usize,
+    deny_lossy: bool,
+) -> Result<String, CliError> {
     if deny_lossy && lossy > 0 {
         return Err(CliError::Lossy(format!(
             "{rendered}\n{lossy} transform(s) are not lossless (--deny-lossy)"

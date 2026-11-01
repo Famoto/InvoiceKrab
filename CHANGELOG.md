@@ -76,6 +76,9 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   address of another scheme is dropped with a `NO_TARGET` warning, and
   `CodiceDestinatario` stays `0000000`. Read back, `0000000` and `XXXXXXX`
   are no address.
+- `krab-server` renders every `GET /analyze` report once at startup and
+  answers from that (about 1.5 ms of CPU per request on the async worker
+  before, now a lookup); the responses are unchanged (#37).
 - The third-party XSDs are no longer in the repository:
   `scripts/fetch-schemas.sh` downloads them, pinned to a commit and verified
   against `testfiles/xsd/SHA256SUMS`, and CI runs it. The OASIS UBL 2.1

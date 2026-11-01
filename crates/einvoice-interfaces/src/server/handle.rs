@@ -36,8 +36,10 @@
 //! the document signature, the JSON shape of [`formats`], and the
 //! known/unknown-source paths of [`analyze`].
 
+use std::sync::LazyLock;
+
 use crate::cli::{detect_source, render_diagnostics, resolve_spoke};
-use crate::{Engine, EngineError};
+use crate::{Engine, EngineError, Spoke};
 use einvoice_transformator::result::MappingResult;
 
 /// The computed response: status code, body, and any warning text destined
@@ -165,9 +167,29 @@ pub fn formats() -> String {
     serde_json::to_string(&names).unwrap_or_default()
 }
 
+/// Every `GET /analyze` report, by `(from, to)` (`None`: every spoke), with
+/// its count of transforms that are not lossless. The analysis reads only the
+/// compiled-in contracts, so each report is rendered once per process;
+/// [`router`](super::router::router) forces it at startup, so no request
+/// computes one on the reactor (#37).
+pub(crate) static ANALYSES: LazyLock<Vec<AnalysisEntry>> = LazyLock::new(|| {
+    let scopes = || std::iter::once(None).chain(Spoke::ALL.iter().copied().map(Some));
+    scopes()
+        .flat_map(|from| {
+            scopes().map(move |to| {
+                let (report, lossy) = crate::cli::analyze_report(from, to);
+                (from, to, report, lossy)
+            })
+        })
+        .collect()
+});
+
+/// One [`ANALYSES`] entry: `from`, `to`, the rendered report, its lossy count.
+pub(crate) type AnalysisEntry = (Option<Spoke>, Option<Spoke>, String, usize);
+
 /// The `GET /analyze[?from=<format>[&to=<format>]][&deny_lossy=1]` body: the
 /// static loss/error report of every transform, one source's row, or one pair
-/// in full (the CLI's `--analyze`, verbatim).
+/// in full (the CLI's `--analyze`, verbatim), from [`ANALYSES`].
 ///
 /// # Errors
 ///
@@ -179,13 +201,19 @@ pub fn analyze(query: &str) -> Result<String, (u16, String)> {
         Some("1" | "true" | "yes")
     );
     let (from, to) = (param(query, "from")?, param(query, "to")?);
-    crate::cli::analyze_output(from.as_deref(), to.as_deref(), deny_lossy).map_err(|e| {
-        let status = match e {
-            crate::cli::CliError::Lossy(_) => 422,
-            _ => 400,
-        };
-        (status, e.to_string())
-    })
+    let resolve = |name: Option<String>| {
+        name.map(|n| resolve_spoke(&n))
+            .transpose()
+            .map_err(|e| (400, e.to_string()))
+    };
+    let (from, to) = (resolve(from)?, resolve(to)?);
+    // ponytail: linear scan over (spokes + 1)² entries; a map if that grows.
+    let (.., report, lossy) = ANALYSES
+        .iter()
+        .find(|(f, t, ..)| (*f, *t) == (from, to))
+        .expect("ANALYSES holds every scope");
+    crate::cli::deny_lossy_gate(report.clone(), *lossy, deny_lossy)
+        .map_err(|e| (422, e.to_string()))
 }
 
 #[cfg(test)]

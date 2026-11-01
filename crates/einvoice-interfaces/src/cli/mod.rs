@@ -80,3 +80,4 @@ pub use error::CliError;
 pub use parse::parse_args;
 pub use render::{format_list, render_diagnostics, usage, version_text};
 pub use run::{analyze_output, check_output, run, write_output_file};
+pub(crate) use run::{analyze_report, deny_lossy_gate};
