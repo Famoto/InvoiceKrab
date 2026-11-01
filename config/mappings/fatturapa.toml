@@ -21,9 +21,10 @@
 # What EN 16931 does not carry is pinned, and documented where it is:
 #   * the transmission data (`DatiTrasmissione`): the transmitter is the seller
 #     (its VAT id is written there too), the transmission counter
-#     `ProgressivoInvio` is `00001` and the recipient code `CodiceDestinatario`
-#     is `0000000` (delivery through the recipient's fiscal drawer): an
-#     intermediary that transmits the file sets its own;
+#     `ProgressivoInvio` is `00001`, and the recipient code `CodiceDestinatario`
+#     is the buyer's SdI code or `0000000` (delivery by certified mail, or
+#     through the recipient's fiscal drawer): an intermediary that transmits
+#     the file sets its own;
 #   * the seller's tax regime (`RegimeFiscale`) is the ordinary regime `RF01`;
 #   * the payment condition (`CondizioniPagamento`) is a full payment `TP02`.
 # FatturaPA makes more terms mandatory than EN 16931 — the seller's and the
@@ -44,6 +45,12 @@ root_ns = "p"
 
 [meta.namespaces]
 p = "http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2"
+
+# A buyer address that is neither an SdI recipient code nor a certified
+# mailbox (a Peppol endpoint, say) has no place in FatturaPA: it is dropped
+# with a NO_TARGET warning, and CodiceDestinatario keeps 0000000.
+[meta.defaults]
+no_target = "warn"
 
 # Document identity: FatturaPA carries no EN 16931 CustomizationID. Besides its
 # root (`FatturaElettronica` in the v1.2 namespace), a document identifies
@@ -88,9 +95,22 @@ constant = "00001"
 type = "string"
 constant = "FPR12"
 
+# BT-49 buyer electronic address: an SdI recipient code (scheme 0201, a public
+# administration's office code, or 0205, a business's code) is the
+# CodiceDestinatario; a certified mailbox (scheme EM) is the PECDestinatario,
+# and CodiceDestinatario is then 0000000, as it is without an address (or with
+# an address of another scheme, see `[meta.defaults]`). Read back, 0000000 and
+# XXXXXXX (SdI's code for a foreign recipient) are no address.
 [FatturaElettronica.FatturaElettronicaHeader.DatiTrasmissione.CodiceDestinatario]
-type = "string"
-constant = "0000000"
+type = "identifier"
+canonical_key = "BuyerElectronicAddress"
+when = { BuyerElectronicAddressScheme = ["0205", "0201"] }
+placeholder = ["0000000", "XXXXXXX"]
+
+[FatturaElettronica.FatturaElettronicaHeader.DatiTrasmissione.PECDestinatario]
+type = "identifier"
+canonical_key = "BuyerElectronicAddress"
+when = { BuyerElectronicAddressScheme = "EM" }
 
 # BT-31 seller VAT identifier, BT-27 seller name.
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.DatiAnagrafici.IdFiscaleIVA]

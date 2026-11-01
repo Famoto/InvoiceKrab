@@ -70,6 +70,12 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   without `TaxSubtotal`, in CII the `TaxTotalAmount` whose `currencyID` is
   the `TaxCurrencyCode`. A UBL document with both totals was refused with a
   duplicate-field error before.
+- FatturaPA writes BT-49, the buyer's electronic address: an SdI recipient
+  code (scheme `0205` or `0201`) as `CodiceDestinatario`, a certified mailbox
+  (scheme `EM`) as `PECDestinatario` with `CodiceDestinatario` `0000000`. An
+  address of another scheme is dropped with a `NO_TARGET` warning, and
+  `CodiceDestinatario` stays `0000000`. Read back, `0000000` and `XXXXXXX`
+  are no address.
 - The third-party XSDs are no longer in the repository:
   `scripts/fetch-schemas.sh` downloads them, pinned to a commit and verified
   against `testfiles/xsd/SHA256SUMS`, and CI runs it. The OASIS UBL 2.1

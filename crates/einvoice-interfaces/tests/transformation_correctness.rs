@@ -1236,3 +1236,62 @@ fn test_vat_total_in_the_tax_currency_survives_ubl_and_cii() {
     );
     assert_eq!(back.matches("<cac:TaxTotal>").count(), 2, "{back}");
 }
+
+#[test]
+fn test_fatturapa_recipient_is_a_code_a_mailbox_or_0000000() {
+    // BT-49 goes to CodiceDestinatario or PECDestinatario by its scheme; an
+    // address of another scheme is dropped with a warning.
+    let sample =
+        std::fs::read_to_string(workspace().join("testfiles/en16931-full-ubl.xml")).unwrap();
+    let buyer = r#"<cbc:EndpointID schemeID="0088">4012345670035</cbc:EndpointID>"#;
+    let with = |scheme: &str, address: &str| {
+        sample.replacen(
+            buyer,
+            &format!(r#"<cbc:EndpointID schemeID="{scheme}">{address}</cbc:EndpointID>"#),
+            1,
+        )
+    };
+    for (scheme, address, written) in [
+        (
+            "0205",
+            "ABC1234",
+            "<CodiceDestinatario>ABC1234</CodiceDestinatario></DatiTrasmissione>",
+        ),
+        (
+            "EM",
+            "fatture@pec.example.it",
+            "<CodiceDestinatario>0000000</CodiceDestinatario><PECDestinatario>fatture@pec.example.it</PECDestinatario>",
+        ),
+    ] {
+        let fpa = refusal(
+            Spoke::UblInvoice,
+            Spoke::Fatturapa,
+            with(scheme, address).as_bytes(),
+        )
+        .unwrap();
+        assert!(fpa.contains(written), "{written} in {fpa}");
+        let back = refusal(Spoke::Fatturapa, Spoke::UblInvoice, fpa.as_bytes()).unwrap();
+        let endpoint = format!(r#"<cbc:EndpointID schemeID="{scheme}">{address}</cbc:EndpointID>"#);
+        assert!(back.contains(&endpoint), "{endpoint} in {back}");
+    }
+    let result = Engine::new()
+        .transform(Spoke::UblInvoice, Spoke::Fatturapa, sample.as_bytes())
+        .unwrap();
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "NO_TARGET" && d.severity == Severity::Warning),
+        "{:?}",
+        result.diagnostics
+    );
+    let fpa = result.value.unwrap();
+    assert!(
+        fpa.contains("<CodiceDestinatario>0000000</CodiceDestinatario></DatiTrasmissione>"),
+        "{fpa}"
+    );
+    // SdI's code for a foreign recipient is no address either.
+    let foreign = fpa.replace(">0000000<", ">XXXXXXX<");
+    let back = refusal(Spoke::Fatturapa, Spoke::UblInvoice, foreign.as_bytes()).unwrap();
+    assert!(!back.contains("EndpointID"), "{back}");
+}
