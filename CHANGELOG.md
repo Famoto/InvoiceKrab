@@ -79,6 +79,10 @@ Changes to the mapping DSL are listed under **DSL** in each release.
 - `krab-server` renders every `GET /analyze` report once at startup and
   answers from that (about 1.5 ms of CPU per request on the async worker
   before, now a lookup); the responses are unchanged (#37).
+- A source that repeats an element its mapping reads once (a FatturaPA
+  batch of several `FatturaElettronicaBody`, say) is refused with a message
+  naming the element and why, instead of serde's ``duplicate field `…` ``
+  (#50).
 - The third-party XSDs are no longer in the repository:
   `scripts/fetch-schemas.sh` downloads them, pinned to a commit and verified
   against `testfiles/xsd/SHA256SUMS`, and CI runs it. The OASIS UBL 2.1

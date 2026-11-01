@@ -90,11 +90,30 @@ pub enum EngineError {
         error: identity::IdentityError,
     },
     /// Source XML could not be deserialized into the typed model.
-    #[error("source deserialization failed: {0}")]
+    #[error("source deserialization failed: {}", deserialize_problem(.0))]
     Deserialize(#[from] quick_xml::DeError),
     /// The produced model could not be serialized back to XML.
     #[error("target serialization failed: {0}")]
     Serialize(#[from] quick_xml::SeError),
+}
+
+/// A deserialization error in the document's terms: serde's ``duplicate field
+/// `X` `` is an element the mapping reads once and the document repeats (#50).
+fn deserialize_problem(error: &quick_xml::DeError) -> String {
+    let repeated = match error {
+        quick_xml::DeError::Custom(message) => message
+            .strip_prefix("duplicate field `")
+            .and_then(|rest| rest.strip_suffix('`')),
+        _ => None,
+    };
+    match repeated {
+        Some(element) => format!(
+            "element `{element}` occurs more than once, but the mapping reads it as a single \
+             element (a document holding several invoices, or a repeated element the mapping \
+             does not declare as a collection)"
+        ),
+        None => error.to_string(),
+    }
 }
 
 /// The transformation engine. Stateless and cheap to construct; all mapping logic

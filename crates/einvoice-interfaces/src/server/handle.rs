@@ -91,7 +91,7 @@ fn transform(query: &str, body: Vec<u8>) -> Result<Reply, (u16, String)> {
         // The client sent a document in an encoding the engine cannot decode.
         e @ EngineError::Encoding(_) => (400, e.to_string()),
         // The client sent bytes that are not a well-formed `from` document.
-        EngineError::Deserialize(e) => (400, format!("source deserialization failed: {e}")),
+        e @ EngineError::Deserialize(_) => (400, e.to_string()),
         // The engine produced an unserializable model: our bug, not theirs.
         EngineError::Serialize(e) => (500, format!("target serialization failed: {e}")),
     };
@@ -302,6 +302,24 @@ mod tests {
     fn test_handle_malformed_xml_returns_400() {
         let reply = handle("to=ubl-invoice&from=ubl-invoice", b"not xml <<<".to_vec());
         assert_eq!(reply.status, 400, "{}", reply.body);
+    }
+
+    #[test]
+    fn test_handle_batch_of_invoices_names_the_repeated_element() {
+        // #50: a FatturaPA batch repeats FatturaElettronicaBody, which the
+        // mapping reads once; the 400 says so instead of serde's text.
+        let sample = include_str!("../../../../testfiles/en16931-full-fatturapa.xml");
+        let start = sample.find("<FatturaElettronicaBody>").unwrap();
+        let end = sample.find("</FatturaElettronicaBody>").unwrap() + 25;
+        let batch = format!("{}{}", &sample[..end], &sample[start..]);
+        let reply = handle("to=ubl-invoice&from=fatturapa", batch.into_bytes());
+        assert_eq!(reply.status, 400, "{}", reply.body);
+        assert_eq!(
+            reply.body,
+            "source deserialization failed: element `FatturaElettronicaBody` occurs more than \
+             once, but the mapping reads it as a single element (a document holding several \
+             invoices, or a repeated element the mapping does not declare as a collection)"
+        );
     }
 
     #[test]

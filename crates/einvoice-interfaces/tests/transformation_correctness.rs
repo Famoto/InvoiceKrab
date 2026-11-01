@@ -854,7 +854,7 @@ const KNOWN_ISSUES: &[KnownIssue] = &[
     KnownIssue {
         matches: &[
             "no transform checked",
-            "source deserialization failed: duplicate field",
+            "occurs more than once, but the mapping reads it as a single element",
         ],
         why: "the UBL readers bind BillingReference and CommodityClassification as \
               single elements, so a document repeating one (as UBL and EN 16931 allow) is \
