@@ -51,6 +51,11 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   text, remittance information, card, mandate, due date and amount stay
   invoice-level keys, lifted out of each occurrence. A document with several
   accounts was refused with a duplicate-field error before.
+- The bundled mappings read BT-111, the VAT total in the VAT accounting
+  currency (hub key `TaxTotalAmountInTaxCurrency`): in UBL the `TaxTotal`
+  without `TaxSubtotal`, in CII the `TaxTotalAmount` whose `currencyID` is
+  the `TaxCurrencyCode`. A UBL document with both totals was refused with a
+  duplicate-field error before.
 - The third-party XSDs are no longer in the repository:
   `scripts/fetch-schemas.sh` downloads them, pinned to a commit and verified
   against `testfiles/xsd/SHA256SUMS`, and CI runs it. The OASIS UBL 2.1

@@ -979,8 +979,15 @@ type = "decimal"
 canonical_key = "InvoiceTotalWithoutVat"
 required = true
 
-# BT-110 tax total (and its optional currency attribute).
+# BT-110 tax total, in the invoice currency. A second `TaxTotalAmount` in the
+# VAT accounting currency (BT-6) is BT-111: told apart by its `currencyID`, it
+# is read by the node below, and every other occurrence lands here. (`xml`
+# names the element only to make this a node of its own.)
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.TaxTotalAmount]
+xml = "TaxTotalAmount"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.TaxTotalAmount.Amount]
+xml = "$text"
 type = "decimal"
 canonical_key = "TaxTotalAmount"
 
@@ -988,6 +995,21 @@ canonical_key = "TaxTotalAmount"
 xml = "@currencyID"
 type = "currency"
 clone_of = "DocumentCurrency"
+
+# BT-111 tax total in the VAT accounting currency.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.TaxTotalInTaxCurrency]
+xml = "TaxTotalAmount"
+match = { "@currencyID" = "$root.TaxCurrency" }
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.TaxTotalInTaxCurrency.Amount]
+xml = "$text"
+type = "decimal"
+canonical_key = "TaxTotalAmountInTaxCurrency"
+
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.TaxTotalInTaxCurrency.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "TaxCurrency"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.RoundingAmount]
 type = "decimal"

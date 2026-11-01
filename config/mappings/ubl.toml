@@ -747,6 +747,12 @@ constant = "VAT"
 # ===========================================================================
 # TAX TOTAL (BT-110/111) + VAT BREAKDOWN (BG-23) — TaxTotal/TaxSubtotal (collection)
 # ===========================================================================
+# TaxTotal repeats: the one with the VAT breakdown states BT-110 in the
+# document currency, a second one without breakdown BT-111 in the tax
+# currency (BT-6).
+[Invoice.TaxTotal]
+match = { TaxSubtotal = { present = true } }
+
 [Invoice.TaxTotal.TaxAmount]
 type = "decimal"
 canonical_key = "TaxTotalAmount"
@@ -807,6 +813,20 @@ canonical_key = "VatExemptionReasonText"
 [Invoice.TaxTotal.TaxSubtotal.TaxCategory.TaxScheme.ID]
 type = "identifier"
 constant = "VAT"
+
+# BT-111 total VAT in the tax currency: the TaxTotal without a breakdown.
+[Invoice.TaxTotalInTaxCurrency]
+xml = "TaxTotal"
+match = { TaxSubtotal = { present = false } }
+
+[Invoice.TaxTotalInTaxCurrency.TaxAmount]
+type = "decimal"
+canonical_key = "TaxTotalAmountInTaxCurrency"
+
+[Invoice.TaxTotalInTaxCurrency.TaxAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "TaxCurrency"
 
 # ===========================================================================
 # DOCUMENT TOTALS (BG-22) — LegalMonetaryTotal

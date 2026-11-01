@@ -856,9 +856,9 @@ const KNOWN_ISSUES: &[KnownIssue] = &[
             "no transform checked",
             "source deserialization failed: duplicate field",
         ],
-        why: "the UBL readers bind TaxTotal, BillingReference and \
-              CommodityClassification as single elements, so a document repeating one \
-              (as UBL and EN 16931 allow) is not read at all",
+        why: "the UBL readers bind BillingReference and CommodityClassification as \
+              single elements, so a document repeating one (as UBL and EN 16931 allow) is \
+              not read at all",
         corpus_only: true,
         doc_allowances: false,
     },
@@ -1199,4 +1199,40 @@ fn test_repeated_payment_means_lift_the_shared_code_and_keep_every_account() {
     );
     let back = refusal(Spoke::FacturxInvoice, Spoke::UblInvoice, out.as_bytes()).unwrap();
     assert!(back.contains(">10</cbc:PaymentMeansCode>"), "{back}");
+}
+
+#[test]
+fn test_vat_total_in_the_tax_currency_survives_ubl_and_cii() {
+    // BT-111 is a second TaxTotal (UBL, told apart by having no TaxSubtotal)
+    // or TaxTotalAmount (CII, told apart by the BT-6 currency) in BT-6.
+    let sample =
+        std::fs::read_to_string(workspace().join("testfiles/en16931-full-ubl.xml")).unwrap();
+    let ubl = sample
+        .replacen(
+            "  <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>\n",
+            "  <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>\n  <cbc:TaxCurrencyCode>SEK</cbc:TaxCurrencyCode>\n",
+            1,
+        )
+        .replacen(
+            "  </cac:TaxTotal>\n",
+            "  </cac:TaxTotal>\n  <cac:TaxTotal>\n    <cbc:TaxAmount currencyID=\"SEK\">1440.50</cbc:TaxAmount>\n  </cac:TaxTotal>\n",
+            1,
+        );
+    let cii = refusal(Spoke::UblInvoice, Spoke::FacturxInvoice, ubl.as_bytes()).unwrap();
+    for amount in [
+        "<ram:TaxTotalAmount currencyID=\"EUR\">125.69</ram:TaxTotalAmount>",
+        "<ram:TaxTotalAmount currencyID=\"SEK\">1440.50</ram:TaxTotalAmount>",
+    ] {
+        assert!(cii.contains(amount), "{amount} in {cii}");
+    }
+    let back = refusal(Spoke::FacturxInvoice, Spoke::UblInvoice, cii.as_bytes()).unwrap();
+    assert!(
+        back.contains("<cbc:TaxAmount currencyID=\"EUR\">125.69</cbc:TaxAmount>"),
+        "{back}"
+    );
+    assert!(
+        back.contains("<cbc:TaxAmount currencyID=\"SEK\">1440.50</cbc:TaxAmount>"),
+        "{back}"
+    );
+    assert_eq!(back.matches("<cac:TaxTotal>").count(), 2, "{back}");
 }
