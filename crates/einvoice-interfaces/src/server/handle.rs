@@ -99,11 +99,14 @@ fn transform(query: &str, body: Vec<u8>) -> Result<Reply, (u16, String)> {
     // source is parsed — the write half runs with the raw bytes freed.
     let engine = Engine::new();
     let read = engine.to_hub(from, &body).map_err(status_of)?;
+    let hint = crate::output_hint(body.len());
     drop(body);
     let mut diagnostics = read.diagnostics;
     let value = match read.value {
         Some(hub) => {
-            let written = engine.from_hub(to, hub).map_err(status_of)?;
+            let written = engine
+                .from_hub_with_capacity(to, hub, hint)
+                .map_err(status_of)?;
             diagnostics.extend(written.diagnostics);
             written.value
         }

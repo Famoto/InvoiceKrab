@@ -665,15 +665,15 @@ pub(super) fn generate_xml_io(out: &mut String, root: &str, ns: &NamespaceMeta) 
     let _ = writeln!(
         out,
         "/// Serializes a typed `{root}` back into XML, with the XML declaration and\n\
-         /// the namespace-qualified root tag."
+         /// the namespace-qualified root tag, into a buffer reserved for `capacity`\n\
+         /// bytes (a size hint: the buffer still grows past it)."
     );
     let _ = writeln!(
         out,
-        "pub fn to_xml(source: &{root}) -> Result<String, quick_xml::SeError> {{"
+        "pub fn to_xml(source: &{root}, capacity: usize) -> Result<String, quick_xml::SeError> {{"
     );
-    out.push_str(
-        "    let mut out = String::from(\"<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\"?>\\n\");\n",
-    );
+    out.push_str("    let mut out = String::with_capacity(capacity);\n");
+    out.push_str("    out.push_str(\"<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\"?>\\n\");\n");
     let _ = writeln!(
         out,
         "    quick_xml::se::to_writer_with_root(&mut out, {:?}, source)?;",

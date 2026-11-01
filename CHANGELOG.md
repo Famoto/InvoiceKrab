@@ -88,6 +88,10 @@ Changes to the mapping DSL are listed under **DSL** in each release.
 
 ### Added
 
+- `Engine::from_hub_with_capacity` writes into an output buffer reserved
+  up front. `Engine::transform` and the server's `/transform` reserve 1.5×
+  the input size, so a large output is no longer built by repeated doubling
+  (#36).
 - A transformation correctness test
   (`crates/einvoice-interfaces/tests/transformation_correctness.rs`). It reads
   source and output through the EN 16931 syntax bindings rather than the

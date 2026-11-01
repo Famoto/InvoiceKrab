@@ -157,7 +157,23 @@ impl Engine {
     pub fn from_hub(
         &self,
         spoke: Spoke,
+        hub: MainKey,
+    ) -> Result<MappingResult<String>, EngineError> {
+        self.from_hub_with_capacity(spoke, hub, 0)
+    }
+
+    /// [`Engine::from_hub`] writing into a buffer reserved for `capacity`
+    /// bytes, so a large output is not built by repeated doubling. The hint
+    /// only sizes the first allocation; the output may be shorter or longer.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::from_hub`].
+    pub fn from_hub_with_capacity(
+        &self,
+        spoke: Spoke,
         mut hub: MainKey,
+        capacity: usize,
     ) -> Result<MappingResult<String>, EngineError> {
         // EN 16931 totals the hub lacks are computed by their calculation
         // rules (`config/derivations.toml`) before the writer runs.
@@ -202,7 +218,7 @@ impl Engine {
                 d
             },
         ));
-        let mut written = generated::write(spoke, hub)?;
+        let mut written = generated::write(spoke, hub, capacity)?;
         if !checks.is_empty() {
             written.diagnostics.splice(0..0, checks);
         }
@@ -227,11 +243,18 @@ impl Engine {
         let Some(hub) = read.value else {
             return Ok(MappingResult::new(None, read.diagnostics));
         };
-        let written = self.from_hub(to, hub)?;
+        let written = self.from_hub_with_capacity(to, hub, output_hint(bytes.len()))?;
         let mut diagnostics = read.diagnostics;
         diagnostics.extend(written.diagnostics);
         Ok(MappingResult::new(written.value, diagnostics))
     }
+}
+
+/// The output buffer to reserve for a document read from `input_len` bytes:
+/// 1.5× covers the largest measured growth (Factur-X from UBL, about 1.37×).
+// ponytail: one ratio for every route; per-spoke ratios if a route shrinks a lot.
+pub(crate) fn output_hint(input_len: usize) -> usize {
+    input_len.saturating_add(input_len / 2)
 }
 
 #[cfg(test)]

@@ -1425,7 +1425,10 @@ mod tests {
         assert!(!out.contains("self.xmlns"), "{out}");
         // Declaration + qualified root (the default namespace leaves it bare).
         assert!(
-            out.contains("String::from(\"<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\"?>\\n\")"),
+            out.contains("String::with_capacity(capacity);")
+                && out.contains(
+                    "out.push_str(\"<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\"?>\\n\");"
+                ),
             "{out}"
         );
         assert!(

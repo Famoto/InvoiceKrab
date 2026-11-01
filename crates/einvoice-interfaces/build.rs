@@ -469,15 +469,16 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
 
     // write dispatch: MainKey -> source XML. The hub is consumed: the writers
     // move its values into the target struct instead of cloning them.
-    out.push_str("/// Runs `spoke`'s generated writer over `hub` and serializes to XML.\n");
+    out.push_str("/// Runs `spoke`'s generated writer over `hub` and serializes to XML, into a\n");
+    out.push_str("/// buffer reserved for `capacity` bytes.\n");
     out.push_str(
-        "pub fn write(spoke: Spoke, hub: MainKey) -> Result<MappingResult<String>, quick_xml::SeError> {\n",
+        "pub fn write(spoke: Spoke, hub: MainKey, capacity: usize) -> Result<MappingResult<String>, quick_xml::SeError> {\n",
     );
     out.push_str("    match spoke {\n");
     for spoke in spokes {
         let _ = writeln!(
             out,
-            "        Spoke::{v} => {{\n            let written = {s}::write(hub);\n            let xml = match written.value {{\n                Some(source) => Some({s}::to_xml(&source)?),\n                None => None,\n            }};\n            Ok(MappingResult::new(xml, written.diagnostics))\n        }}",
+            "        Spoke::{v} => {{\n            let written = {s}::write(hub);\n            let xml = match written.value {{\n                Some(source) => Some({s}::to_xml(&source, capacity)?),\n                None => None,\n            }};\n            Ok(MappingResult::new(xml, written.diagnostics))\n        }}",
             v = spoke.variant,
             s = spoke.slug
         );
