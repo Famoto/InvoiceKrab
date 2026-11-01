@@ -1112,3 +1112,29 @@ fn test_latin1_transliteration_matches_only_where_characters_left_latin1() {
         "Latin-1 must survive"
     );
 }
+
+#[test]
+fn test_fatturapa_refuses_a_seller_name_over_its_length_limit() {
+    // Denominazione is a String80LatinType: 80 characters write, 81 are
+    // refused (VALUE_TOO_LONG), never cut.
+    let sample =
+        std::fs::read_to_string(workspace().join("testfiles/en16931-full-ubl.xml")).unwrap();
+    let named = |n: usize| {
+        sample.replace(
+            "<cbc:RegistrationName>Hafenkran Service GmbH</cbc:RegistrationName>",
+            &format!(
+                "<cbc:RegistrationName>{}</cbc:RegistrationName>",
+                "x".repeat(n)
+            ),
+        )
+    };
+    assert_ne!(named(80), sample, "the sample still names its seller");
+    let fits = refusal(Spoke::UblInvoice, Spoke::Fatturapa, named(80).as_bytes());
+    assert!(fits.is_ok_and(|xml| xml.contains(&"x".repeat(80))));
+    let over = refusal(Spoke::UblInvoice, Spoke::Fatturapa, named(81).as_bytes());
+    assert!(
+        over.as_ref()
+            .is_err_and(|e| e.starts_with("[VALUE_TOO_LONG]")),
+        "{over:?}"
+    );
+}

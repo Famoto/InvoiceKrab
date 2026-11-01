@@ -48,6 +48,18 @@
 //!   as two child elements of the node's element and read as their
 //!   concatenation.
 //!
+//! Two optional *settings* may accompany the kind:
+//!
+//! - `rounding = "half_up" | "half_even" | "down" | "up"` — on a
+//!   `fraction_digits` codec, a value with more than `max` fraction digits is
+//!   rounded to `max` with this mode instead of being refused.
+//! - `max_length = n` — on a text codec, an encoded value longer than `n`
+//!   characters is refused on write (`VALUE_TOO_LONG`) and warned about on
+//!   read. A codec may consist of `max_length` alone (no translation kind).
+//!
+//! A mapping's `[meta.defaults]` sets the same two for every node of the
+//! mapping; a codec's own setting wins (see [`effective_rounding`]).
+//!
 //! # Behavior
 //!
 //! Parsing is total: a file with an unknown key, an unknown `for_type`, an
@@ -82,6 +94,57 @@ pub struct Codec {
     pub wire: BTreeMap<String, String>,
     /// Human description (reports only).
     pub description: Option<String>,
+    /// How a `fraction_digits` value with more than `max` digits is rounded;
+    /// `None` refuses it (the mapping's `[meta.defaults]` may still supply a
+    /// mode).
+    pub rounding: Option<Rounding>,
+    /// The most characters an encoded text value may have.
+    pub max_length: Option<usize>,
+}
+
+/// A rounding mode for a `fraction_digits` codec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Rounding {
+    /// Half away from zero (commercial rounding): 2.345 → 2.35, -2.345 → -2.35.
+    HalfUp,
+    /// Half to even (banker's rounding): 2.345 → 2.34, 2.355 → 2.36.
+    HalfEven,
+    /// Toward zero (truncation of the extra digits).
+    Down,
+    /// Away from zero.
+    Up,
+}
+
+impl Rounding {
+    /// The `rust_decimal::RoundingStrategy` variant the generated code uses.
+    pub fn strategy(self) -> &'static str {
+        match self {
+            Rounding::HalfUp => "MidpointAwayFromZero",
+            Rounding::HalfEven => "MidpointNearestEven",
+            Rounding::Down => "ToZero",
+            Rounding::Up => "AwayFromZero",
+        }
+    }
+
+    /// The keyword as authored.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Rounding::HalfUp => "half_up",
+            Rounding::HalfEven => "half_even",
+            Rounding::Down => "down",
+            Rounding::Up => "up",
+        }
+    }
+}
+
+/// The rounding mode a node's codec applies: the codec's own `rounding`, else
+/// the mapping default — and only for a `fraction_digits` codec, the one kind
+/// that has a digit limit to round to.
+pub fn effective_rounding(codec: &Codec, default: Option<Rounding>) -> Option<Rounding> {
+    matches!(codec.pattern, Pattern::Fraction { .. })
+        .then(|| codec.rounding.or(default))
+        .flatten()
 }
 
 /// A compiled lexical pattern.
@@ -124,6 +187,9 @@ pub enum Pattern {
         /// Local name of the tail element.
         tail: String,
     },
+    /// No translation: the value is written and read as it is. Only a codec
+    /// that declares settings alone (`max_length`) has it.
+    Plain,
 }
 
 /// One element of a temporal pattern.
@@ -173,6 +239,10 @@ struct RawCodec {
     wire: BTreeMap<String, String>,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    rounding: Option<Rounding>,
+    #[serde(default)]
+    max_length: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,6 +300,30 @@ fn build_codec(id: &str, raw: RawCodec) -> Result<Codec, String> {
         }
         wire.insert(name.to_string(), value);
     }
+    if raw.rounding.is_some() && !matches!(pattern, Pattern::Fraction { .. }) {
+        return Err("`rounding` needs a `fraction_digits` codec".to_string());
+    }
+    if let Some(n) = raw.max_length {
+        let text_like = matches!(
+            raw.for_type,
+            MappingType::String
+                | MappingType::Identifier
+                | MappingType::Currency
+                | MappingType::UnitCode
+        );
+        if !text_like {
+            return Err(format!(
+                "`max_length` is for text codecs, not `{}`",
+                raw.for_type
+            ));
+        }
+        if n == 0 {
+            return Err("`max_length` must be at least 1".to_string());
+        }
+        if matches!(pattern, Pattern::Split { .. }) {
+            return Err("`max_length` does not combine with `split`".to_string());
+        }
+    }
     Ok(Codec {
         id: id.to_string(),
         for_type: raw.for_type,
@@ -237,6 +331,8 @@ fn build_codec(id: &str, raw: RawCodec) -> Result<Codec, String> {
         pattern,
         wire,
         description: raw.description,
+        rounding: raw.rounding,
+        max_length: raw.max_length,
     })
 }
 
@@ -252,9 +348,17 @@ fn codec_kind(raw: &RawCodec) -> Result<(String, Pattern), String> {
         raw.digits.is_some(),
         raw.split.is_some(),
     ];
-    if declared.iter().filter(|d| **d).count() != 1 {
+    let kinds = declared.iter().filter(|d| **d).count();
+    // A codec may consist of a length limit alone: no translation.
+    if kinds == 0
+        && raw.rounding.is_none()
+        && let Some(n) = raw.max_length
+    {
+        return Ok((format!("max_length {n}"), Pattern::Plain));
+    }
+    if kinds != 1 {
         return Err(
-            "declare exactly one of `lexical`, `values`, `fraction_digits`, `charset`, `digits`, `split`"
+            "declare exactly one of `lexical`, `values`, `fraction_digits`, `charset`, `digits`, `split` (or `max_length` alone)"
                 .to_string(),
         );
     }
@@ -569,6 +673,20 @@ mod tests {
         "for_type = \"string\"\nsplit = { at = 2, into = [\"A\", \"A\"] }",
         "distinct"
     )]
+    #[case::rounding_without_fraction(
+        "for_type = \"string\"\ncharset = \"latin-1\"\nrounding = \"half_up\"",
+        "fraction_digits"
+    )]
+    #[case::rounding_alone("for_type = \"decimal\"\nrounding = \"half_up\"", "exactly one")]
+    #[case::max_length_on_decimal(
+        "for_type = \"decimal\"\nfraction_digits = [2, 2]\nmax_length = 5",
+        "text codecs"
+    )]
+    #[case::max_length_zero("for_type = \"string\"\nmax_length = 0", "at least 1")]
+    #[case::max_length_with_split(
+        "for_type = \"string\"\nsplit = { at = 2, into = [\"A\", \"B\"] }\nmax_length = 5",
+        "split"
+    )]
     #[case::split_with_wire(
         "for_type = \"string\"\nsplit = { at = 2, into = [\"A\", \"B\"] }\nwire = { \"@x\" = \"1\" }",
         "wire"
@@ -576,6 +694,60 @@ mod tests {
     fn test_parse_codecs_rejects_bad_kinds(#[case] body: &str, #[case] needle: &str) {
         let err = parse_codecs(&format!("[codec.x]\n{body}")).unwrap_err();
         assert!(err.message.contains(needle), "{needle}: {}", err.message);
+    }
+
+    #[test]
+    fn test_parse_codecs_reads_settings() {
+        let codecs = parse_codecs(
+            r#"
+            [codec.amount-8]
+            for_type = "decimal"
+            fraction_digits = [2, 8]
+            rounding = "half_up"
+
+            [codec.text-80]
+            for_type = "string"
+            charset = "latin-1"
+            max_length = 80
+
+            [codec.id-35]
+            for_type = "identifier"
+            max_length = 35
+            "#,
+        )
+        .expect("parses");
+        let by = |id: &str| codecs.iter().find(|c| c.id == id).unwrap().clone();
+        assert_eq!(by("amount-8").rounding, Some(Rounding::HalfUp));
+        assert_eq!(by("text-80").max_length, Some(80));
+        assert_eq!(by("text-80").pattern, Pattern::Latin1);
+        assert_eq!(by("id-35").pattern, Pattern::Plain);
+        assert_eq!(by("id-35").lexical, "max_length 35");
+    }
+
+    #[test]
+    fn test_effective_rounding_prefers_the_codec_and_needs_fraction_digits() {
+        let codecs = parse_codecs(
+            "[codec.a]\nfor_type = \"decimal\"\nfraction_digits = [2, 2]\n\
+             [codec.b]\nfor_type = \"decimal\"\nfraction_digits = [2, 2]\nrounding = \"down\"\n\
+             [codec.t]\nfor_type = \"string\"\ncharset = \"latin-1\"",
+        )
+        .expect("parses");
+        let by = |id: &str| codecs.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(
+            effective_rounding(by("a"), None),
+            None,
+            "no rounding by default"
+        );
+        assert_eq!(
+            effective_rounding(by("a"), Some(Rounding::HalfEven)),
+            Some(Rounding::HalfEven)
+        );
+        assert_eq!(
+            effective_rounding(by("b"), Some(Rounding::HalfEven)),
+            Some(Rounding::Down),
+            "the codec's own mode wins"
+        );
+        assert_eq!(effective_rounding(by("t"), Some(Rounding::Up)), None);
     }
 
     #[test]

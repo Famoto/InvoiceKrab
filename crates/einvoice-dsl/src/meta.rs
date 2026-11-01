@@ -127,6 +127,20 @@ pub struct IdentityMeta {
     pub attributes: BTreeMap<String, Vec<String>>,
 }
 
+/// The `[meta.defaults]` table: codec settings that apply to every node of
+/// the mapping unless the node's codec states its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetaDefaults {
+    /// Rounding mode for every `fraction_digits` codec without its own.
+    /// Absent: no rounding (a value with too many digits is refused).
+    #[serde(default)]
+    pub rounding: Option<crate::codec::Rounding>,
+    /// Length limit for every text node whose codec sets none.
+    #[serde(default)]
+    pub max_length: Option<std::num::NonZeroUsize>,
+}
+
 /// One `[[meta.samples]]` entry: a document that must be schema-valid itself and
 /// must round-trip through every emitting spoke.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -200,6 +214,10 @@ pub struct MappingMeta {
     /// when omitted.
     #[serde(default)]
     pub identity: Option<IdentityMeta>,
+    /// Codec settings for every node (`rounding`, `max_length`); a codec's own
+    /// setting wins. Inherited key by key from the parent mapping.
+    #[serde(default)]
+    pub defaults: Option<MetaDefaults>,
 }
 
 impl MappingMeta {
@@ -235,6 +253,31 @@ impl MappingMeta {
         if self.identity.is_none() {
             self.identity = parent.identity.clone();
         }
+    }
+
+    /// Fills in each `[meta.defaults]` key this meta omits from `parent`, so a
+    /// CIUS inherits its base's defaults and may override them one by one.
+    pub fn inherit_defaults(&mut self, parent: &MappingMeta) {
+        let Some(from) = &parent.defaults else {
+            return;
+        };
+        let own = self.defaults.get_or_insert_with(MetaDefaults::default);
+        own.rounding = own.rounding.or(from.rounding);
+        own.max_length = own.max_length.or(from.max_length);
+    }
+
+    /// The mapping-wide rounding mode (`[meta.defaults].rounding`).
+    pub fn default_rounding(&self) -> Option<crate::codec::Rounding> {
+        self.defaults.as_ref().and_then(|d| d.rounding)
+    }
+
+    /// The mapping-wide length limit for text nodes
+    /// (`[meta.defaults].max_length`).
+    pub fn default_max_length(&self) -> Option<usize> {
+        self.defaults
+            .as_ref()
+            .and_then(|d| d.max_length)
+            .map(std::num::NonZeroUsize::get)
     }
 
     /// The namespace URI of the root element: the `[meta.namespaces]` entry of
@@ -313,6 +356,34 @@ mod tests {
         assert_eq!(identity.version.as_deref(), Some("UBLVersionID"));
         assert_eq!(identity.versions, ["2.1"]);
         assert_eq!(identity.attributes["versione"], ["FPA12"]);
+    }
+
+    #[test]
+    fn test_defaults_parse_and_inherit_key_by_key() {
+        let parent: MappingMeta = toml::from_str(&format!(
+            "{}\n[defaults]\nrounding = \"half_up\"\nmax_length = 200",
+            required_only()
+        ))
+        .unwrap();
+        let mut child: MappingMeta =
+            toml::from_str(&format!("{}\n[defaults]\nmax_length = 80", required_only())).unwrap();
+        child.inherit_defaults(&parent);
+        assert_eq!(
+            child.default_rounding(),
+            Some(crate::codec::Rounding::HalfUp),
+            "inherited"
+        );
+        assert_eq!(child.default_max_length(), Some(80), "own value wins");
+        let bare: MappingMeta = toml::from_str(required_only()).unwrap();
+        assert_eq!(bare.default_rounding(), None, "no rounding by default");
+        assert_eq!(bare.default_max_length(), None);
+        for bad in ["max_length = 0", "rounding = \"nearest\"", "bogus = 1"] {
+            assert!(
+                toml::from_str::<MappingMeta>(&format!("{}\n[defaults]\n{bad}", required_only()))
+                    .is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

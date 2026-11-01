@@ -10,6 +10,19 @@ Changes to the mapping DSL are listed under **DSL** in each release.
 
 ### DSL
 
+- **Added** codec settings `rounding` (`half_up`, `half_even`, `down`, `up`)
+  on a `fraction_digits` codec, which rounds a value with too many digits
+  instead of refusing it, and `max_length` on a text codec, which refuses a
+  longer value on write (`VALUE_TOO_LONG`) and warns on read; a codec may be
+  `max_length` alone. `[meta.defaults]` sets both for a whole mapping,
+  inherited key by key; a codec's own setting wins. Nothing is rounded or
+  limited without a setting.
+- **Changed** `join_with` alone implies `multiple = "join"`; E040 now only
+  reports `join` without a separator, or a separator with another policy.
+- **Changed** the FatturaPA text nodes use length-limited codecs
+  (`fatturapa-text-60` … `fatturapa-text-1000`, after the XSD's
+  `String<n>LatinType`): an over-length value is refused instead of
+  producing a document the schema rejects.
 - **Changed** the schema files a mapping declares (`[meta.schema]` `xsd` and
   `catalog`) need not exist at build time: nothing is built from them. Their
   paths must still stay in the workspace (E100), and the samples

@@ -66,6 +66,7 @@ pub fn build_ir_with(
         meta.inherit_namespaces(&ancestor.meta);
         meta.inherit_schema(&ancestor.meta);
         meta.inherit_identity(&ancestor.meta);
+        meta.inherit_defaults(&ancestor.meta);
     }
     let ns = NamespaceConfig {
         root_prefix: meta.root_prefix().to_string(),

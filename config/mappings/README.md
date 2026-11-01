@@ -220,6 +220,9 @@ description     = "…"                       # optional, reports only
 profile  = "CustomizationID"
 profiles = ["urn:cen.eu:en16931:2017"]
 
+[meta.defaults]                             # optional — codec settings for every node
+max_length = 200
+
 [meta.schema]                               # optional — the XSD the format is defined by
 xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
 
@@ -242,6 +245,7 @@ file = "testfiles/xrechnung-3.0.2-beispiel.xml"
 | `[meta.namespaces]` | — | `prefix = "URI"` declarations emitted on the root (`""` = default namespace); inherited |
 | `[meta.ns_defaults]` | — | `leaf` / `aggregate` default prefixes; inherited |
 | `[meta.identity]` | — | `profile`/`profiles`, `version`/`versions`, `attributes`: what a document must declare to be read; inherited — see [Document identity](#document-identity--auto-detection) |
+| `[meta.defaults]` | — | `rounding`, `max_length`: [codec settings](#codec-settings-rounding-and-length) for every node whose codec states none; inherited key by key |
 | `[meta.schema]` | — | `xsd`, `catalog`, `known_gaps`: the schema the spoke's documents must satisfy; inherited — see [Schema conformance](#schema-conformance) |
 | `[[meta.samples]]` | — | `file`, `source`: sample documents every spoke with a schema must write validly and round-trip; not inherited |
 
@@ -298,7 +302,7 @@ A node plays one of five roles, depending on which fields it declares:
 | `normalize` | array | String transforms, applied in order (see [Normalization](#normalization)). |
 | `fallbacks` | array | Other node ids to try, in order, when this node is missing (see [Fallbacks](#fallbacks)). |
 | `multiple` | string | Policy for repeated scalar values (see [Multiple values](#multiple-values)). |
-| `join_with` | string | Separator — required iff `multiple = "join"` (E040). |
+| `join_with` | string | Separator of joined values; implies `multiple = "join"` (E040 with another policy). |
 | `constant` | string | Fixed write-side literal (see [Constants](#constants-pinning-write-side-values)). |
 | `clone_of` | string | Canonical key this node mirrors (see [Clones](#clones-one-value-several-places)). |
 | `codec` | string | Id of a shared codec translating the hub value to the format's form: dates, booleans, code tables, number formats, character sets (see [Codecs](#codecs)). |
@@ -414,7 +418,8 @@ multiple = "join"
 join_with = "\n"
 ```
 
-`join_with` is required exactly when the policy is `join` (E040). `multiple`
+`join_with` alone implies `join`, so `multiple = "join"` may be left out;
+`join` without `join_with`, or `join_with` with another policy, is E040. `multiple`
 is only valid on a plain scalar element leaf — not on collections, attributes,
 `$text` overrides, or valued containers — and cannot be combined with
 `fallbacks`: a multi-valued node collapses its own values, and a fallback
@@ -732,7 +737,7 @@ A codec declares exactly one kind, checked when the codec file loads:
 |---|---|---|---|
 | `lexical` | `date`, `datetime`, `boolean` | the canonical value in the pattern | the pattern decoded |
 | `values = [[canonical, wire], …]` | `string`, `identifier`, `currency`, `unit_code` | the first pair's wire code for the hub value; a hub value without a pair is `CODEC_INVALID`; an empty wire code writes nothing | the first pair's canonical code for the wire value; several wire codes may read as one canonical code |
-| `fraction_digits = [min, max]` | `decimal` | zero-padded to `min` fraction digits, trailing zeros trimmed down to it; a value needing more than `max` is `CODEC_INVALID` (never rounded) | as a decimal |
+| `fraction_digits = [min, max]` | `decimal` | zero-padded to `min` fraction digits, trailing zeros trimmed down to it; a value needing more than `max` is `CODEC_INVALID` unless a `rounding` mode applies | as a decimal |
 | `charset = "latin-1"` | `string`, `identifier` | the text in ISO 8859-1, typographic punctuation transliterated (`—` → `-`, `€` → `EUR`); any other character outside it is `CODEC_INVALID` | as is |
 | `digits = n` | `string`, `identifier` | the value when it is exactly `n` ASCII digits, else `CODEC_INVALID` (never padded or cut) | as is |
 | `split = { at = n, into = [head, tail] }` | `string`, `identifier` | the first `n` characters into child element `head`, the rest into `tail` | the two joined |
@@ -772,6 +777,33 @@ attribute must not collide with an attribute node declared on the same element
 attributes turns its element into a valued container (text plus attributes)
 exactly as an attribute child would. A `split` codec turns its element into a
 container of the two named children and takes no `wire` attributes.
+
+### Codec settings: rounding and length
+
+Two optional settings may accompany a codec's kind:
+
+| Setting | On | Effect |
+|---|---|---|
+| `rounding = "half_up" \| "half_even" \| "down" \| "up"` | a `fraction_digits` codec | a value with more than `max` fraction digits is rounded to `max` with this mode instead of being refused |
+| `max_length = n` | a text codec (`string`, `identifier`, `currency`, `unit_code`; not `split`) | an encoded value longer than `n` characters is refused on write (`VALUE_TOO_LONG` error, never cut) and warned about on read (`VALUE_TOO_LONG` warning) |
+
+A codec may be `max_length` alone, translating nothing. Limits are written by
+hand from the format's schema:
+
+```toml
+# config/codecs/fatturapa.toml — String80LatinType
+[codec.fatturapa-text-80]
+for_type = "string"
+charset = "latin-1"
+max_length = 80
+```
+
+`[meta.defaults]` sets both for a whole mapping: `rounding` for every
+`fraction_digits` codec without its own, `max_length` for every `string` and
+`identifier` node whose codec sets none. A codec's own setting wins; a
+mapping's `[meta.defaults]` wins over its parent's, key by key; a node opts
+out by naming another codec. Without any setting nothing is rounded or
+limited.
 
 ---
 
@@ -1248,7 +1280,7 @@ Validation reports **every** problem in one run, never just the first error.
 | `E031` | Fallback target type incompatible with the primary |
 | `E032` | Fallback target in a different scope |
 | `E033` | Fallback reference cycle |
-| `E040` | `multiple = "join"` without `join_with`, or `join_with` without join |
+| `E040` | `multiple = "join"` without `join_with`, or `join_with` with another `multiple` policy |
 | `E043` | `multiple` combined with `fallbacks` |
 | `E060` | `constant` on a collection node |
 | `E061` | `constant` literal does not parse under the node's `type` |
@@ -1281,6 +1313,6 @@ Validation reports **every** problem in one run, never just the first error.
 
 Runtime (per-document) diagnostics — missing required values, type validation
 failures, taken fallbacks, `CLONE_MISMATCH`, `CODEC_INVALID`,
-`CODEC_WIRE_MISMATCH`, `MATCH_MULTIPLE`, `VALUE_DERIVED`, `VALUE_INCONSISTENT` — are reported with severity and a
+`CODEC_WIRE_MISMATCH`, `VALUE_TOO_LONG`, `MATCH_MULTIPLE`, `VALUE_DERIVED`, `VALUE_INCONSISTENT` — are reported with severity and a
 source-node reference when a document is transformed; they never silently
 vanish.

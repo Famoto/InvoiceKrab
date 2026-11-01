@@ -1791,6 +1791,54 @@ mod tests {
     }
 
     #[test]
+    fn test_codec_settings_round_and_limit_in_generated_code() {
+        let codecs: CodecTable = crate::codec::parse_codecs(
+            "[codec.amt]\nfor_type = \"decimal\"\nfraction_digits = [2, 2]\n\
+             [codec.amt-down]\nfor_type = \"decimal\"\nfraction_digits = [2, 2]\nrounding = \"down\"\n\
+             [codec.text-5]\nfor_type = \"string\"\nmax_length = 5\n",
+        )
+        .expect("codecs parse")
+        .into_iter()
+        .map(|c| (c.id.clone(), c))
+        .collect();
+        let gen_with = |defaults: &str| {
+            let src = format!(
+                "[meta]\ndoc_format = \"x\"\nformat_version = \"1\"\nmapping_version = \"1\"\n\
+                 canonical_model = \"c:1\"\nroot = \"Doc\"\n{defaults}\n\
+                 [Doc.A]\ntype = \"decimal\"\ncanonical_key = \"A\"\ncodec = \"amt\"\n\
+                 [Doc.B]\ntype = \"decimal\"\ncanonical_key = \"B\"\ncodec = \"amt-down\"\n\
+                 [Doc.C]\ntype = \"string\"\ncanonical_key = \"C\"\ncodec = \"text-5\"\n"
+            );
+            let (ir, source, diags) =
+                build_ir_with(&[parse_mapping(&src).expect("parses")], &codecs);
+            assert!(diags.is_empty(), "{diags:?}");
+            generate_spoke(&ir, &source, &codecs, "super::hub")
+        };
+        let plain = gen_with("");
+        assert!(
+            plain.contains("codec::format_fraction(&value.to_string(), 2, 2)"),
+            "no rounding by default: {plain}"
+        );
+        assert!(
+            plain.contains("RoundingStrategy::ToZero"),
+            "codec's own mode"
+        );
+        assert!(
+            plain.contains("rendered.chars().count() > 5"),
+            "write limit"
+        );
+        assert!(plain.contains("raw.chars().count() > 5"), "read warning");
+        let defaulted = gen_with("[meta.defaults]\nrounding = \"half_even\"\n");
+        assert!(
+            defaulted.contains(
+                "round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointNearestEven)"
+            ),
+            "mapping default: {defaulted}"
+        );
+        assert!(defaulted.contains("RoundingStrategy::ToZero"), "codec wins");
+    }
+
+    #[test]
     fn test_split_codec_synthesizes_its_two_part_elements() {
         let (ir, source, codecs) = fatturapa_like();
         let out = generate_spoke(&ir, &source, &codecs, "super::hub");

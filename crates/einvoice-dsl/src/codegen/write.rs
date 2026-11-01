@@ -46,7 +46,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use crate::codec::{Codec, Pattern};
+use crate::codec::{Codec, Pattern, Rounding};
 use crate::node::{DerivationScope, Scope, SourceNode};
 use crate::source_model::{FieldType, SourceModelMeta, xml_field_name};
 use crate::types::MappingType;
@@ -587,7 +587,7 @@ fn write_scalar_block(
     take: bool,
 ) {
     let source = ctx.source;
-    let codec = ctx.codec_of(node);
+    let codec = ctx.translating_codec_of(node);
     let key = hub_key(node);
     // A `$parent` / `$root` clone reads another scope's hub value, which is
     // always a borrow: the owning scope writes the key itself.
@@ -676,10 +676,37 @@ fn write_scalar_block(
         return;
     }
     match codec {
-        Some(codec) => write_encoded(out, node, codec, key, index_var, &format!("{pad}    ")),
+        Some(codec) => write_encoded(
+            out,
+            node,
+            codec,
+            ctx.rounding_of(node),
+            key,
+            index_var,
+            &format!("{pad}    "),
+        ),
         None => {
             let _ = writeln!(out, "{pad}    let rendered = {rendered};");
         }
+    }
+    if let Some(limit) = ctx.max_length_of(node) {
+        // Refused, never truncated: the empty rendering is skipped below.
+        let _ = writeln!(
+            out,
+            "{pad}    let rendered = if rendered.chars().count() > {limit} {{"
+        );
+        let msg = format!(
+            "format!(\"value has {{}} characters, more than the {limit} the target allows\", rendered.chars().count())"
+        );
+        DiagSpec::new("Severity::Error", "VALUE_TOO_LONG", node.id.as_str(), &msg)
+            .key(key)
+            .path(path)
+            .index(index_var)
+            .emit(out, &format!("{pad}        "));
+        let _ = writeln!(out, "{pad}        CompactString::new(\"\")");
+        let _ = writeln!(out, "{pad}    }} else {{");
+        let _ = writeln!(out, "{pad}        rendered");
+        let _ = writeln!(out, "{pad}    }};");
     }
     match &element_guard {
         Some(guard) => {
@@ -739,6 +766,7 @@ fn write_encoded(
     out: &mut String,
     node: &SourceNode,
     codec: &Codec,
+    rounding: Option<Rounding>,
     key: &str,
     index_var: Option<&str>,
     pad: &str,
@@ -795,9 +823,18 @@ fn write_encoded(
             let _ = writeln!(out, "{pad}}};");
         }
         (Pattern::Fraction { min, max }, MappingType::Decimal) => {
+            // Rounded only when the codec or `[meta.defaults]` names a mode;
+            // otherwise a value needing more than `max` digits is refused.
+            let digits = match rounding {
+                Some(mode) => format!(
+                    "value.round_dp_with_strategy({max}, rust_decimal::RoundingStrategy::{}).to_string()",
+                    mode.strategy()
+                ),
+                None => "value.to_string()".to_string(),
+            };
             let _ = writeln!(
                 out,
-                "{pad}let rendered = match codec::format_fraction(&value.to_string(), {min}, {max}) {{"
+                "{pad}let rendered = match codec::format_fraction(&{digits}, {min}, {max}) {{"
             );
             let _ = writeln!(out, "{pad}    Some(s) => s,");
             let _ = writeln!(out, "{pad}    None => {{");

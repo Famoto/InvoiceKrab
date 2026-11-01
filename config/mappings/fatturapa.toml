@@ -103,7 +103,7 @@ normalize = ["trim"]
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.DatiAnagrafici.Anagrafica.Denominazione]
 type = "string"
 canonical_key = "SellerName"
-codec = "fatturapa-text"
+codec = "fatturapa-text-80"
 required = true
 
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.DatiAnagrafici.RegimeFiscale]
@@ -114,7 +114,7 @@ constant = "RF01"
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.Sede.Indirizzo]
 type = "string"
 canonical_key = "SellerAddressLine1"
-codec = "fatturapa-text"
+codec = "fatturapa-text-60"
 required = true
 
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.Sede.CAP]
@@ -126,7 +126,7 @@ required = true
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.Sede.Comune]
 type = "string"
 canonical_key = "SellerCity"
-codec = "fatturapa-text"
+codec = "fatturapa-text-60"
 required = true
 
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.Sede.Nazione]
@@ -145,14 +145,14 @@ normalize = ["trim"]
 [FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.DatiAnagrafici.Anagrafica.Denominazione]
 type = "string"
 canonical_key = "BuyerName"
-codec = "fatturapa-text"
+codec = "fatturapa-text-80"
 required = true
 
 # BG-8 buyer postal address.
 [FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.Sede.Indirizzo]
 type = "string"
 canonical_key = "BuyerAddressLine1"
-codec = "fatturapa-text"
+codec = "fatturapa-text-60"
 required = true
 
 [FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.Sede.CAP]
@@ -164,7 +164,7 @@ required = true
 [FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.Sede.Comune]
 type = "string"
 canonical_key = "BuyerCity"
-codec = "fatturapa-text"
+codec = "fatturapa-text-60"
 required = true
 
 [FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.Sede.Nazione]
@@ -209,7 +209,7 @@ codec = "fatturapa-amount-2"
 [FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Causale]
 type = "string"
 canonical_key = "InvoiceNote"
-codec = "fatturapa-text"
+codec = "fatturapa-text-200"
 
 # Document references: BT-13 purchase order, BT-12 contract, BT-25/26
 # preceding invoice.
@@ -247,7 +247,7 @@ required = true
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.Descrizione]
 type = "string"
 canonical_key = "ItemName"
-codec = "fatturapa-text"
+codec = "fatturapa-text-1000"
 required = true
 
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.Quantita]
@@ -348,7 +348,7 @@ required = true
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DatiRiepilogo.RiferimentoNormativo]
 type = "string"
 canonical_key = "VatExemptionReasonText"
-codec = "fatturapa-text"
+codec = "fatturapa-text-100"
 
 # ===========================================================================
 # BODY — payment (DatiPagamento, BG-16/17)

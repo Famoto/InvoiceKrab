@@ -17,7 +17,8 @@
 //! - `E031` fallback target type is incompatible.
 //! - `E032` fallback target is not in the same scope as the referring node.
 //! - `E033` fallback reference cycle.
-//! - `E040` `multiple = "join"` without `join_with`, or `join_with` without join.
+//! - `E040` `multiple = "join"` without `join_with`, or `join_with` with another
+//!   policy (`join_with` alone implies `multiple = "join"`).
 //! - `E043` `multiple` combined with `fallbacks`.
 //! - `E060` `constant` on a collection node.
 //! - `E061` `constant` literal does not parse under the node's `type`.
@@ -236,7 +237,9 @@ fn check_structural(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
         (false, true) => diags.push(err(
             "E040",
             &node.id,
-            "`join_with` is only valid with multiple = \"join\"".to_string(),
+            "`join_with` is only valid with multiple = \"join\" (which it implies when \
+             `multiple` is left out)"
+                .to_string(),
         )),
         _ => {}
     }
@@ -940,6 +943,15 @@ mod tests {
             type = "string"
             multiple = "join""#);
         assert!(codes(&diags).contains(&"E040"));
+    }
+
+    #[test]
+    fn test_join_with_alone_implies_join() {
+        let diags = run(r#"[Invoice.Note]
+            type = "string"
+            canonical_key = "Note"
+            join_with = ", ""#);
+        assert!(!codes(&diags).contains(&"E040"), "{diags:?}");
     }
 
     #[test]

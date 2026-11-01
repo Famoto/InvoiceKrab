@@ -141,7 +141,7 @@ pub fn apply_defaults(
                     .into_iter()
                     .map(NodeId::new)
                     .collect(),
-                multiple: raw.multiple,
+                multiple: raw.effective_multiple(),
                 join_with: raw.join_with.clone(),
                 normalize: raw.normalize.clone().unwrap_or_default(),
                 constant: raw.constant.clone(),

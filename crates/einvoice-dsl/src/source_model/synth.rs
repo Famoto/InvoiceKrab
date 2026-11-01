@@ -803,7 +803,7 @@ fn insert_node(
     // `multiple` opts a plain scalar element leaf into a `Vec<String>` source
     // field. Every other node shape either cannot repeat in XML (attributes,
     // element text) or already repeats structurally (collections).
-    let multi = node.multiple.is_some();
+    let multi = node.effective_multiple().is_some();
 
     // Collection node: a repeated struct field; children populate the item struct.
     if ty == MappingType::Collection {

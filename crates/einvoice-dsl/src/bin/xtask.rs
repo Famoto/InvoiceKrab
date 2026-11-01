@@ -207,12 +207,13 @@ mod tests {
 
     #[test]
     fn test_check_invalid_node_exits_one_and_reports_code() {
-        // `join_with` without `multiple = "join"` is an error-severity
+        // `join_with` with a non-join `multiple` is an error-severity
         // diagnostic (E040).
         let out = output(&[(
             "ubl",
             r#"[Doc.X]
             type = "string"
+            multiple = "first"
             join_with = ", ""#,
         )]);
         let rendered = render_check(&out);

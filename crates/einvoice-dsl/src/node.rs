@@ -227,6 +227,13 @@ pub struct RawNode {
 }
 
 impl RawNode {
+    /// The effective repeated-value policy: the declared `multiple`, or
+    /// `join` when only `join_with` is given (a separator implies joining).
+    pub fn effective_multiple(&self) -> Option<MultiplePolicy> {
+        self.multiple
+            .or_else(|| self.join_with.is_some().then_some(MultiplePolicy::Join))
+    }
+
     /// Whether this node is disabled (default `false`).
     pub fn is_disabled(&self) -> bool {
         self.disabled.unwrap_or(false)

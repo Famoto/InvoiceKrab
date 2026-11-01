@@ -79,10 +79,32 @@ fraction_digits = [2, 2]
 for_type = "decimal"
 fraction_digits = [2, 8]
 
-# The ...LatinType strings: ISO 8859-1 text.
-[codec.fatturapa-text]
+# The String<n>LatinType strings: ISO 8859-1 text of at most n characters. A
+# longer value is refused on write (VALUE_TOO_LONG), never cut.
+[codec.fatturapa-text-60]
 for_type = "string"
 charset = "latin-1"
+max_length = 60
+
+[codec.fatturapa-text-80]
+for_type = "string"
+charset = "latin-1"
+max_length = 80
+
+[codec.fatturapa-text-100]
+for_type = "string"
+charset = "latin-1"
+max_length = 100
+
+[codec.fatturapa-text-200]
+for_type = "string"
+charset = "latin-1"
+max_length = 200
+
+[codec.fatturapa-text-1000]
+for_type = "string"
+charset = "latin-1"
+max_length = 1000
 
 # CAPType: an Italian postal code, five digits. A postal code of another form
 # (a foreign address) cannot be written: it is refused, never padded or cut.

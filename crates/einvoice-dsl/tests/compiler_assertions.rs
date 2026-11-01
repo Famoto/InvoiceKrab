@@ -276,6 +276,16 @@ fn test_shipped_config_is_clean_and_generates_well_formed_code() {
 #[case::join_with_empty_separator(
     "[Doc.A]\ntype=\"string\"\ncanonical_key=\"K\"\nmultiple=\"join\"\njoin_with=\"\"\n"
 )]
+// `join_with` alone implies `multiple = "join"`.
+#[case::join_with_implies_join("[Doc.A]\ntype=\"string\"\ncanonical_key=\"K\"\njoin_with=\", \"\n")]
+// A `fraction_digits` codec rounds under `[meta.defaults]`; a text codec
+// carries a length limit.
+#[case::codec_settings(concat!(
+    "[meta.defaults]\nrounding=\"half_even\"\nmax_length=200\n",
+    "[Doc.Amount]\ntype=\"decimal\"\ncanonical_key=\"Amt\"\ncodec=\"fatturapa-amount-2\"\n",
+    "[Doc.Name]\ntype=\"string\"\ncanonical_key=\"Name\"\ncodec=\"fatturapa-text-80\"\n",
+    "[Doc.Ref]\ntype=\"identifier\"\ncanonical_key=\"Ref\"\n"
+))]
 #[case::datetime_constant_with_zone(
     "[Doc.A]\ntype=\"datetime\"\nconstant=\"2024-01-01T10:00:00+01:00\"\n"
 )]
@@ -447,9 +457,9 @@ fn test_inheritance_merge_and_disabled_base_are_clean() {
     "E040",
     "[Doc.A]\ntype=\"string\"\ncanonical_key=\"K\"\nmultiple=\"join\"\n"
 )]
-#[case::e040_separator_without_join(
+#[case::e040_separator_with_first(
     "E040",
-    "[Doc.A]\ntype=\"string\"\ncanonical_key=\"K\"\njoin_with=\",\"\n"
+    "[Doc.A]\ntype=\"string\"\ncanonical_key=\"K\"\nmultiple=\"first\"\njoin_with=\",\"\n"
 )]
 #[case::e043_multiple_and_fallbacks(
     "E043",

@@ -208,7 +208,7 @@ fn read_scalar_block(
         );
     } else {
         let _ = writeln!(out, "{pad}// {} -> {key}", node.id);
-        if let Some(codec) = ctx.codec_of(node) {
+        if let Some(codec) = ctx.translating_codec_of(node) {
             read_wire_checks(out, ctx, node, codec, key, start_struct, indent, target);
         }
         let binding = if node.fallbacks.is_empty() {
@@ -257,7 +257,32 @@ fn read_scalar_block(
     // so optional fields emit no dead diagnostic code. A `default` fills the
     // key instead, so a defaulted field is never missing.
     let _ = writeln!(out, "{pad}if let Some(raw) = value {{");
-    decode_and_assign(out, node, ctx.codec_of(node), key, indent + 1, target);
+    if let Some(limit) = ctx.max_length_of(node) {
+        // The source is assumed valid, so an over-long value only warns.
+        let _ = writeln!(out, "{pad}    if raw.chars().count() > {limit} {{");
+        let msg = format!(
+            "format!(\"value has {{}} characters, more than the {limit} the target allows\", raw.chars().count())"
+        );
+        DiagSpec::new(
+            "Severity::Warning",
+            "VALUE_TOO_LONG",
+            node.id.as_str(),
+            &msg,
+        )
+        .key(key)
+        .path(&node.source_path)
+        .index(target.index_var)
+        .emit(out, &format!("{pad}        "));
+        let _ = writeln!(out, "{pad}    }}");
+    }
+    decode_and_assign(
+        out,
+        node,
+        ctx.translating_codec_of(node),
+        key,
+        indent + 1,
+        target,
+    );
     if let Some(default) = &node.default {
         let _ = writeln!(out, "{pad}}} else {{");
         let _ = writeln!(
@@ -373,7 +398,7 @@ fn read_clone_check_block(
     decode_body(
         out,
         node,
-        ctx.codec_of(node),
+        ctx.translating_codec_of(node),
         key,
         &"    ".repeat(indent + 2),
         "clone_value",

@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::codec::{Codec, CodecTable};
+use crate::codec::{Codec, CodecTable, Pattern, Rounding, effective_rounding};
 use crate::ir::MappingIr;
 use crate::node::{DerivationScope, NodeId, Scope, SourceNode};
 use crate::source_model::SourceModelMeta;
@@ -30,6 +30,31 @@ impl GenCtx<'_> {
     /// unknown id, so an unresolved codec here is a build that already failed).
     pub(super) fn codec_of(&self, node: &SourceNode) -> Option<&Codec> {
         node.codec.as_deref().and_then(|id| self.codecs.get(id))
+    }
+
+    /// The codec a node translates through: [`Self::codec_of`] minus a
+    /// settings-only codec (`max_length` alone), which translates nothing.
+    pub(super) fn translating_codec_of(&self, node: &SourceNode) -> Option<&Codec> {
+        self.codec_of(node).filter(|c| c.pattern != Pattern::Plain)
+    }
+
+    /// The rounding mode the node's `fraction_digits` codec applies on write:
+    /// the codec's own, else `[meta.defaults].rounding`; `None` refuses a value
+    /// with too many digits.
+    pub(super) fn rounding_of(&self, node: &SourceNode) -> Option<Rounding> {
+        self.codec_of(node)
+            .and_then(|c| effective_rounding(c, self.ir.meta.default_rounding()))
+    }
+
+    /// The length limit of a node's text: its codec's `max_length`, else
+    /// `[meta.defaults].max_length` for a `string` or `identifier` node.
+    pub(super) fn max_length_of(&self, node: &SourceNode) -> Option<usize> {
+        use crate::types::MappingType::{Identifier, String};
+        self.codec_of(node).and_then(|c| c.max_length).or_else(|| {
+            matches!(node.source_type, String | Identifier)
+                .then(|| self.ir.meta.default_max_length())
+                .flatten()
+        })
     }
 }
 
