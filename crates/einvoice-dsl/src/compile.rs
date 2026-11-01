@@ -89,6 +89,8 @@ pub fn compile(spokes: &[SpokeInput], codecs: &CodecTable) -> CompileOutput {
             codecs,
         });
         diagnostics.extend(prefix_spoke(&spoke.id, diags));
+        // Alternatives name hub keys in `when`, so they check against the hub.
+        diagnostics.extend(prefix_spoke(&spoke.id, crate::alt::check(&hub, ir)));
     }
 
     // Stage: the `required` contract across spokes — a key a spoke requires

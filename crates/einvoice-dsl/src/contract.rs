@@ -160,6 +160,8 @@ pub fn spoke_contract(spoke: &str, ir: &MappingIr, source: &SourceModelMeta) -> 
         }
     }
     keys.sort_by(|a, b| a.label.cmp(&b.label));
+    // Alternatives map one key from several nodes; it is one key.
+    keys.dedup_by(|a, b| a.label == b.label);
 
     let mut selectors = Vec::new();
     for meta in source.structs.values() {

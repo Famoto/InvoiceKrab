@@ -224,6 +224,16 @@ pub struct RawNode {
     /// logical nodes (E092); selectors on one element must be disjoint (E090).
     #[serde(rename = "match")]
     pub match_: Option<BTreeMap<String, Condition>>,
+    /// Write condition on the hub: hub keys of the node's scope → the
+    /// [`Condition`]s they must satisfy for this node to write. Nodes sharing
+    /// a `canonical_key` with a `when` are *alternatives*: the first in file
+    /// order whose `when` holds writes the value, the one without `when` (at
+    /// most one) is the default. On a constant, the constant is written only
+    /// while the `when` holds. See [`crate::alt`].
+    pub when: Option<BTreeMap<String, Condition>>,
+    /// Written when the node has nothing to write, for an element the format
+    /// requires; reading it back gives no value.
+    pub placeholder: Option<String>,
     /// Declaration position within the mapping document (0-based, document
     /// order). Assigned by the parser, never authored — a `position` key in the
     /// TOML is rejected like any unknown field. It drives the order of sibling
@@ -287,6 +297,8 @@ impl RawNode {
             || self.default.is_some()
             || self.clone_of.is_some()
             || self.codec.is_some()
+            || self.when.is_some()
+            || self.placeholder.is_some()
     }
 
     /// Whether this is a structural node: no `type`, at least one of `ns`,
@@ -337,6 +349,11 @@ impl RawNode {
                 codec: child.codec.clone().or_else(|| self.codec.clone()),
                 ns: child.ns.clone().or_else(|| self.ns.clone()),
                 match_: child.match_.clone().or_else(|| self.match_.clone()),
+                when: child.when.clone().or_else(|| self.when.clone()),
+                placeholder: child
+                    .placeholder
+                    .clone()
+                    .or_else(|| self.placeholder.clone()),
                 position: self.position,
             }
         };
@@ -469,6 +486,12 @@ pub struct SourceNode {
     pub ns: Option<String>,
     /// Lexical codec id, if any (validated against the codec table, E084/E085).
     pub codec: Option<String>,
+    /// Write condition on the hub (see [`RawNode::when`]).
+    pub when: Option<BTreeMap<String, Condition>>,
+    /// Written when the node has nothing to write; reads back as no value.
+    pub placeholder: Option<String>,
+    /// Declaration position in the mapping document (file order).
+    pub position: usize,
 }
 
 impl SourceNode {

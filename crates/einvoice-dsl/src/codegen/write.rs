@@ -44,6 +44,14 @@
 //! each logical field's items move into the physical element in declaration
 //! order, with the selector values written as discriminators.
 //!
+//! Alternatives (nodes sharing a `canonical_key`, chosen by `when`) are
+//! decided at the start of their scope, before any write moves a hub value
+//! out: `choice_<position>` names the alternative that writes (`usize::MAX`:
+//! none, `NO_TARGET` when the value is present), and each alternative's block
+//! runs only when chosen. A constant with a `when` is written only while its
+//! `when_<position>` holds. A `placeholder` is written, with the constants,
+//! where its node wrote nothing.
+//!
 //! The writer **consumes** the hub: canonical fields written exactly once move
 //! their values into the target struct (`take`); a key written from more than
 //! one node (a primary plus its clones) stays a borrow + clone.
@@ -52,11 +60,14 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use crate::codec::{Codec, Pattern, Rounding};
+use crate::cond::Condition;
 use crate::node::{DerivationScope, Scope, SourceNode};
 use crate::source_model::{FieldType, SourceModelMeta, xml_field_name};
 use crate::types::MappingType;
 
-use super::access::{assign_target_expr, collection_item_struct, struct_ref_expr, walk_segments};
+use super::access::{
+    access_expr, assign_target_expr, collection_item_struct, struct_ref_expr, walk_segments,
+};
 use super::diag::DiagSpec;
 use super::naming::snake_case;
 use super::plan::{Frame, GenCtx};
@@ -139,6 +150,8 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
         own: "main",
         parent: None,
     };
+    let root_alts = crate::alt::groups(ctx.plan.root_scalars.iter().copied());
+    write_choices(out, &root_alts, &ctx.plan.root_constants, "main", None, 1);
     for node in scalar_write_order(
         ctx.source,
         &ctx.source.root,
@@ -146,6 +159,7 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
         &ctx.plan.root_clones,
     ) {
         out.push('\n');
+        let chosen = open_choice(out, &root_alts, node, 1);
         write_scalar_block(
             out,
             ctx,
@@ -154,9 +168,10 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
             &root_vars,
             "source",
             None,
-            1,
+            1 + usize::from(chosen),
             !shared.contains(hub_key(node)),
         );
+        close_choice(out, chosen, 1);
     }
 
     for coll in &ctx.plan.root_collections {
@@ -186,16 +201,27 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
     );
     for node in &ctx.plan.root_constants {
         out.push('\n');
+        let guarded = open_when(out, node, 1);
         write_constant_block(
             out,
             ctx.source,
             node,
             &ctx.source.root,
             "source",
-            1,
+            1 + usize::from(guarded),
             &root_content,
         );
+        close_choice(out, guarded, 1);
     }
+    write_placeholders(
+        out,
+        ctx.source,
+        &ctx.plan.root_scalars,
+        &ctx.source.root,
+        "source",
+        1,
+        &root_content,
+    );
     write_always_present(out, ctx.source, &ctx.source.root, "source", 1);
     if super::source::root_has_alias_io(ctx.source) {
         // Aliased elements: move every logical field's items back into the
@@ -407,7 +433,18 @@ fn write_collection_block(
         );
     }
     let _ = writeln!(out, "{body}let mut {elem} = {src_item_struct}::default();");
+    let child_alts = crate::alt::groups(children.iter().copied());
+    let constants = ctx.plan.constants_of(&coll.id);
+    write_choices(
+        out,
+        &child_alts,
+        constants,
+        &hub_item,
+        Some(&idx),
+        indent + 1,
+    );
     for child in scalar_write_order(ctx.source, &src_item_struct, children, clones) {
+        let chosen = open_choice(out, &child_alts, child, indent + 1);
         write_scalar_block(
             out,
             ctx,
@@ -416,9 +453,10 @@ fn write_collection_block(
             &child_vars,
             &elem,
             Some(&idx),
-            indent + 1,
+            indent + 1 + usize::from(chosen),
             owned && !child_shared.contains(hub_key(child)),
         );
+        close_choice(out, chosen, indent + 1);
     }
     for nested_coll in nested {
         write_collection_block(
@@ -438,17 +476,28 @@ fn write_collection_block(
     }
     let _ = writeln!(out, "{body}if !{elem}.is_empty() {{");
     let content = scope_content_paths(children, clones, nested);
-    for constant in ctx.plan.constants_of(&coll.id) {
+    for constant in constants {
+        let guarded = open_when(out, constant, indent + 2);
         write_constant_block(
             out,
             ctx.source,
             constant,
             &src_item_struct,
             &elem,
-            indent + 2,
+            indent + 2 + usize::from(guarded),
             &content,
         );
+        close_choice(out, guarded, indent + 2);
     }
+    write_placeholders(
+        out,
+        ctx.source,
+        children,
+        &src_item_struct,
+        &elem,
+        indent + 2,
+        &content,
+    );
     write_always_present(out, ctx.source, &src_item_struct, &elem, indent + 2);
     let _ = writeln!(out, "{body}    {target}.push({elem});");
     let _ = writeln!(out, "{body}    {count} += 1;");
@@ -576,6 +625,168 @@ fn valued_element_guard(
 ) -> Option<String> {
     valued_element_parent(source, start_struct, path)
         .map(|parent_path| struct_ref_expr(source, start_struct, parent_path, src_var))
+}
+
+/// The `bool` expression testing a `when` against the hub variable `hub`
+/// (E130 has checked that value tests name text keys).
+fn when_expr(hub: &str, when: &std::collections::BTreeMap<String, Condition>) -> String {
+    let tests: Vec<String> = when
+        .iter()
+        .map(|(key, cond)| {
+            let field = format!("{hub}.{}", snake_case(key));
+            match cond {
+                Condition::Is(value) => format!("{field}.as_deref() == Some({value:?})"),
+                Condition::OneOf(values) => format!(
+                    "matches!({field}.as_deref(), Some({}))",
+                    values
+                        .iter()
+                        .map(|v| format!("{v:?}"))
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                ),
+                Condition::Present(p) if p.present => format!("{field}.is_some()"),
+                Condition::Present(_) => format!("{field}.is_none()"),
+            }
+        })
+        .collect();
+    tests.join(" && ")
+}
+
+/// Emits a scope's write decisions, before anything in it is written (a
+/// write may move a hub value a `when` tests): `choice_<position>` per
+/// alternative set — the first alternative whose `when` holds, else the
+/// default, else `usize::MAX` with `NO_TARGET` when the value is present —
+/// and `when_<position>` per constant with a `when`.
+fn write_choices(
+    out: &mut String,
+    groups: &[Vec<&SourceNode>],
+    constants: &[&SourceNode],
+    hub: &str,
+    index_var: Option<&str>,
+    indent: usize,
+) {
+    let pad = "    ".repeat(indent);
+    for group in groups {
+        let key = group[0].canonical_key.as_deref().expect("keyed");
+        let mut chain = String::new();
+        for (i, node) in group.iter().enumerate() {
+            if let Some(when) = &node.when {
+                let _ = write!(chain, "if {} {{ {i} }} else ", when_expr(hub, when));
+            }
+        }
+        let default = group.iter().position(|n| n.when.is_none());
+        let fallback = default.map_or("usize::MAX".to_string(), |i| i.to_string());
+        let var = format!("choice_{}", group[0].position);
+        let _ = writeln!(
+            out,
+            "{pad}// alternatives of {key}: the first whose `when` holds writes"
+        );
+        let _ = writeln!(out, "{pad}let {var}: usize = {chain}{{ {fallback} }};");
+        if default.is_none() {
+            let field = format!("{hub}.{}", snake_case(key));
+            let _ = writeln!(out, "{pad}if {var} == usize::MAX && {field}.is_some() {{");
+            DiagSpec::new(
+                "Severity::Error",
+                "NO_TARGET",
+                group[0].id.as_str(),
+                &format!("\"`{key}` has a value, but no alternative's `when` holds, so nothing can write it\""),
+            )
+            .key(key)
+            .index(index_var)
+            .emit(out, &format!("{pad}    "));
+            let _ = writeln!(out, "{pad}}}");
+        }
+    }
+    for constant in constants {
+        if let Some(when) = &constant.when {
+            let _ = writeln!(
+                out,
+                "{pad}let when_{}: bool = {};",
+                constant.position,
+                when_expr(hub, when)
+            );
+        }
+    }
+}
+
+/// Opens the `if choice_<position> == i {` guard of an alternative; whether
+/// it opened one.
+fn open_choice(
+    out: &mut String,
+    groups: &[Vec<&SourceNode>],
+    node: &SourceNode,
+    indent: usize,
+) -> bool {
+    let Some((group, i)) = groups
+        .iter()
+        .find_map(|g| g.iter().position(|n| n.id == node.id).map(|i| (g, i)))
+    else {
+        return false;
+    };
+    let _ = writeln!(
+        out,
+        "{}if choice_{} == {i} {{",
+        "    ".repeat(indent),
+        group[0].position
+    );
+    true
+}
+
+/// Opens the `if when_<position> {` guard of a constant with a `when`;
+/// whether it opened one.
+fn open_when(out: &mut String, node: &SourceNode, indent: usize) -> bool {
+    if node.when.is_none() {
+        return false;
+    }
+    let _ = writeln!(out, "{}if when_{} {{", "    ".repeat(indent), node.position);
+    true
+}
+
+/// Closes a guard [`open_choice`] or [`open_when`] opened.
+fn close_choice(out: &mut String, opened: bool, indent: usize) {
+    if opened {
+        let _ = writeln!(out, "{}}}", "    ".repeat(indent));
+    }
+}
+
+/// Emits, for each scalar with a `placeholder`, the placeholder where the
+/// node wrote nothing, guarded like a constant by the content around it.
+fn write_placeholders(
+    out: &mut String,
+    source: &SourceModelMeta,
+    scalars: &[&SourceNode],
+    start_struct: &str,
+    src_var: &str,
+    indent: usize,
+    scope_content: &[&str],
+) {
+    let pad = "    ".repeat(indent);
+    for node in scalars {
+        let Some(placeholder) = &node.placeholder else {
+            continue;
+        };
+        let content: Vec<&str> = scope_content
+            .iter()
+            .copied()
+            .filter(|p| *p != node.source_path)
+            .collect();
+        let access = access_expr(source, start_struct, &node.source_path, src_var);
+        let _ = writeln!(out, "{pad}if {access}.is_none() {{");
+        let pinned = SourceNode {
+            constant: Some(placeholder.clone()),
+            ..(*node).clone()
+        };
+        write_constant_block(
+            out,
+            source,
+            &pinned,
+            start_struct,
+            src_var,
+            indent + 1,
+            &content,
+        );
+        let _ = writeln!(out, "{pad}}}");
+    }
 }
 
 /// The owner of a constant at `path`: its longest proper path prefix that some

@@ -1791,6 +1791,38 @@ mod tests {
     }
 
     #[test]
+    fn test_alternatives_choose_on_write_and_combine_on_read() {
+        let src = "[meta]\ndoc_format = \"x\"\nformat_version = \"1\"\nmapping_version = \"1\"\n\
+                   canonical_model = \"c:1\"\nroot = \"Doc\"\n\
+                   [Doc.S]\ntype = \"string\"\ncanonical_key = \"S\"\n\
+                   [Doc.Code]\ntype = \"identifier\"\ncanonical_key = \"Addr\"\n\
+                   when = { S = [\"A\", \"B\"] }\nplaceholder = \"0000000\"\n\
+                   [Doc.Mail]\ntype = \"identifier\"\ncanonical_key = \"Addr\"\nwhen = { S = \"M\" }\n\
+                   [Doc.Flag]\ntype = \"string\"\nconstant = \"1\"\nwhen = { S = { present = true } }\n";
+        let codecs = CodecTable::new();
+        let (ir, source, diags) = build_ir_with(&[parse_mapping(src).expect("parses")], &codecs);
+        assert!(diags.is_empty(), "{diags:?}");
+        let out = generate_spoke(&ir, &source, &codecs, "super::hub");
+        // Write: decided up front, NO_TARGET without a default, guarded blocks.
+        assert!(
+            out.contains(
+                "let choice_1: usize = if matches!(main.s.as_deref(), Some(\"A\" | \"B\")) { 0 } \
+                 else if main.s.as_deref() == Some(\"M\") { 1 } else { usize::MAX };"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("if choice_1 == usize::MAX && main.addr.is_some() {"));
+        assert!(out.contains("\"NO_TARGET\""));
+        assert!(out.contains("if choice_1 == 1 {"));
+        assert!(out.contains("let when_3: bool = main.s.is_some();"));
+        assert!(out.contains("if when_3 {"));
+        // Read: placeholder is no value; first with a value wins, fills `when`.
+        assert!(out.contains("let value = value.filter(|v| v.trim() != \"0000000\");"));
+        assert!(out.contains("main.s = Some(CompactString::from(\"M\"));"));
+        assert!(out.contains("\"MULTIPLE_SOURCES\""));
+    }
+
+    #[test]
     fn test_codec_settings_round_and_limit_in_generated_code() {
         let codecs: CodecTable = crate::codec::parse_codecs(
             "[codec.amt]\nfor_type = \"decimal\"\nfraction_digits = [2, 2]\n\

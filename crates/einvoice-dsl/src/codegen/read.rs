@@ -63,6 +63,9 @@ struct Target<'a> {
     index_var: Option<&'a str>,
     /// Whether `base_var` is owned, allowing uniquely-read values to move out.
     owned: bool,
+    /// The scope's alternative sets ([`crate::alt::groups`]): their nodes
+    /// decode into `alt_<position>` locals, combined after the scope's scalars.
+    alts: &'a [Vec<&'a SourceNode>],
 }
 
 /// The source paths read more than once within one scope: each scalar's
@@ -138,17 +141,20 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
         &ctx.plan.root_clones,
         &ctx.plan.root_collections,
     );
+    let root_alts = crate::alt::groups(ctx.plan.root_scalars.iter().copied());
     let root_target = Target {
         struct_var: "main",
         parent_var: None,
         base_var: "source",
         index_var: None,
         owned: true,
+        alts: &root_alts,
     };
     for node in &ctx.plan.root_scalars {
         out.push('\n');
         read_scalar_block(out, ctx, node, &ctx.source.root, 1, &root_target, &shared);
     }
+    combine_alternatives(out, 1, &root_target);
 
     // Clone checks run after every primary assign, so the canonical value they
     // compare against is final.
@@ -267,6 +273,13 @@ fn read_scalar_block(
             let _ = writeln!(out, "{pad}    }}");
             let _ = writeln!(out, "{pad}}}");
         }
+        if let Some(placeholder) = &node.placeholder {
+            // A placeholder stands for "nothing here".
+            let _ = writeln!(
+                out,
+                "{pad}let value = value.filter(|v| v.trim() != {placeholder:?});"
+            );
+        }
     }
 
     // Decode + assign; only a required field gets the missing-value branch,
@@ -276,6 +289,9 @@ fn read_scalar_block(
     let lhs = if node.lift.is_some() {
         let _ = writeln!(out, "{pad}let mut lifted = None;");
         "lifted".to_string()
+    } else if target.alts.iter().flatten().any(|n| n.id == node.id) {
+        let _ = writeln!(out, "{pad}let mut alt_{} = None;", node.position);
+        format!("alt_{}", node.position)
     } else {
         format!("{}.{}", target.struct_var, snake_case(key))
     };
@@ -330,6 +346,81 @@ fn read_scalar_block(
     let _ = writeln!(out, "{pad}}}");
     if let Some(lift) = node.lift {
         collapse_lifted(out, node, key, lift, indent, target);
+    }
+}
+
+/// Emits, for each alternative set of the scope, the hand-over of the first
+/// `alt_<position>` with a value (file order) into the hub field, with the
+/// supplier's `when` values filled in (a list's first); a later alternative that
+/// also has a value is `MULTIPLE_SOURCES`.
+fn combine_alternatives(out: &mut String, indent: usize, target: &Target) {
+    let pad = "    ".repeat(indent);
+    for group in target.alts {
+        let key = group[0].canonical_key.as_deref().expect("keyed");
+        let field = format!("{}.{}", target.struct_var, snake_case(key));
+        let _ = writeln!(
+            out,
+            "\n{pad}// alternatives of {key}: the first with a value supplies it"
+        );
+        for (i, node) in group.iter().enumerate() {
+            let _ = writeln!(out, "{pad}if let Some(found) = alt_{} {{", node.position);
+            let _ = writeln!(out, "{pad}    if {field}.is_none() {{");
+            let _ = writeln!(out, "{pad}        {field} = Some(found);");
+            for (when_key, cond) in node.when.iter().flatten() {
+                // A value test is filled in (a list: its first value); a
+                // presence test says nothing to fill.
+                let Some(values) = cond.values().filter(|vs| !vs.is_empty()) else {
+                    continue;
+                };
+                let when_field = format!("{}.{}", target.struct_var, snake_case(when_key));
+                let _ = writeln!(out, "{pad}        if {when_field}.is_none() {{");
+                let _ = writeln!(
+                    out,
+                    "{pad}            {when_field} = Some(CompactString::from({:?}));",
+                    values[0]
+                );
+                let accepted: Vec<String> = values.iter().map(|v| format!("{v:?}")).collect();
+                let _ = writeln!(
+                    out,
+                    "{pad}        }} else if !matches!({when_field}.as_deref(), Some({})) {{",
+                    accepted.join(" | ")
+                );
+                let msg = format!(
+                    "format!(\"the value comes from `{}`, written when `{when_key}` is {}, but the document says `{{}}`\", {when_field}.as_deref().unwrap_or_default())",
+                    node.id,
+                    cond.display()
+                );
+                DiagSpec::new(
+                    "Severity::Warning",
+                    "VALUE_INCONSISTENT",
+                    node.id.as_str(),
+                    &msg,
+                )
+                .key(when_key)
+                .path(&node.source_path)
+                .index(target.index_var)
+                .emit(out, &format!("{pad}            "));
+                let _ = writeln!(out, "{pad}        }}");
+            }
+            if i > 0 {
+                let _ = writeln!(out, "{pad}    }} else {{");
+                let msg = format!(
+                    "\"`{key}` is also given here; the value of an earlier alternative is used\""
+                );
+                DiagSpec::new(
+                    "Severity::Warning",
+                    "MULTIPLE_SOURCES",
+                    node.id.as_str(),
+                    &msg,
+                )
+                .key(key)
+                .path(&node.source_path)
+                .index(target.index_var)
+                .emit(out, &format!("{pad}        "));
+            }
+            let _ = writeln!(out, "{pad}    }}");
+            let _ = writeln!(out, "{pad}}}");
+        }
     }
 }
 
@@ -669,12 +760,14 @@ fn read_collection_block(
         );
     }
     let _ = writeln!(out, "{body}let mut {item} = {hub_item}::default();");
+    let child_alts = crate::alt::groups(children.iter().copied());
     let target = Target {
         struct_var: &item,
         parent_var: Some(parent_hub),
         base_var: &elem,
         index_var: Some(&idx),
         owned,
+        alts: &child_alts,
     };
     for child in children {
         out.push('\n');
@@ -688,6 +781,7 @@ fn read_collection_block(
             &child_shared,
         );
     }
+    combine_alternatives(out, indent + 1, &target);
     for clone in clones {
         out.push('\n');
         read_clone_check_block(

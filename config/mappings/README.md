@@ -29,6 +29,7 @@ pointing at the offending node.
 - [Canonical keys & the hub](#canonical-keys--the-hub)
 - [Fallbacks](#fallbacks)
 - [Constants: pinning write-side values](#constants-pinning-write-side-values)
+- [Alternatives: one value, several possible elements](#alternatives-one-value-several-possible-elements)
 - [Clones: one value, several places](#clones-one-value-several-places)
 - [Codecs](#codecs)
 - [Read defaults](#read-defaults)
@@ -311,6 +312,8 @@ A node plays one of five roles, depending on which fields it declares:
 | `disabled` | bool | Remove this node from the effective mapping (useful with [inheritance](#inheritance)). |
 | `ns` | string | Namespace prefix of this node's own element on write (see [Namespaces](#namespaces)). Alone on a `type`-less table it makes a structural node. |
 | `match` | inline table | Selector on a collection or structural node: child value → condition, e.g. `{ "TypeCode" = "130" }`, `["50", "130"]`, `{ present = true }` or `"$root.Key"` (see [Structural matching](#structural-matching-one-element-several-nodes)). Not valid on a scalar (E091). |
+| `when` | inline table | Write condition on the hub: hub key → condition, in the forms of `match` (see [Alternatives](#alternatives-one-value-several-possible-elements)). On a constant, the constant is written only while it holds. |
+| `placeholder` | string | Written where the node has nothing to write, for an element the format requires; reads back as no value (see [Alternatives](#alternatives-one-value-several-possible-elements)). |
 | `replace` | bool | Under [inheritance](#inheritance), replace the inherited node whole instead of merging over it. |
 
 Any other field is rejected (E001) — typos never silently no-op.
@@ -719,6 +722,64 @@ Rules:
   constant is emitted verbatim on write, so read-side collapse features don't
   apply. `normalize` is fine: it shapes what is *read* from the node, the
   constant is what is *written*.
+
+---
+
+## Alternatives: one value, several possible elements
+
+Sometimes another value decides where a value goes: FatturaPA states the
+buyer's address as a recipient code in `CodiceDestinatario` or as a certified
+mailbox in `PECDestinatario`, depending on the address scheme. Map each
+element as an ordinary node with the same `canonical_key` and give it a
+`when`: a table like `match`, but its keys are **hub keys** of the node's
+scope, and it decides whether the node writes.
+
+```toml
+[Header.Recipient.Code]              # a recipient code, else 0000000
+type = "identifier"
+canonical_key = "BuyerElectronicAddress"
+when = { BuyerElectronicAddressScheme = ["0205", "0201"] }
+placeholder = "0000000"
+
+[Header.Recipient.Mailbox]           # a certified mailbox
+type = "identifier"
+canonical_key = "BuyerElectronicAddress"
+when = { BuyerElectronicAddressScheme = "EM" }
+```
+
+The nodes are the value's **alternatives**:
+
+- **Write.** The first alternative in file order whose `when` holds writes
+  the value. At most one alternative may leave out `when`: it is the default,
+  used when no `when` holds. With no default, a value no `when` takes is the
+  error `NO_TARGET` (and the build warns, W140). The decision is made before
+  anything in the scope is written.
+- **Read.** The first alternative in file order that has a value supplies
+  it; a later one that also has one warns `MULTIPLE_SOURCES` and is ignored.
+  The supplier's `when` values are filled into the hub where it has none (a
+  list fills its first value), so reading `Mailbox` above sets the scheme to
+  `EM`; a hub value that disagrees warns `VALUE_INCONSISTENT` and is kept.
+- **Placeholder.** `placeholder` is written where its node wrote nothing
+  (guarded like a constant by the content around it), and reading it back
+  gives no value, so the next alternative supplies the value.
+
+A `when` on an unkeyed constant writes the constant only while the `when`
+holds: `when = { DeliveryDate = { present = true } }` pins a code exactly
+when there is a date it qualifies.
+
+Rules:
+
+- `when` entries name scalar hub keys of the node's own scope (in a
+  collection: the item's keys). A value test (`"A"`, `["A", "B"]`) needs a
+  text key; a decimal or boolean key takes `{ present = … }`; references are
+  not supported in `when` (all E130).
+- `when` belongs on a keyed scalar or an unkeyed constant, not on a
+  collection, clone, lifted key, `multiple` node or pinned constant, and must
+  not be empty (E132). Two defaults, a `when` that repeats an earlier
+  alternative's, an alternative with `multiple`, or `required` / `default` on
+  one of several alternatives are E132 too.
+- `placeholder` belongs on a keyed scalar (not a constant, clone, lifted key
+  or `multiple` node) and must be a literal of its type (E134).
 
 ---
 
@@ -1328,7 +1389,7 @@ Validation reports **every** problem in one run, never just the first error.
 | `E010` | Canonical key declared with conflicting types across spokes |
 | `E011` | Canonical key inside a collection that has no `canonical_key` itself |
 | `E012` | Two canonical keys collide in generated code (same Rust field name, or one collection key in two scopes), or a source struct takes a generated hub type's name |
-| `E013` | Same canonical key mapped by two primary nodes in one spoke (use `fallbacks` or `clone_of`) |
+| `E013` | Same canonical key mapped by two primary nodes in one spoke, none of them with a `when` (use `fallbacks`, `clone_of`, or make them [alternatives](#alternatives-one-value-several-possible-elements)) |
 | `E014` | `canonical_key` (or the key a `clone_of` mirrors) is not a PascalCase identifier |
 | `E020` | `[meta].source_model` disagrees with the synthesized model id |
 | `E021` | Node id does not resolve to a source path |
@@ -1371,12 +1432,16 @@ Validation reports **every** problem in one run, never just the first error.
 | `E112` | A `where` key is unknown, or its literal does not fit the key's type |
 | `E113` | An `add` / `subtract` / `requires` operand is no root `decimal` key, or a required operand is derived by this or a later rule |
 | `E114` | A `value` literal does not fit the target key's type |
-| `E130` | A `match` reference is not `$root.Key`, or no root-level node reads `Key` from one path of its own (no fallbacks) |
+| `E130` | A `match` reference is not `$root.Key`, or no root-level node reads `Key` from one path of its own (no fallbacks); a `when` entry names no scalar hub key of the node's scope, tests a decimal or boolean key for a value, or is a reference |
 | `E131` | A `match` reference's node lies beneath a repeated or matched element |
+| `E132` | A misplaced or empty `when`; two alternatives of one value without `when`, a `when` repeating an earlier alternative's, or an alternative with `multiple`, `required` or `default` |
+| `E134` | A `placeholder` on anything but a keyed scalar, or one that is no literal of the node's type |
 | `E136` | A lifted `canonical_key` (`$root.Key`, `$parent.Key`) outside a collection, on a collection, with `multiple = "join"`, or with an unknown prefix |
+| `W140` | Every alternative of a value has a `when` (warning): a value none of them takes is refused with `NO_TARGET` |
 
 Runtime (per-document) diagnostics — missing required values, type validation
 failures, taken fallbacks, `CLONE_MISMATCH`, `CODEC_INVALID`,
-`CODEC_WIRE_MISMATCH`, `VALUE_TOO_LONG`, `SCOPE_DISAGREE`, `MATCH_MULTIPLE`, `VALUE_DERIVED`, `VALUE_INCONSISTENT` — are reported with severity and a
+`CODEC_WIRE_MISMATCH`, `VALUE_TOO_LONG`, `SCOPE_DISAGREE`, `MATCH_MULTIPLE`,
+`NO_TARGET`, `MULTIPLE_SOURCES`, `VALUE_DERIVED`, `VALUE_INCONSISTENT` — are reported with severity and a
 source-node reference when a document is transformed; they never silently
 vanish.

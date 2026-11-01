@@ -28,6 +28,15 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   (`"$root.TaxCurrency"`). An empty list or a reference in a list is E092; a
   reference to no root node, or to one with fallbacks, is E130; one beneath a
   repeated or matched element is E131.
+- **Added** alternatives: scalar nodes sharing a `canonical_key` with a
+  `when` (a condition on hub keys, in the forms of `match`). On write the
+  first whose `when` holds writes the value, a node without `when` is the
+  default, and a value none takes is `NO_TARGET` (W140 warns at build time
+  when there is no default). On read the first with a value supplies it,
+  filling in its `when` values (`MULTIPLE_SOURCES` warns about a later one).
+  A `when` on a constant writes it only while it holds. `placeholder` is
+  written where a node wrote nothing and reads back as no value. Misuse is
+  E130, E132 and E134; E013 no longer applies to alternatives.
 - **Changed** `join_with` alone implies `multiple = "join"`; E040 now only
   reports `join` without a separator, or a separator with another policy.
 - **Changed** the FatturaPA text nodes use length-limited codecs

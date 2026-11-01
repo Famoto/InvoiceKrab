@@ -173,8 +173,10 @@ pub fn derive_hub<'a>(
         // Within one spoke a canonical (scope, key) may be declared only once.
         // A second declaration would leave the read winner to node-id sort
         // order — ambiguous to the author, so it is an error (E013); read
-        // priority is expressed explicitly via `fallbacks`.
-        let mut declared: BTreeMap<(CanonicalScope, String), String> = BTreeMap::new();
+        // priority is expressed explicitly via `fallbacks`. Alternatives are
+        // the exception: nodes sharing a key where one has a `when` (checked
+        // by `crate::alt`).
+        let mut declared: BTreeMap<(CanonicalScope, String), (String, bool)> = BTreeMap::new();
         for node in mapping.nodes.values() {
             let Some(key) = node.canonical_key.clone() else {
                 continue; // helper node: no canonical target.
@@ -200,7 +202,10 @@ pub fn derive_hub<'a>(
                 continue;
             };
 
-            if let Some(first) = declared.get(&(scope.clone(), key.clone())) {
+            let alternative = node.when.is_some();
+            if let Some((first, first_when)) = declared.get(&(scope.clone(), key.clone()))
+                && !(alternative || *first_when)
+            {
                 diags.push(Diagnostic {
                     code: "E013".to_string(),
                     severity: Severity::Error,
@@ -215,7 +220,10 @@ pub fn derive_hub<'a>(
                 });
                 continue;
             }
-            declared.insert((scope.clone(), key.clone()), node.id.to_string());
+            declared
+                .entry((scope.clone(), key.clone()))
+                .and_modify(|(_, any_when)| *any_when |= alternative)
+                .or_insert((node.id.to_string(), alternative));
 
             let field = CanonicalField {
                 key: key.clone(),

@@ -165,6 +165,9 @@ pub fn apply_defaults(
                 description: raw.description.clone(),
                 ns: raw.ns.clone(),
                 codec: raw.codec.clone(),
+                when: raw.when.clone(),
+                placeholder: raw.placeholder.clone(),
+                position: raw.position,
             },
         );
     }
