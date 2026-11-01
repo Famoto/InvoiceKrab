@@ -17,6 +17,11 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   `max_length` alone. `[meta.defaults]` sets both for a whole mapping,
   inherited key by key; a codec's own setting wins. Nothing is rounded or
   limited without a setting.
+- **Added** lifted keys: inside a collection, `canonical_key = "$root.Key"`
+  (or `"$parent.Key"`) maps a key of the enclosing scope. Every occurrence
+  must agree on it (`SCOPE_DISAGREE`; `multiple = "first"` keeps the first
+  with a warning), and the writer puts it into every occurrence, writing one
+  when the collection has no items. Misuse is E136.
 - **Changed** `join_with` alone implies `multiple = "join"`; E040 now only
   reports `join` without a separator, or a separator with another policy.
 - **Changed** the FatturaPA text nodes use length-limited codecs

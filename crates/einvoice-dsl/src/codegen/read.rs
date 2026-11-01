@@ -13,6 +13,11 @@
 //! / `$root.Key` clone compares against the enclosing scope's / the root's
 //! value, which is final by then (outer scalars are assigned before the loops).
 //!
+//! A lifted key (`canonical_key = "$root.Key"` inside a collection) is decoded
+//! per occurrence and collapsed into the enclosing scope's field: the first
+//! value fills it, a later one that differs is `SCOPE_DISAGREE` (an error, or
+//! a warning that keeps the first under `multiple = "first"`).
+//!
 //! When the mapping aliases physical elements (`match` selectors), the source
 //! is `demux`ed first: each physical element's items are sorted into the
 //! logical fields the nodes read, and a single-valued logical node that matched
@@ -30,7 +35,7 @@ use std::fmt::Write as _;
 
 use crate::codec::{Codec, Pattern};
 use crate::multiple::MultiplePolicy;
-use crate::node::{DerivationScope, SourceNode};
+use crate::node::{DerivationScope, Lift, SourceNode};
 use crate::normalize::NormalizeOp;
 use crate::source_model::{SourceModelMeta, xml_field_name};
 use crate::types::MappingType;
@@ -49,6 +54,9 @@ use super::plan::{Frame, GenCtx};
 struct Target<'a> {
     /// The hub struct variable assigned into (`main` or `item`).
     struct_var: &'a str,
+    /// The enclosing scope's hub variable (`None` at root), which a
+    /// `$parent.Key` lifted key collapses into.
+    parent_var: Option<&'a str>,
     /// The source access base (`source` at root, `element` in a collection).
     base_var: &'a str,
     /// The collection index variable for diagnostics, if inside a collection.
@@ -125,6 +133,7 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
     );
     let root_target = Target {
         struct_var: "main",
+        parent_var: None,
         base_var: "source",
         index_var: None,
         owned: true,
@@ -255,7 +264,14 @@ fn read_scalar_block(
 
     // Decode + assign; only a required field gets the missing-value branch,
     // so optional fields emit no dead diagnostic code. A `default` fills the
-    // key instead, so a defaulted field is never missing.
+    // key instead, so a defaulted field is never missing. A lifted key decodes
+    // into a local first and is collapsed into its scope's field below.
+    let lhs = if node.lift.is_some() {
+        let _ = writeln!(out, "{pad}let mut lifted = None;");
+        "lifted".to_string()
+    } else {
+        format!("{}.{}", target.struct_var, snake_case(key))
+    };
     let _ = writeln!(out, "{pad}if let Some(raw) = value {{");
     if let Some(limit) = ctx.max_length_of(node) {
         // The source is assumed valid, so an over-long value only warns.
@@ -275,21 +291,20 @@ fn read_scalar_block(
         .emit(out, &format!("{pad}        "));
         let _ = writeln!(out, "{pad}    }}");
     }
-    decode_and_assign(
+    decode_body(
         out,
         node,
         ctx.translating_codec_of(node),
         key,
-        indent + 1,
+        &"    ".repeat(indent + 1),
+        &lhs,
         target,
     );
     if let Some(default) = &node.default {
         let _ = writeln!(out, "{pad}}} else {{");
         let _ = writeln!(
             out,
-            "{pad}    {}.{} = Some({});",
-            target.struct_var,
-            snake_case(key),
+            "{pad}    {lhs} = Some({});",
             typed_literal(node.source_type, default)
         );
     } else if node.required {
@@ -305,6 +320,51 @@ fn read_scalar_block(
         .index(target.index_var)
         .emit(out, &format!("{pad}    "));
     }
+    let _ = writeln!(out, "{pad}}}");
+    if let Some(lift) = node.lift {
+        collapse_lifted(out, node, key, lift, indent, target);
+    }
+}
+
+/// Emits the collapse of one occurrence's `lifted` value into the field of the
+/// scope the key lives in: the first value fills it, a later different one is
+/// `SCOPE_DISAGREE`.
+fn collapse_lifted(
+    out: &mut String,
+    node: &SourceNode,
+    key: &str,
+    lift: Lift,
+    indent: usize,
+    target: &Target,
+) {
+    let pad = "    ".repeat(indent);
+    let scope_var = match lift.scope {
+        DerivationScope::Root => "main",
+        _ => target
+            .parent_var
+            .expect("E136 rejects a lift outside a collection before codegen"),
+    };
+    let field = format!("{scope_var}.{}", snake_case(key));
+    let (severity, consequence) = if lift.keep_first {
+        ("Severity::Warning", "the first is kept")
+    } else {
+        ("Severity::Error", "occurrences of one value must agree")
+    };
+    let _ = writeln!(out, "{pad}if let Some(found) = lifted {{");
+    let _ = writeln!(out, "{pad}    if let Some(first) = &{field} {{");
+    let _ = writeln!(out, "{pad}        if *first != found {{");
+    let msg = format!(
+        "format!(\"`{{found}}` differs from `{{first}}` read from an earlier occurrence; {consequence}\")"
+    );
+    DiagSpec::new(severity, "SCOPE_DISAGREE", node.id.as_str(), &msg)
+        .key(key)
+        .path(&node.source_path)
+        .index(target.index_var)
+        .emit(out, &format!("{pad}            "));
+    let _ = writeln!(out, "{pad}        }}");
+    let _ = writeln!(out, "{pad}    }} else {{");
+    let _ = writeln!(out, "{pad}        {field} = Some(found);");
+    let _ = writeln!(out, "{pad}    }}");
     let _ = writeln!(out, "{pad}}}");
 }
 
@@ -604,6 +664,7 @@ fn read_collection_block(
     let _ = writeln!(out, "{body}let mut {item} = {hub_item}::default();");
     let target = Target {
         struct_var: &item,
+        parent_var: Some(parent_hub),
         base_var: &elem,
         index_var: Some(&idx),
         owned,
@@ -721,23 +782,6 @@ fn node_value(
         target,
         take,
     )
-}
-
-/// Emits the decode + assign snippet, given `raw: String` is in scope inside
-/// `if let Some(raw) = value`.
-fn decode_and_assign(
-    out: &mut String,
-    node: &SourceNode,
-    codec: Option<&Codec>,
-    key: &str,
-    indent: usize,
-    target: &Target,
-) {
-    let pad = "    ".repeat(indent);
-    let field = snake_case(key);
-    let lhs = format!("{}.{field}", target.struct_var);
-
-    decode_body(out, node, codec, key, &pad, &lhs, target);
 }
 
 /// Emits the type-specific decode of `raw: String` into the typed `lhs` field.

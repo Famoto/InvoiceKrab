@@ -296,7 +296,7 @@ A node plays one of five roles, depending on which fields it declares:
 | Field | Type | Meaning |
 |-------|------|---------|
 | `type` | string | Value type (see [Types](#types)). Required for active nodes (E002). |
-| `canonical_key` | string | Target field in the canonical hub. Omit for a helper node. |
+| `canonical_key` | string | Target field in the canonical hub; `$root.Key` / `$parent.Key` lifts it out of the collection (see [Lifted keys](#lifted-keys-one-value-stated-in-every-item)). Omit for a helper node. |
 | `xml` | string | Leaf binding override (see [below](#the-xml-field-attributes-text-renames)); on a collection or structural node, the physical element it binds (see [Structural matching](#structural-matching-one-element-several-nodes)). |
 | `required` | bool | The node must have a deterministic write route and its value must be present (default `false`; see [`required`](#required-and-the-transformation-contract)). |
 | `normalize` | array | String transforms, applied in order (see [Normalization](#normalization)). |
@@ -566,6 +566,36 @@ Rules, all enforced at build time:
 
 A node with **no** `canonical_key` is a *helper* node — it carries no hub
 value itself and exists only to be referenced as a fallback.
+
+### Lifted keys: one value stated in every item
+
+Some formats repeat a document-level value in every occurrence of a
+collection — UBL states the payment means code in each `PaymentMeans`, one
+per account. A node inside a collection lifts its key to the enclosing scope
+with the prefixes `clone_of` uses: `$root.Key` (the invoice root) or
+`$parent.Key` (the scope around the node's collection).
+
+```toml
+[Invoice.PaymentMeans]                  # one item per account
+type = "collection"
+canonical_key = "CreditTransfers"
+
+[Invoice.PaymentMeans.PaymentMeansCode] # stated per item, one value per invoice
+type = "string"
+canonical_key = "$root.PaymentMeansTypeCode"
+```
+
+- **Read.** Each occurrence's value is decoded; the first fills the key and
+  every later one must equal it, else `SCOPE_DISAGREE` (an error).
+  `multiple = "first"` keeps the first value with a warning instead. An
+  occurrence without the value is skipped.
+- **Write.** The key's value goes into every occurrence written. A collection
+  with no items but a lifted value gets one occurrence to carry it.
+
+The key lives in the scope its prefix names, so E010, E013 and
+`krab-cli --keys` treat it like a key declared there. A lift outside a
+collection, on a collection, with `multiple = "join"`, or with an unknown
+prefix is E136.
 
 Use `krab-cli --keys` to browse the current hub vocabulary, and
 `krab-cli --keys <format>` to see which keys a spoke already covers and which
@@ -1310,9 +1340,10 @@ Validation reports **every** problem in one run, never just the first error.
 | `E112` | A `where` key is unknown, or its literal does not fit the key's type |
 | `E113` | An `add` / `subtract` / `requires` operand is no root `decimal` key, or a required operand is derived by this or a later rule |
 | `E114` | A `value` literal does not fit the target key's type |
+| `E136` | A lifted `canonical_key` (`$root.Key`, `$parent.Key`) outside a collection, on a collection, with `multiple = "join"`, or with an unknown prefix |
 
 Runtime (per-document) diagnostics — missing required values, type validation
 failures, taken fallbacks, `CLONE_MISMATCH`, `CODEC_INVALID`,
-`CODEC_WIRE_MISMATCH`, `VALUE_TOO_LONG`, `MATCH_MULTIPLE`, `VALUE_DERIVED`, `VALUE_INCONSISTENT` — are reported with severity and a
+`CODEC_WIRE_MISMATCH`, `VALUE_TOO_LONG`, `SCOPE_DISAGREE`, `MATCH_MULTIPLE`, `VALUE_DERIVED`, `VALUE_INCONSISTENT` — are reported with severity and a
 source-node reference when a document is transformed; they never silently
 vanish.

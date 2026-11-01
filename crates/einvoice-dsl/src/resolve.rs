@@ -22,7 +22,8 @@
 use std::collections::BTreeMap;
 
 use crate::error::{Diagnostic, Severity};
-use crate::node::{NodeId, RawNode, SourceNode};
+use crate::multiple::MultiplePolicy;
+use crate::node::{DerivationScope, Lift, NodeId, RawNode, Scope, SourceNode, parse_derivation};
 use crate::parse::ParsedMapping;
 use crate::types::MappingType;
 
@@ -123,16 +124,30 @@ pub fn apply_defaults(
         // Synthesis runs over the same active nodes, so a typed node always has a
         // path; fall back to the empty string only to stay total.
         let path = source_paths.get(id).cloned().unwrap_or_default();
+        let scope = id.nearest_collection_scope(|a| types.get(a) == Some(&MappingType::Collection));
+        let (canonical_key, lift) = match lifted_key(id, raw, ty, &scope) {
+            Ok(resolved) => resolved,
+            Err(message) => {
+                diags.push(Diagnostic {
+                    code: "E136".to_string(),
+                    severity: Severity::Error,
+                    source_node: Some(id.to_string()),
+                    message,
+                    span: None,
+                });
+                (None, None)
+            }
+        };
 
         out.insert(
             id.clone(),
             SourceNode {
                 id: id.clone(),
-                scope: id
-                    .nearest_collection_scope(|a| types.get(a) == Some(&MappingType::Collection)),
+                scope,
                 source_path: path,
                 source_type: ty,
-                canonical_key: raw.canonical_key.clone(),
+                canonical_key,
+                lift,
                 required: raw.required.unwrap_or(false),
                 fallbacks: raw
                     .fallbacks
@@ -155,6 +170,53 @@ pub fn apply_defaults(
     }
 
     (out, diags)
+}
+
+/// Splits a lifted `canonical_key` (`$root.Key`, `$parent.Key`) into the bare
+/// key and its [`Lift`]; any other key passes through unchanged.
+///
+/// # Errors
+///
+/// `E136`'s message: a malformed prefix, a lift outside a collection, on a
+/// collection, or with a `multiple` policy other than `first`.
+fn lifted_key(
+    id: &NodeId,
+    raw: &RawNode,
+    ty: MappingType,
+    scope: &Scope,
+) -> Result<(Option<String>, Option<Lift>), String> {
+    let Some(key) = raw.canonical_key.as_deref().filter(|_| raw.is_lifted()) else {
+        return Ok((raw.canonical_key.clone(), None));
+    };
+    let derivation = parse_derivation(key).map_err(|reason| format!("canonical_key {reason}"))?;
+    if ty == MappingType::Collection {
+        return Err(format!(
+            "`{key}`: a collection cannot be lifted out of its scope; lift its scalars"
+        ));
+    }
+    if *scope == Scope::Root {
+        return Err(format!(
+            "`{key}` lifts a key out of a collection, but `{id}` is not inside one"
+        ));
+    }
+    let keep_first = match raw.multiple {
+        None | Some(MultiplePolicy::Error) => false,
+        Some(MultiplePolicy::First) => true,
+        Some(MultiplePolicy::Join) => {
+            return Err(format!(
+                "`{key}`: the occurrences of a lifted key must agree; `multiple` may only \
+                 be `first` (keep the first value when they do not)"
+            ));
+        }
+    };
+    debug_assert_ne!(derivation.scope, DerivationScope::Own, "`$` prefix");
+    Ok((
+        Some(derivation.key.to_string()),
+        Some(Lift {
+            scope: derivation.scope,
+            keep_first,
+        }),
+    ))
 }
 
 #[cfg(test)]

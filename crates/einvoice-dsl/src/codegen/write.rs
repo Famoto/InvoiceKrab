@@ -24,6 +24,11 @@
 //! the enclosing scope's / the root's hub value instead, which therefore stays
 //! a borrow (its primary never moves it).
 //!
+//! A lifted key (`canonical_key = "$root.Key"` inside a collection) is written
+//! from the enclosing scope's value, borrowed, into every occurrence the
+//! writer emits. A collection with no items but a lifted value still gets one
+//! occurrence to carry it, so the value is never dropped.
+//!
 //! An attribute of a *valued* element (`PayableAmount/@currencyID`) is written
 //! only when the element has its text value, so an absent amount never shows up
 //! as an empty element carrying just its currency. Such attributes are written
@@ -92,10 +97,12 @@ fn hub_key(node: &SourceNode) -> &str {
     }
 }
 
-/// Which scope a node reads its hub value from (`Own` for every non-clone).
+/// Which scope a node reads its hub value from: a clone's or a lifted key's
+/// prefix, else `Own`.
 fn derivation_scope(node: &SourceNode) -> DerivationScope {
-    match node.derivation() {
-        Some(Ok(d)) => d.scope,
+    match (node.derivation(), node.lift) {
+        (Some(Ok(d)), _) => d.scope,
+        (_, Some(lift)) => lift.scope,
         _ => DerivationScope::Own,
     }
 }
@@ -314,6 +321,23 @@ fn write_collection_block(
         coll.source_path
     );
     let _ = writeln!(out, "{pad}let mut {count} = 0usize;");
+    // Lifted keys need an occurrence to live in: with no items but a lifted
+    // value, one empty item is written to carry it.
+    let lifted: Vec<String> = children
+        .iter()
+        .filter_map(|child| {
+            let scope_var = match child.lift?.scope {
+                DerivationScope::Root => "main",
+                _ => parent_hub,
+            };
+            Some(format!(
+                "{scope_var}.{}.is_some()",
+                snake_case(hub_key(child))
+            ))
+        })
+        .collect();
+    let carry = (!lifted.is_empty()).then(|| lifted.join(" || "));
+    let hub_item_struct = super::naming::item_struct_name(coll_key);
     // The hub item count caps how many source elements can be pushed, so reserve
     // the source collection once up front rather than regrowing it per item.
     // When the path crosses a boxed interior container, the reserve is guarded
@@ -333,6 +357,12 @@ fn write_collection_block(
             "{pad}let {hub_items} = std::mem::take(&mut {parent_hub}.{});",
             snake_case(coll_key)
         );
+        if let Some(carry) = &carry {
+            let _ = writeln!(
+                out,
+                "{pad}let {hub_items} = if {hub_items}.is_empty() && ({carry}) {{ vec![{hub_item_struct}::default()] }} else {{ {hub_items} }};"
+            );
+        }
         if crosses_boxed {
             let _ = writeln!(out, "{pad}if !{hub_items}.is_empty() {{");
             let _ = writeln!(out, "{pad}    {target}.reserve({hub_items}.len());");
@@ -345,7 +375,22 @@ fn write_collection_block(
             "{pad}for ({idx}, mut {hub_item}) in {hub_items}.into_iter().enumerate() {{"
         );
     } else {
-        let hub_len = format!("{parent_hub}.{}.len()", snake_case(coll_key));
+        let hub_slice = match &carry {
+            Some(carry) => {
+                let field = snake_case(coll_key);
+                let _ = writeln!(
+                    out,
+                    "{pad}let carrier{depth} = [{hub_item_struct}::default()];"
+                );
+                let _ = writeln!(
+                    out,
+                    "{pad}let hub_slice{depth}: &[{hub_item_struct}] = if {parent_hub}.{field}.is_empty() && ({carry}) {{ &carrier{depth} }} else {{ &{parent_hub}.{field} }};"
+                );
+                format!("hub_slice{depth}")
+            }
+            None => format!("{parent_hub}.{}", snake_case(coll_key)),
+        };
+        let hub_len = format!("{hub_slice}.len()");
         if crosses_boxed {
             let _ = writeln!(out, "{pad}if {hub_len} > 0 {{");
             let _ = writeln!(out, "{pad}    {target}.reserve({hub_len});");
@@ -355,8 +400,7 @@ fn write_collection_block(
         }
         let _ = writeln!(
             out,
-            "{pad}for ({idx}, {hub_item}) in {parent_hub}.{}.iter().enumerate() {{",
-            snake_case(coll_key)
+            "{pad}for ({idx}, {hub_item}) in {hub_slice}.iter().enumerate() {{"
         );
     }
     let _ = writeln!(out, "{body}let mut {elem} = {src_item_struct}::default();");

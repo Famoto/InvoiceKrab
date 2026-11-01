@@ -286,6 +286,16 @@ fn test_shipped_config_is_clean_and_generates_well_formed_code() {
     "[Doc.Name]\ntype=\"string\"\ncanonical_key=\"Name\"\ncodec=\"fatturapa-text-80\"\n",
     "[Doc.Ref]\ntype=\"identifier\"\ncanonical_key=\"Ref\"\n"
 ))]
+// Lifted keys: a header value repeated in every item, one level up or to the
+// root, with `multiple = "first"` keeping the first of disagreeing values.
+#[case::lifted_keys(concat!(
+    "[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\n",
+    "[Doc.L.Code]\ntype=\"string\"\ncanonical_key=\"$root.Code\"\nmultiple=\"first\"\n",
+    "[Doc.L.ID]\ntype=\"identifier\"\ncanonical_key=\"LineId\"\n",
+    "[Doc.L.S]\ntype=\"collection\"\ncanonical_key=\"Ss\"\n",
+    "[Doc.L.S.Unit]\ntype=\"unit_code\"\ncanonical_key=\"$parent.Unit\"\n",
+    "[Doc.L.S.Amount]\ntype=\"decimal\"\ncanonical_key=\"$root.Amount\"\nrequired=true\n"
+))]
 #[case::datetime_constant_with_zone(
     "[Doc.A]\ntype=\"datetime\"\nconstant=\"2024-01-01T10:00:00+01:00\"\n"
 )]
@@ -555,6 +565,24 @@ fn test_inheritance_merge_and_disabled_base_are_clean() {
 #[case::e093_sibling(
     "E093",
     "[Doc.ID]\ntype=\"identifier\"\ncanonical_key=\"InvoiceNumber\"\n[Doc.B]\ntype=\"identifier\"\nclone_of=\"$sibling.InvoiceNumber\"\n"
+)]
+#[case::e136_lift_at_root("E136", "[Doc.Code]\ntype=\"string\"\ncanonical_key=\"$root.Code\"\n")]
+#[case::e136_lift_a_collection(
+    "E136",
+    "[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\n[Doc.L.S]\ntype=\"collection\"\ncanonical_key=\"$root.Ss\"\n[Doc.L.S.X]\ntype=\"string\"\n"
+)]
+#[case::e136_lift_joined(
+    "E136",
+    "[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\n[Doc.L.C]\ntype=\"string\"\ncanonical_key=\"$root.Code\"\nmultiple=\"join\"\njoin_with=\",\"\n"
+)]
+#[case::e136_lift_unknown_scope(
+    "E136",
+    "[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\n[Doc.L.C]\ntype=\"string\"\ncanonical_key=\"$sibling.Code\"\n"
+)]
+// A lifted key and a root node mapping the same key collide like any two.
+#[case::e013_lift_and_root_node(
+    "E013",
+    "[Doc.Code]\ntype=\"string\"\ncanonical_key=\"Code\"\n[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\n[Doc.L.C]\ntype=\"string\"\ncanonical_key=\"$root.Code\"\n"
 )]
 fn test_rejected(#[case] code: &str, #[case] body: &str) {
     assert_rejected(&one(body), code);

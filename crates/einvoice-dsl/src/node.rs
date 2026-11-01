@@ -58,6 +58,12 @@
 //! the enclosing collection's scope and `$root.Key` a key of the invoice root
 //! ([`parse_derivation`]) — how every line amount gets the document currency.
 //!
+//! `canonical_key` takes the same prefixes: a node inside a collection with
+//! `canonical_key = "$root.Key"` maps a key of the enclosing scope (a
+//! [`Lift`]). Its occurrences are read into that one key, which they must
+//! agree on (`SCOPE_DISAGREE`), and the writer puts the key's value into
+//! every occurrence it writes.
+//!
 //! Every raw node also carries its declaration [`RawNode::position`]: a
 //! mapping's **declaration order is its schema order**. The parser records
 //! where each table appears, synthesis orders the source-struct fields by it,
@@ -229,9 +235,22 @@ pub struct RawNode {
 impl RawNode {
     /// The effective repeated-value policy: the declared `multiple`, or
     /// `join` when only `join_with` is given (a separator implies joining).
+    /// A lifted key's `multiple` says how its occurrences collapse instead
+    /// (see [`Lift`]), so its element is never repeated itself.
     pub fn effective_multiple(&self) -> Option<MultiplePolicy> {
+        if self.is_lifted() {
+            return None;
+        }
         self.multiple
             .or_else(|| self.join_with.is_some().then_some(MultiplePolicy::Join))
+    }
+
+    /// Whether `canonical_key` names a key of an enclosing scope (`$root.Key`,
+    /// `$parent.Key`).
+    pub fn is_lifted(&self) -> bool {
+        self.canonical_key
+            .as_deref()
+            .is_some_and(|k| k.starts_with('$'))
     }
 
     /// Whether this node is disabled (default `false`).
@@ -336,6 +355,18 @@ pub enum DerivationScope {
     Root,
 }
 
+/// A lifted key: a node inside a collection whose `canonical_key` names a key
+/// of an enclosing scope (`$root.Key` or `$parent.Key`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lift {
+    /// The scope the key lives in ([`DerivationScope::Root`] or
+    /// [`DerivationScope::Parent`]).
+    pub scope: DerivationScope,
+    /// `multiple = "first"`: occurrences that disagree keep the first value
+    /// with a warning instead of failing the read.
+    pub keep_first: bool,
+}
+
 /// A parsed `clone_of` value: the scope to look in and the canonical key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Derivation<'a> {
@@ -399,8 +430,11 @@ pub struct SourceNode {
     pub source_path: String,
     /// Value type.
     pub source_type: MappingType,
-    /// Target canonical field, or `None` for a fallback-only helper node.
+    /// Target canonical field, or `None` for a fallback-only helper node. A
+    /// lifted key's scope prefix is stripped into [`SourceNode::lift`].
     pub canonical_key: Option<String>,
+    /// Set when `canonical_key` names a key of an enclosing scope.
+    pub lift: Option<Lift>,
     /// Whether the value is required: the node must have a deterministic write
     /// route (its hub key filled by the source, a `constant`, a resolved
     /// `clone_of`, or a `match` discriminator). A required scalar missing at

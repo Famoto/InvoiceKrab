@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 
 use crate::error::{Diagnostic, Severity};
 use crate::ir::MappingIr;
-use crate::node::{Scope, SourceNode};
+use crate::node::{DerivationScope, Scope, SourceNode};
 use crate::types::MappingType;
 
 /// The scope of a canonical field.
@@ -59,6 +59,16 @@ impl CanonicalScope {
         };
         chain.push(key.to_string());
         CanonicalScope::Collection(chain)
+    }
+
+    /// The enclosing scope: one collection up, or root.
+    pub fn parent(&self) -> CanonicalScope {
+        match self {
+            CanonicalScope::Collection(chain) if chain.len() > 1 => {
+                CanonicalScope::Collection(chain[..chain.len() - 1].to_vec())
+            }
+            _ => CanonicalScope::Root,
+        }
     }
 }
 
@@ -105,9 +115,21 @@ impl CanonicalModel {
 }
 
 /// The canonical scope of a node: the chain of enclosing collections' canonical
-/// keys (outermost first), or root. Returns `None` when any enclosing collection
-/// has no `canonical_key` (there is no canonical item to attach to — `E011`).
+/// keys (outermost first), or root — or, for a lifted key, the scope its
+/// `$root.` / `$parent.` prefix names. Returns `None` when any enclosing
+/// collection has no `canonical_key` (there is no canonical item to attach to —
+/// `E011`).
 pub fn canonical_scope_of(node: &SourceNode, mapping: &MappingIr) -> Option<CanonicalScope> {
+    let scope = element_scope_of(node, mapping)?;
+    Some(match node.lift.map(|l| l.scope) {
+        Some(DerivationScope::Root) => CanonicalScope::Root,
+        Some(DerivationScope::Parent) => scope.parent(),
+        _ => scope,
+    })
+}
+
+/// The canonical scope of the collection item a node's element sits in.
+fn element_scope_of(node: &SourceNode, mapping: &MappingIr) -> Option<CanonicalScope> {
     match &node.scope {
         Scope::Root => Some(CanonicalScope::Root),
         Scope::Collection(coll_id) => {
