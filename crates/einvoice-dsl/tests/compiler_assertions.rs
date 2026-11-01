@@ -764,6 +764,20 @@ fn test_w140_alternatives_without_a_default() {
     assert!(!out.has_errors(), "W140 is a warning");
 }
 
+#[test]
+fn test_no_target_warn_drops_instead_of_w140() {
+    let body = concat!(
+        "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n",
+        "[Doc.A]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Scheme=\"A\"}\n"
+    );
+    let file = meta("t", "[meta.defaults]\nno_target = \"warn\"\n") + body;
+    let Outcome::Compiled { codes, out, .. } = run(&[("t.toml".into(), file)]) else {
+        panic!("load failed")
+    };
+    assert!(codes.is_empty(), "{codes:?}");
+    assert!(!out.has_errors());
+}
+
 // --- loader refusals ----------------------------------------------------------
 
 #[rstest]

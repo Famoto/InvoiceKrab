@@ -232,8 +232,9 @@ pub struct RawNode {
     /// while the `when` holds. See [`crate::alt`].
     pub when: Option<BTreeMap<String, Condition>>,
     /// Written when the node has nothing to write, for an element the format
-    /// requires; reading it back gives no value.
-    pub placeholder: Option<String>,
+    /// requires; reading it back gives no value. A list is written as its
+    /// first value, and every value in it reads back as none.
+    pub placeholder: Option<Condition>,
     /// Declaration position within the mapping document (0-based, document
     /// order). Assigned by the parser, never authored — a `position` key in the
     /// TOML is rejected like any unknown field. It drives the order of sibling
@@ -488,8 +489,9 @@ pub struct SourceNode {
     pub codec: Option<String>,
     /// Write condition on the hub (see [`RawNode::when`]).
     pub when: Option<BTreeMap<String, Condition>>,
-    /// Written when the node has nothing to write; reads back as no value.
-    pub placeholder: Option<String>,
+    /// Written when the node has nothing to write; reads back as no value
+    /// (see [`RawNode::placeholder`]).
+    pub placeholder: Option<Condition>,
     /// Declaration position in the mapping document (file order).
     pub position: usize,
 }

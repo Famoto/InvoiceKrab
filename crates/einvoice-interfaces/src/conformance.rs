@@ -583,8 +583,20 @@ fn check_pair(
     let declared_refusal = schema.refuses.contains(&file);
     let written = Engine::new()
         .from_hub(target, hub.clone())
-        .map_err(|e| vec![e.to_string()])
-        .and_then(clean);
+        .map_err(|e| vec![e.to_string()]);
+    // Values the target's alternatives had no place for (`NO_TARGET`
+    // warnings) are dropped, not changed: the writer said so.
+    let unplaced: Vec<String> = written
+        .as_ref()
+        .map(|r| {
+            r.diagnostics
+                .iter()
+                .filter(|d| d.code == "NO_TARGET")
+                .filter_map(|d| d.canonical_key.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let written = written.and_then(clean);
     let xml = match written {
         Ok(_) if declared_refusal => {
             pair.errors.push(format!(
@@ -617,7 +629,19 @@ fn check_pair(
     }
 
     match read_clean(target, xml.as_bytes()) {
-        Ok(emitted) => pair.round_trip = Some(round_trip(hub, &emitted, target.contract())),
+        Ok(emitted) => {
+            let mut rt = round_trip(hub, &emitted, target.contract());
+            rt.changed.retain(|m| {
+                let key = m.label.rsplit('/').next().unwrap_or(m.label);
+                let unplaced = unplaced.iter().any(|k| k == key);
+                if unplaced {
+                    rt.dropped.push(m.label);
+                }
+                !unplaced
+            });
+            rt.dropped.sort_unstable();
+            pair.round_trip = Some(rt);
+        }
         Err(errors) => pair
             .errors
             .extend(errors.into_iter().map(|e| format!("read back: {e}"))),

@@ -151,7 +151,15 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
         parent: None,
     };
     let root_alts = crate::alt::groups(ctx.plan.root_scalars.iter().copied());
-    write_choices(out, &root_alts, &ctx.plan.root_constants, "main", None, 1);
+    write_choices(
+        out,
+        ctx,
+        &root_alts,
+        &ctx.plan.root_constants,
+        "main",
+        None,
+        1,
+    );
     for node in scalar_write_order(
         ctx.source,
         &ctx.source.root,
@@ -437,6 +445,7 @@ fn write_collection_block(
     let constants = ctx.plan.constants_of(&coll.id);
     write_choices(
         out,
+        ctx,
         &child_alts,
         constants,
         &hub_item,
@@ -655,10 +664,12 @@ fn when_expr(hub: &str, when: &std::collections::BTreeMap<String, Condition>) ->
 /// Emits a scope's write decisions, before anything in it is written (a
 /// write may move a hub value a `when` tests): `choice_<position>` per
 /// alternative set — the first alternative whose `when` holds, else the
-/// default, else `usize::MAX` with `NO_TARGET` when the value is present —
-/// and `when_<position>` per constant with a `when`.
+/// default, else `usize::MAX` with `NO_TARGET` when the value is present (an
+/// error, or a warning under `[meta.defaults] no_target = "warn"`) — and
+/// `when_<position>` per constant with a `when`.
 fn write_choices(
     out: &mut String,
+    ctx: &GenCtx,
     groups: &[Vec<&SourceNode>],
     constants: &[&SourceNode],
     hub: &str,
@@ -685,15 +696,20 @@ fn write_choices(
         if default.is_none() {
             let field = format!("{hub}.{}", snake_case(key));
             let _ = writeln!(out, "{pad}if {var} == usize::MAX && {field}.is_some() {{");
-            DiagSpec::new(
-                "Severity::Error",
-                "NO_TARGET",
-                group[0].id.as_str(),
-                &format!("\"`{key}` has a value, but no alternative's `when` holds, so nothing can write it\""),
-            )
-            .key(key)
-            .index(index_var)
-            .emit(out, &format!("{pad}    "));
+            // An error refuses the document; under `no_target = "warn"` the
+            // value is dropped.
+            let (severity, consequence) = if ctx.ir.meta.no_target_warns() {
+                ("Severity::Warning", "it is not written")
+            } else {
+                ("Severity::Error", "so nothing can write it")
+            };
+            let msg = format!(
+                "\"`{key}` has a value, but no alternative's `when` holds; {consequence}\""
+            );
+            DiagSpec::new(severity, "NO_TARGET", group[0].id.as_str(), &msg)
+                .key(key)
+                .index(index_var)
+                .emit(out, &format!("{pad}    "));
             let _ = writeln!(out, "{pad}}}");
         }
     }
@@ -762,7 +778,12 @@ fn write_placeholders(
 ) {
     let pad = "    ".repeat(indent);
     for node in scalars {
-        let Some(placeholder) = &node.placeholder else {
+        let Some(placeholder) = node
+            .placeholder
+            .as_ref()
+            .and_then(|p| p.values())
+            .and_then(|vs| vs.first())
+        else {
             continue;
         };
         let content: Vec<&str> = scope_content

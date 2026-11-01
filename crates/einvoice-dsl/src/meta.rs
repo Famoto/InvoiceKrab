@@ -128,7 +128,8 @@ pub struct IdentityMeta {
 }
 
 /// The `[meta.defaults]` table: codec settings that apply to every node of
-/// the mapping unless the node's codec states its own.
+/// the mapping unless the node's codec states its own, and what happens to a
+/// value no alternative takes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MetaDefaults {
@@ -139,6 +140,20 @@ pub struct MetaDefaults {
     /// Length limit for every text node whose codec sets none.
     #[serde(default)]
     pub max_length: Option<std::num::NonZeroUsize>,
+    /// A value none of its alternatives' `when`s takes on write: `error`
+    /// (absent: refuse the document) or `warn` (drop the value, warn).
+    #[serde(default)]
+    pub no_target: Option<NoTarget>,
+}
+
+/// How a value no alternative takes is reported (`NO_TARGET`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoTarget {
+    /// An error: the document is refused.
+    Error,
+    /// A warning: the value is not written.
+    Warn,
 }
 
 /// One `[[meta.samples]]` entry: a document that must be schema-valid itself and
@@ -264,6 +279,13 @@ impl MappingMeta {
         let own = self.defaults.get_or_insert_with(MetaDefaults::default);
         own.rounding = own.rounding.or(from.rounding);
         own.max_length = own.max_length.or(from.max_length);
+        own.no_target = own.no_target.or(from.no_target);
+    }
+
+    /// Whether a value no alternative takes is only a warning
+    /// (`[meta.defaults].no_target = "warn"`).
+    pub fn no_target_warns(&self) -> bool {
+        self.defaults.as_ref().and_then(|d| d.no_target) == Some(NoTarget::Warn)
     }
 
     /// The mapping-wide rounding mode (`[meta.defaults].rounding`).

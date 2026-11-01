@@ -18,8 +18,9 @@
 //! compares a non-text key to a value, or is a reference; `E132` a misplaced
 //! `when`, two defaults, a `when` that repeats an earlier one, or `required` /
 //! `default` on one of several alternatives; `W140` alternatives without a
-//! default; `E134` a misplaced `placeholder` or one that is no literal of the
-//! node's type.
+//! default (unless `[meta.defaults] no_target = "warn"` drops a value none
+//! takes, with a warning); `E134` a misplaced `placeholder` or one that is no
+//! literal of the node's type.
 
 use std::collections::BTreeMap;
 
@@ -74,9 +75,10 @@ pub fn check(hub: &CanonicalModel, ir: &MappingIr) -> Vec<Diagnostic> {
             check_placeholder(node, placeholder, &mut diags);
         }
     }
+    let warns = ir.meta.no_target_warns();
     for nodes in by_scope.into_values() {
         for group in groups(nodes) {
-            check_group(&group, &mut diags);
+            check_group(&group, warns, &mut diags);
         }
     }
     diags
@@ -150,8 +152,8 @@ fn check_when(
 }
 
 /// `E134` for a `placeholder` that has no element of a keyed scalar to fill,
-/// or is no literal of the node's type.
-fn check_placeholder(node: &SourceNode, placeholder: &str, diags: &mut Vec<Diagnostic>) {
+/// or is not one or more literals of the node's type.
+fn check_placeholder(node: &SourceNode, placeholder: &Condition, diags: &mut Vec<Diagnostic>) {
     let misplaced = !keyed_scalar(node) || node.constant.is_some() || node.multiple.is_some();
     let problem = if misplaced {
         Some(
@@ -160,20 +162,33 @@ fn check_placeholder(node: &SourceNode, placeholder: &str, diags: &mut Vec<Diagn
                 .to_string(),
         )
     } else {
-        constant_literal_error(node.source_type, placeholder).map(|reason| {
-            format!(
-                "`{placeholder}` is not a valid `{}` literal: {reason}",
-                node.source_type
-            )
-        })
+        match placeholder.values() {
+            None | Some([]) => {
+                Some("`placeholder` is a literal or a non-empty list of them".to_string())
+            }
+            Some(values) => values.iter().find_map(|value| {
+                let reason = if value.starts_with('$') {
+                    Some("a `$` reference is not a placeholder".to_string())
+                } else {
+                    constant_literal_error(node.source_type, value)
+                };
+                reason.map(|reason| {
+                    format!(
+                        "`{value}` is not a valid `{}` literal: {reason}",
+                        node.source_type
+                    )
+                })
+            }),
+        }
     };
     if let Some(problem) = problem {
         diags.push(diag(Severity::Error, "E134", node, problem));
     }
 }
 
-/// `E132` and `W140` over one set of alternatives.
-fn check_group(group: &[&SourceNode], diags: &mut Vec<Diagnostic>) {
+/// `E132` and `W140` over one set of alternatives (`W140` only while
+/// `NO_TARGET` refuses: `no_target = "warn"` chose dropping).
+fn check_group(group: &[&SourceNode], no_target_warns: bool, diags: &mut Vec<Diagnostic>) {
     let key = group[0].canonical_key.as_deref().unwrap_or_default();
     let mut default: Option<&SourceNode> = None;
     for (i, node) in group.iter().enumerate() {
@@ -228,7 +243,7 @@ fn check_group(group: &[&SourceNode], diags: &mut Vec<Diagnostic>) {
             }
         }
     }
-    if default.is_none() {
+    if default.is_none() && !no_target_warns {
         diags.push(diag(
             Severity::Warning,
             "W140",

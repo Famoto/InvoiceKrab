@@ -246,7 +246,7 @@ file = "testfiles/xrechnung-3.0.2-beispiel.xml"
 | `[meta.namespaces]` | — | `prefix = "URI"` declarations emitted on the root (`""` = default namespace); inherited |
 | `[meta.ns_defaults]` | — | `leaf` / `aggregate` default prefixes; inherited |
 | `[meta.identity]` | — | `profile`/`profiles`, `version`/`versions`, `attributes`: what a document must declare to be read; inherited — see [Document identity](#document-identity--auto-detection) |
-| `[meta.defaults]` | — | `rounding`, `max_length`: [codec settings](#codec-settings-rounding-and-length) for every node whose codec states none; inherited key by key |
+| `[meta.defaults]` | — | `rounding`, `max_length`: [codec settings](#codec-settings-rounding-and-length) for every node whose codec states none; `no_target = "warn"`: drop a value no [alternative](#alternatives-one-value-several-possible-elements) takes, with a warning; inherited key by key |
 | `[meta.schema]` | — | `xsd`, `catalog`, `known_gaps`: the schema the spoke's documents must satisfy; inherited — see [Schema conformance](#schema-conformance) |
 | `[[meta.samples]]` | — | `file`, `source`: sample documents every spoke with a schema must write validly and round-trip; not inherited |
 
@@ -313,7 +313,7 @@ A node plays one of five roles, depending on which fields it declares:
 | `ns` | string | Namespace prefix of this node's own element on write (see [Namespaces](#namespaces)). Alone on a `type`-less table it makes a structural node. |
 | `match` | inline table | Selector on a collection or structural node: child value → condition, e.g. `{ "TypeCode" = "130" }`, `["50", "130"]`, `{ present = true }` or `"$root.Key"` (see [Structural matching](#structural-matching-one-element-several-nodes)). Not valid on a scalar (E091). |
 | `when` | inline table | Write condition on the hub: hub key → condition, in the forms of `match` (see [Alternatives](#alternatives-one-value-several-possible-elements)). On a constant, the constant is written only while it holds. |
-| `placeholder` | string | Written where the node has nothing to write, for an element the format requires; reads back as no value (see [Alternatives](#alternatives-one-value-several-possible-elements)). |
+| `placeholder` | string or array | Written where the node has nothing to write, for an element the format requires (a list: its first value); every value reads back as none (see [Alternatives](#alternatives-one-value-several-possible-elements)). |
 | `replace` | bool | Under [inheritance](#inheritance), replace the inherited node whole instead of merging over it. |
 
 Any other field is rejected (E001) — typos never silently no-op.
@@ -761,7 +761,15 @@ The nodes are the value's **alternatives**:
   `EM`; a hub value that disagrees warns `VALUE_INCONSISTENT` and is kept.
 - **Placeholder.** `placeholder` is written where its node wrote nothing
   (guarded like a constant by the content around it), and reading it back
-  gives no value, so the next alternative supplies the value.
+  gives no value, so the next alternative supplies the value. A list
+  (`["0000000", "XXXXXXX"]`) writes its first value and reads every one of
+  them as no value.
+
+A value no alternative takes is refused by default. A mapping that would
+rather drop it says so in `[meta.defaults]`: with `no_target = "warn"`,
+`NO_TARGET` is a warning, the value is not written, and W140 is not
+reported. FatturaPA does this for a buyer address that is neither a
+recipient code nor a mailbox.
 
 A `when` on an unkeyed constant writes the constant only while the `when`
 holds: `when = { DeliveryDate = { present = true } }` pins a code exactly
@@ -779,7 +787,8 @@ Rules:
   alternative's, an alternative with `multiple`, or `required` / `default` on
   one of several alternatives are E132 too.
 - `placeholder` belongs on a keyed scalar (not a constant, clone, lifted key
-  or `multiple` node) and must be a literal of its type (E134).
+  or `multiple` node) and is a literal of its type or a non-empty list of
+  them (E134).
 
 ---
 

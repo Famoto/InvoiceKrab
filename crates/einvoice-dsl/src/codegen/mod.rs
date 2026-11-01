@@ -1820,7 +1820,7 @@ mod tests {
         assert!(out.contains("let when_3: bool = main.s.is_some();"));
         assert!(out.contains("if when_3 {"));
         // Read: placeholder is no value; first with a value wins, fills `when`.
-        assert!(out.contains("let value = value.filter(|v| v.trim() != \"0000000\");"));
+        assert!(out.contains("let value = value.filter(|v| !matches!(v.trim(), \"0000000\"));"));
         assert!(out.contains("main.s = Some(CompactString::from(\"M\"));"));
         assert!(out.contains("\"MULTIPLE_SOURCES\""));
     }

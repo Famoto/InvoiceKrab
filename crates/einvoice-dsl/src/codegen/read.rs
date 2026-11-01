@@ -273,11 +273,13 @@ fn read_scalar_block(
             let _ = writeln!(out, "{pad}    }}");
             let _ = writeln!(out, "{pad}}}");
         }
-        if let Some(placeholder) = &node.placeholder {
+        if let Some(values) = node.placeholder.as_ref().and_then(|p| p.values()) {
             // A placeholder stands for "nothing here".
+            let values: Vec<String> = values.iter().map(|v| format!("{v:?}")).collect();
             let _ = writeln!(
                 out,
-                "{pad}let value = value.filter(|v| v.trim() != {placeholder:?});"
+                "{pad}let value = value.filter(|v| !matches!(v.trim(), {}));",
+                values.join(" | ")
             );
         }
     }

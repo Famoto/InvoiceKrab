@@ -37,6 +37,11 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   A `when` on a constant writes it only while it holds. `placeholder` is
   written where a node wrote nothing and reads back as no value. Misuse is
   E130, E132 and E134; E013 no longer applies to alternatives.
+- **Added** `[meta.defaults] no_target = "warn"`: a value no alternative
+  takes is dropped with a `NO_TARGET` warning instead of refusing the
+  document, and W140 is not reported; `--check` counts such a value as
+  dropped. `placeholder` may be a list: its first value is written, and every
+  value in it reads back as none.
 - **Changed** `join_with` alone implies `multiple = "join"`; E040 now only
   reports `join` without a separator, or a separator with another policy.
 - **Changed** the FatturaPA text nodes use length-limited codecs
