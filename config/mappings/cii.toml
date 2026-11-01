@@ -794,32 +794,37 @@ type = "identifier"
 canonical_key = "PayeeLegalRegistrationIdentifier"
 
 # --- PAYMENT MEANS (BG-16) + CREDIT TRANSFER (BG-17) + CARD (BG-18)
-#     + DIRECT DEBIT (BG-19). Modelled as a scalar interior (mirrors the UBL
-#     spoke's single PaymentMeans), so the first occurrence's leaves are mapped.
+#     + DIRECT DEBIT (BG-19). One SpecifiedTradeSettlementPaymentMeans per
+#     credit transfer account; the means, card and debtor account are stated
+#     once per invoice, so they are lifted to the root (see the UBL spoke).
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.PayeeTradeParty.SpecifiedLegalOrganization.ID.schemeID]
 xml = "@schemeID"
 type = "string"
 canonical_key = "PayeeLegalRegistrationIdentifierScheme"
 
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementPaymentMeans]
+type = "collection"
+canonical_key = "CreditTransfers"
+
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementPaymentMeans.TypeCode]
 type = "string"
-canonical_key = "PaymentMeansTypeCode"
+canonical_key = "$root.PaymentMeansTypeCode"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementPaymentMeans.Information]
 type = "string"
-canonical_key = "PaymentMeansText"
+canonical_key = "$root.PaymentMeansText"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementPaymentMeans.ApplicableTradeSettlementFinancialCard.ID]
 type = "string"
-canonical_key = "PaymentCardPrimaryAccountNumber"
+canonical_key = "$root.PaymentCardPrimaryAccountNumber"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementPaymentMeans.ApplicableTradeSettlementFinancialCard.CardholderName]
 type = "string"
-canonical_key = "PaymentCardHolderName"
+canonical_key = "$root.PaymentCardHolderName"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementPaymentMeans.PayerPartyDebtorFinancialAccount.IBANID]
 type = "identifier"
-canonical_key = "DebitedAccountIdentifier"
+canonical_key = "$root.DebitedAccountIdentifier"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementPaymentMeans.PayeePartyCreditorFinancialAccount.IBANID]
 type = "identifier"

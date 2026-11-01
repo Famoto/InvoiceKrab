@@ -357,20 +357,26 @@ codec = "fatturapa-text-100"
 type = "string"
 constant = "TP02"
 
+# One DettaglioPagamento per credit transfer account; the payment means, due
+# date and amount are the invoice's, so every DettaglioPagamento states them.
+[FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento]
+type = "collection"
+canonical_key = "CreditTransfers"
+
 [FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento.ModalitaPagamento]
 type = "string"
-canonical_key = "PaymentMeansTypeCode"
+canonical_key = "$root.PaymentMeansTypeCode"
 codec = "fatturapa-modalita-pagamento"
 required = true
 
 [FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento.DataScadenzaPagamento]
 type = "date"
-canonical_key = "DueDate"
+canonical_key = "$root.DueDate"
 
 # BT-115 amount due for payment.
 [FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento.ImportoPagamento]
 type = "decimal"
-canonical_key = "PayableAmount"
+canonical_key = "$root.PayableAmount"
 codec = "fatturapa-amount-2"
 required = true
 

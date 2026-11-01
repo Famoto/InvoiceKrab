@@ -622,22 +622,29 @@ canonical_key = "DeliverToPartyName"
 # PAYMENT INSTRUCTIONS (BG-16) + CREDIT TRANSFER (BG-17)
 #   + PAYMENT CARD INFORMATION (BG-18) + DIRECT DEBIT (BG-19)
 # ===========================================================================
+# One PaymentMeans per credit transfer account (BG-17 repeats); the payment
+# means, card and direct debit are stated once per invoice, so they are
+# lifted to the root: every PaymentMeans must agree on them.
+[Invoice.PaymentMeans]
+type = "collection"
+canonical_key = "CreditTransfers"
+
 [Invoice.PaymentMeans.PaymentMeansCode]
 type = "string"
-canonical_key = "PaymentMeansTypeCode"
+canonical_key = "$root.PaymentMeansTypeCode"
 
 [Invoice.PaymentMeans.PaymentMeansCode.name]
 xml = "@name"
 type = "string"
-canonical_key = "PaymentMeansText"
+canonical_key = "$root.PaymentMeansText"
 
 [Invoice.PaymentMeans.PaymentID]
 type = "string"
-canonical_key = "RemittanceInformation"
+canonical_key = "$root.RemittanceInformation"
 
 [Invoice.PaymentMeans.CardAccount.PrimaryAccountNumberID]
 type = "string"
-canonical_key = "PaymentCardPrimaryAccountNumber"
+canonical_key = "$root.PaymentCardPrimaryAccountNumber"
 
 # Mandatory in CardAccountType; EN 16931 carries no network, so it is pinned.
 [Invoice.PaymentMeans.CardAccount.NetworkID]
@@ -646,7 +653,7 @@ constant = "NA"
 
 [Invoice.PaymentMeans.CardAccount.HolderName]
 type = "string"
-canonical_key = "PaymentCardHolderName"
+canonical_key = "$root.PaymentCardHolderName"
 
 [Invoice.PaymentMeans.PayeeFinancialAccount.ID]
 type = "identifier"
@@ -662,11 +669,11 @@ canonical_key = "PaymentServiceProviderIdentifier"
 
 [Invoice.PaymentMeans.PaymentMandate.ID]
 type = "identifier"
-canonical_key = "MandateReferenceIdentifier"
+canonical_key = "$root.MandateReferenceIdentifier"
 
 [Invoice.PaymentMeans.PaymentMandate.PayerFinancialAccount.ID]
 type = "identifier"
-canonical_key = "DebitedAccountIdentifier"
+canonical_key = "$root.DebitedAccountIdentifier"
 
 # ===========================================================================
 # PAYMENT TERMS (BT-20)

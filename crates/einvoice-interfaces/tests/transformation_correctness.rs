@@ -856,7 +856,7 @@ const KNOWN_ISSUES: &[KnownIssue] = &[
             "no transform checked",
             "source deserialization failed: duplicate field",
         ],
-        why: "the UBL readers bind PaymentMeans, TaxTotal, BillingReference and \
+        why: "the UBL readers bind TaxTotal, BillingReference and \
               CommodityClassification as single elements, so a document repeating one \
               (as UBL and EN 16931 allow) is not read at all",
         corpus_only: true,
@@ -1137,4 +1137,66 @@ fn test_fatturapa_refuses_a_seller_name_over_its_length_limit() {
             .is_err_and(|e| e.starts_with("[VALUE_TOO_LONG]")),
         "{over:?}"
     );
+}
+
+#[test]
+fn test_repeated_payment_means_lift_the_shared_code_and_keep_every_account() {
+    // BG-17 repeats per account; BT-81 is the invoice's, so every PaymentMeans
+    // states it (a lifted key): read once, written into each occurrence.
+    let sample =
+        std::fs::read_to_string(workspace().join("testfiles/en16931-full-ubl.xml")).unwrap();
+    let first = sample
+        .split_once("  <cac:PaymentMeans>")
+        .and_then(|(_, rest)| rest.split_once("</cac:PaymentMeans>\n"))
+        .map(|(block, _)| format!("  <cac:PaymentMeans>{block}</cac:PaymentMeans>\n"))
+        .expect("the sample has a PaymentMeans");
+    let second = first.replace("DE02120300000000202051", "DE89370400440532013000");
+    let two = sample.replacen(&first, &format!("{first}{second}"), 1);
+    for to in [Spoke::UblInvoice, Spoke::FacturxInvoice] {
+        let out = refusal(Spoke::UblInvoice, to, two.as_bytes()).unwrap();
+        for iban in ["DE02120300000000202051", "DE89370400440532013000"] {
+            assert!(out.contains(iban), "{to:?} keeps {iban}");
+        }
+        let code = if to == Spoke::UblInvoice {
+            ">58</cbc:PaymentMeansCode>"
+        } else {
+            "<ram:TypeCode>58<"
+        };
+        assert_eq!(
+            out.matches(code).count(),
+            2,
+            "{to:?}: the code in both occurrences"
+        );
+    }
+    // Occurrences disagreeing on the invoice's payment means are refused.
+    let disagree = sample.replacen(
+        &first,
+        &format!("{first}{}", second.replace(">58<", ">30<")),
+        1,
+    );
+    let refused = refusal(Spoke::UblInvoice, Spoke::UblInvoice, disagree.as_bytes());
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|e| e.starts_with("[SCOPE_DISAGREE]")),
+        "{refused:?}"
+    );
+    // A payment means without any account still gets its one occurrence.
+    let code_only = sample.replace(
+        &first,
+        "  <cac:PaymentMeans>\n    <cbc:PaymentMeansCode>10</cbc:PaymentMeansCode>\n  </cac:PaymentMeans>\n",
+    );
+    let out = refusal(
+        Spoke::UblInvoice,
+        Spoke::FacturxInvoice,
+        code_only.as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(
+        out.matches("<ram:SpecifiedTradeSettlementPaymentMeans>")
+            .count(),
+        1
+    );
+    let back = refusal(Spoke::FacturxInvoice, Spoke::UblInvoice, out.as_bytes()).unwrap();
+    assert!(back.contains(">10</cbc:PaymentMeansCode>"), "{back}");
 }

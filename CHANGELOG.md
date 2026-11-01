@@ -37,6 +37,14 @@ Changes to the mapping DSL are listed under **DSL** in each release.
 
 ### Changed
 
+- The bundled mappings read repeated payment means: UBL `PaymentMeans`, CII
+  `SpecifiedTradeSettlementPaymentMeans` and FatturaPA `DettaglioPagamento`
+  are the new hub collection `CreditTransfers` (BG-17, one item per
+  account), so `PaymentAccountIdentifier`, `PaymentAccountName` and
+  `PaymentServiceProviderIdentifier` move into it. The payment means code,
+  text, remittance information, card, mandate, due date and amount stay
+  invoice-level keys, lifted out of each occurrence. A document with several
+  accounts was refused with a duplicate-field error before.
 - The third-party XSDs are no longer in the repository:
   `scripts/fetch-schemas.sh` downloads them, pinned to a commit and verified
   against `testfiles/xsd/SHA256SUMS`, and CI runs it. The OASIS UBL 2.1
