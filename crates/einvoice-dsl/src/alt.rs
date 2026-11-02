@@ -16,7 +16,7 @@
 //!
 //! Build-time checks: `E130` a `when` entry names no scalar key of the scope,
 //! compares a non-text key to a value, or is a reference; `E132` a misplaced
-//! `when`, two defaults, a `when` that repeats an earlier one, or `required` /
+//! `when`, a pinned constant among alternatives, two defaults, a `when` that repeats an earlier one, or `required` /
 //! `default` on one of several alternatives; `W140` alternatives without a
 //! default (unless `[meta.defaults] no_target = "warn"` drops a value none
 //! takes, with a warning); `E134` a misplaced `placeholder` or one that is no
@@ -199,6 +199,19 @@ fn check_group(group: &[&SourceNode], no_target_warns: bool, diags: &mut Vec<Dia
                 node,
                 format!(
                     "`{}` is an alternative of `{key}`, which cannot be `multiple`",
+                    node.id
+                ),
+            ));
+        }
+        if node.constant.is_some() {
+            // A pinned constant writes its literal whatever the choice, beside
+            // the alternative that takes the value.
+            diags.push(diag(
+                Severity::Error,
+                "E132",
+                node,
+                format!(
+                    "`{}` pins `{key}` to a constant, so it cannot be one of its alternatives",
                     node.id
                 ),
             ));

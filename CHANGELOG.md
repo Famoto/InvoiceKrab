@@ -26,8 +26,9 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   written back as its first value), presence (`{ present = true }` /
   `false`) and a reference to a root value of the same document
   (`"$root.TaxCurrency"`). An empty list or a reference in a list is E092; a
-  reference to no root node, or to one with fallbacks, is E130; one beneath a
-  repeated or matched element is E131.
+  reference to no root node, to several (alternatives), or to one with
+  fallbacks, is E130; one beneath a repeated or matched element is E131. A
+  list writes its first value unless the occurrence holds a listed one.
 - **Added** alternatives: scalar nodes sharing a `canonical_key` with a
   `when` (a condition on hub keys, in the forms of `match`). On write the
   first whose `when` holds writes the value, a node without `when` is the
@@ -35,12 +36,17 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   when there is no default). On read the first with a value supplies it,
   filling in its `when` values (`MULTIPLE_SOURCES` warns about a later one).
   A `when` on a constant writes it only while it holds. `placeholder` is
-  written where a node wrote nothing and reads back as no value. Misuse is
-  E130, E132 and E134; E013 no longer applies to alternatives.
+  written where a node wrote nothing and reads back as no value (a primary
+  node's placeholder lets its fallbacks supply the value). Misuse is E130,
+  E132 (also a pinned constant among alternatives) and E134; E013 no longer
+  applies to alternatives. A `constant` or `placeholder` longer than the
+  node's `max_length` is E061 / E134, and a `clone_of` copy longer than its
+  limit warns `VALUE_TOO_LONG` on read.
 - **Added** `[meta.defaults] no_target = "warn"`: a value no alternative
   takes is dropped with a `NO_TARGET` warning instead of refusing the
   document, and W140 is not reported; `--check` counts such a value as
-  dropped. `placeholder` may be a list: its first value is written, and every
+  dropped (only the unplaced values: any other change of that key still
+  fails). `placeholder` may be a list: its first value is written, and every
   value in it reads back as none.
 - **Changed** `join_with` alone implies `multiple = "join"`; E040 now only
   reports `join` without a separator, or a separator with another policy.
@@ -67,14 +73,18 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   accounts was refused with a duplicate-field error before.
 - The bundled mappings read BT-111, the VAT total in the VAT accounting
   currency (hub key `TaxTotalAmountInTaxCurrency`): in UBL the `TaxTotal`
-  without `TaxSubtotal`, in CII the `TaxTotalAmount` whose `currencyID` is
-  the `TaxCurrencyCode`. A UBL document with both totals was refused with a
-  duplicate-field error before.
+  without `TaxSubtotal` in the `TaxCurrencyCode`, in CII the `TaxTotalAmount`
+  whose `currencyID` is the `TaxCurrencyCode`. A UBL document with both
+  totals was refused with a duplicate-field error before. Without a
+  `TaxCurrencyCode`, BT-111 is dropped on write with a `NO_TARGET` warning
+  (`[meta.defaults] no_target = "warn"` in `ubl.toml` and `cii.toml`), never
+  written as a second BT-110.
 - FatturaPA writes BT-49, the buyer's electronic address: an SdI recipient
   code (scheme `0205` or `0201`) as `CodiceDestinatario`, a certified mailbox
   (scheme `EM`) as `PECDestinatario` with `CodiceDestinatario` `0000000`. An
   address of another scheme is dropped with a `NO_TARGET` warning, and
-  `CodiceDestinatario` stays `0000000`. Read back, `0000000` and `XXXXXXX`
+  `CodiceDestinatario` stays `0000000`. A recipient code longer than seven
+  characters is refused (`VALUE_TOO_LONG`). Read back, `0000000` and `XXXXXXX`
   are no address.
 - `krab-server` renders every `GET /analyze` report once at startup and
   answers from that (about 1.5 ms of CPU per request on the async worker

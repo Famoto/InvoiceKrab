@@ -106,6 +106,12 @@ for_type = "string"
 charset = "latin-1"
 max_length = 1000
 
+# CodiceDestinatarioType: an SdI recipient code of six (public
+# administration) or seven characters; a longer one is refused on write.
+[codec.fatturapa-codice-destinatario]
+for_type = "identifier"
+max_length = 7
+
 # CAPType: an Italian postal code, five digits. A postal code of another form
 # (a foreign address) cannot be written: it is refused, never padded or cut.
 [codec.fatturapa-cap]

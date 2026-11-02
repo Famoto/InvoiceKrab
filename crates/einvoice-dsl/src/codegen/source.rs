@@ -331,10 +331,13 @@ fn generate_alias_io_impl(
                             Some(format!("{target} = Some(CompactString::from({value:?}));"))
                         }
                         // A list writes its first value unless the item already
-                        // has one of its own; presence writes nothing.
+                        // has one of the listed ones; presence writes nothing.
                         Condition::OneOf(values) => values.first().map(|value| {
+                            let listed: Vec<String> =
+                                values.iter().map(|v| format!("{v:?}")).collect();
                             format!(
-                                "{{ let slot = &mut {target}; if slot.is_none() {{ *slot = Some(CompactString::from({value:?})); }} }}"
+                                "{{ let slot = &mut {target}; if !slot.as_deref().is_some_and(|v| matches!(v.trim(), {})) {{ *slot = Some(CompactString::from({value:?})); }} }}",
+                                listed.join(" | ")
                             )
                         }),
                         Condition::Present(_) => None,

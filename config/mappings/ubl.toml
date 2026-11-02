@@ -59,6 +59,12 @@ source_model = "ubl-invoice:2.1"
 canonical_model = "canonical-invoice:1.0"
 root = "Invoice"
 
+# BT-111 (the VAT total in the tax currency) without BT-6 has no currency to
+# be told apart by: it is dropped with a NO_TARGET warning, not written as a
+# second BT-110.
+[meta.defaults]
+no_target = "warn"
+
 # Namespaces (write side): the root sits in the default UBL Invoice namespace,
 # basic components (leaves) are `cbc:`, aggregates `cac:`. Declared once here and
 # inherited by every spoke that `inherits` this one (XRechnung, Peppol).
@@ -747,11 +753,12 @@ constant = "VAT"
 # ===========================================================================
 # TAX TOTAL (BT-110/111) + VAT BREAKDOWN (BG-23) — TaxTotal/TaxSubtotal (collection)
 # ===========================================================================
-# TaxTotal repeats: the one with the VAT breakdown states BT-110 in the
-# document currency, a second one without breakdown BT-111 in the tax
-# currency (BT-6).
+# TaxTotal repeats: a second one without breakdown, in the tax currency
+# (BT-6), states BT-111 (see below); every other occurrence lands here, BT-110
+# in the document currency. (`xml` names the element only to make this a node
+# of its own.)
 [Invoice.TaxTotal]
-match = { TaxSubtotal = { present = true } }
+xml = "TaxTotal"
 
 [Invoice.TaxTotal.TaxAmount]
 type = "decimal"
@@ -814,14 +821,16 @@ canonical_key = "VatExemptionReasonText"
 type = "identifier"
 constant = "VAT"
 
-# BT-111 total VAT in the tax currency: the TaxTotal without a breakdown.
+# BT-111 total VAT in the tax currency: the TaxTotal without a breakdown, in
+# BT-6 (without BT-6 it is dropped, see `[meta.defaults]`).
 [Invoice.TaxTotalInTaxCurrency]
 xml = "TaxTotal"
-match = { TaxSubtotal = { present = false } }
+match = { TaxSubtotal = { present = false }, "TaxAmount.@currencyID" = "$root.TaxCurrency" }
 
 [Invoice.TaxTotalInTaxCurrency.TaxAmount]
 type = "decimal"
 canonical_key = "TaxTotalAmountInTaxCurrency"
+when = { TaxCurrency = { present = true } }
 
 [Invoice.TaxTotalInTaxCurrency.TaxAmount.currencyID]
 xml = "@currencyID"

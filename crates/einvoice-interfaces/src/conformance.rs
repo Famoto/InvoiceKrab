@@ -631,15 +631,7 @@ fn check_pair(
     match read_clean(target, xml.as_bytes()) {
         Ok(emitted) => {
             let mut rt = round_trip(hub, &emitted, target.contract());
-            rt.changed.retain(|m| {
-                let key = m.label.rsplit('/').next().unwrap_or(m.label);
-                let unplaced = unplaced.iter().any(|k| k == key);
-                if unplaced {
-                    rt.dropped.push(m.label);
-                }
-                !unplaced
-            });
-            rt.dropped.sort_unstable();
+            drop_unplaced(&mut rt, &unplaced);
             pair.round_trip = Some(rt);
         }
         Err(errors) => pair
@@ -647,6 +639,29 @@ fn check_pair(
             .extend(errors.into_iter().map(|e| format!("read back: {e}"))),
     }
     pair
+}
+
+/// Moves to `dropped` each changed label whose only change is the loss of
+/// the values the writer reported unplaced (`NO_TARGET`, one per value, keyed
+/// by bare canonical key): the emitted values are the sample's minus exactly
+/// that many, in order. Any other change, in any item, stays a failure.
+// ponytail: labels carry no item index, so "which item" is approximated by
+// "a pure removal of exactly the unplaced count"; compare per item if a
+// removal elsewhere ever coincides with an unplaced one.
+fn drop_unplaced(rt: &mut RoundTrip, unplaced: &[String]) {
+    rt.changed.retain(|m| {
+        let key = m.label.rsplit('/').next().unwrap_or(m.label);
+        let missing = unplaced.iter().filter(|k| *k == key).count();
+        let mut sample = m.sample.iter();
+        let only_removed = missing > 0
+            && m.sample.len() == m.emitted.len() + missing
+            && m.emitted.iter().all(|e| sample.any(|s| s == e));
+        if only_removed {
+            rt.dropped.push(m.label);
+        }
+        !only_removed
+    });
+    rt.dropped.sort_unstable();
 }
 
 /// Reads `bytes` with `spoke`, failing on an unparsable document or any
@@ -854,6 +869,33 @@ mod tests {
         );
         assert!(rt.changed.is_empty() && rt.pinned.is_empty());
         assert_eq!(rt.dropped, ["PayableAmount"], "not covered: reported");
+    }
+
+    #[test]
+    fn test_drop_unplaced_moves_only_the_unplaced_values() {
+        let mismatch = |label, sample: &[&str], emitted: &[&str]| Mismatch {
+            label,
+            sample: sample.iter().map(|v| v.to_string()).collect(),
+            emitted: emitted.iter().map(|v| v.to_string()).collect(),
+        };
+        let mut rt = RoundTrip {
+            changed: vec![
+                mismatch("Addr", &["x"], &[]),
+                mismatch("Ts/Iban", &["a", "b"], &["a"]),
+                mismatch("Us/Iban", &["a", "b"], &["c"]),
+                mismatch("Vs/Iban", &["a", "b"], &[]),
+                mismatch("Note", &["n"], &["m"]),
+            ],
+            ..RoundTrip::default()
+        };
+        drop_unplaced(&mut rt, &["Addr".into(), "Iban".into()]);
+        assert_eq!(rt.dropped, ["Addr", "Ts/Iban"]);
+        let changed: Vec<&str> = rt.changed.iter().map(|m| m.label).collect();
+        assert_eq!(
+            changed,
+            ["Us/Iban", "Vs/Iban", "Note"],
+            "a changed or a second missing value still fails"
+        );
     }
 
     #[test]

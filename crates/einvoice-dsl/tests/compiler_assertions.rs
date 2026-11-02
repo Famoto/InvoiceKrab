@@ -689,6 +689,18 @@ fn test_rejected(#[case] code: &str, #[case] body: &str) {
     "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n[Doc.Amt]\ntype=\"decimal\"\ncanonical_key=\"Amt\"\n",
     "[Doc.A]\ntype=\"decimal\"\ncanonical_key=\"Total\"\nplaceholder=\"none\"\n"
 ))]
+#[case::e132_keyed_constant_as_default("E132", concat!(
+    "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n[Doc.Amt]\ntype=\"decimal\"\ncanonical_key=\"Amt\"\n",
+    "[Doc.A]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Scheme=\"A\"}\n",
+    "[Doc.B]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nconstant=\"X\"\n"
+))]
+#[case::e130_reference_to_alternatives("E130", concat!(
+    "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n",
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\nwhen={Scheme=\"A\"}\n",
+    "[Doc.Cur2]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"=\"$root.Cur\"}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n"
+))]
 fn test_rejected_selectors(#[case] code: &str, #[case] body: &str) {
     assert_rejected(&one(body), code);
 }
@@ -701,6 +713,16 @@ fn test_rejected_selectors(#[case] code: &str, #[case] body: &str) {
     "E081",
     "[meta.namespaces]\ncbc = \"urn:cbc\"",
     "[Doc.A]\ntype=\"decimal\"\ncanonical_key=\"A\"\n[Doc.A.c]\nxml=\"@c\"\ntype=\"currency\"\ncanonical_key=\"AC\"\nns=\"cbc\"\n"
+)]
+#[case::e061_constant_longer_than_default_max_length(
+    "E061",
+    "[meta.defaults]\nmax_length = 3",
+    "[Doc.A]\ntype=\"string\"\nconstant=\"ABCD\"\n"
+)]
+#[case::e134_placeholder_longer_than_default_max_length(
+    "E134",
+    "[meta.defaults]\nmax_length = 3",
+    "[Doc.A]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nplaceholder=\"0000\"\n"
 )]
 #[case::e026_root_not_an_identifier("E026", "", KEY)]
 fn test_rejected_meta(#[case] code: &str, #[case] extra: &str, #[case] body: &str) {

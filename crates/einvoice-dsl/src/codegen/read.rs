@@ -251,6 +251,25 @@ fn read_scalar_block(
         } else {
             format!("vec![{}]", fallback_chain_literal(node))
         };
+        // A placeholder stands for "nothing here": filtered before the
+        // fallbacks (so they are tried) and after them.
+        let placeholder_filter = node
+            .placeholder
+            .as_ref()
+            .and_then(|p| p.values())
+            .map(|values| {
+                let values: Vec<String> = values.iter().map(|v| format!("{v:?}")).collect();
+                format!(
+                    "value = value.filter(|v| !matches!(v.trim(), {}));",
+                    values.join(" | ")
+                )
+            });
+        if let Some(filter) = placeholder_filter
+            .as_ref()
+            .filter(|_| !node.fallbacks.is_empty())
+        {
+            let _ = writeln!(out, "{pad}{filter}");
+        }
         for fb_id in &node.fallbacks {
             let Some(fb) = ctx.ir.nodes.get(fb_id) else {
                 continue;
@@ -273,14 +292,8 @@ fn read_scalar_block(
             let _ = writeln!(out, "{pad}    }}");
             let _ = writeln!(out, "{pad}}}");
         }
-        if let Some(values) = node.placeholder.as_ref().and_then(|p| p.values()) {
-            // A placeholder stands for "nothing here".
-            let values: Vec<String> = values.iter().map(|v| format!("{v:?}")).collect();
-            let _ = writeln!(
-                out,
-                "{pad}let value = value.filter(|v| !matches!(v.trim(), {}));",
-                values.join(" | ")
-            );
+        if let Some(filter) = &placeholder_filter {
+            let _ = writeln!(out, "{pad}let {filter}");
         }
     }
 
@@ -298,24 +311,7 @@ fn read_scalar_block(
         format!("{}.{}", target.struct_var, snake_case(key))
     };
     let _ = writeln!(out, "{pad}if let Some(raw) = value {{");
-    if let Some(limit) = ctx.max_length_of(node) {
-        // The source is assumed valid, so an over-long value only warns.
-        let _ = writeln!(out, "{pad}    if raw.chars().count() > {limit} {{");
-        let msg = format!(
-            "format!(\"value has {{}} characters, more than the {limit} the target allows\", raw.chars().count())"
-        );
-        DiagSpec::new(
-            "Severity::Warning",
-            "VALUE_TOO_LONG",
-            node.id.as_str(),
-            &msg,
-        )
-        .key(key)
-        .path(&node.source_path)
-        .index(target.index_var)
-        .emit(out, &format!("{pad}        "));
-        let _ = writeln!(out, "{pad}    }}");
-    }
+    read_length_check(out, ctx, node, key, target, &format!("{pad}    "));
     decode_body(
         out,
         node,
@@ -554,6 +550,7 @@ fn read_clone_check_block(
         node_value(ctx, node, start_struct, target, take)
     );
     let _ = writeln!(out, "{body}if let Some(raw) = value {{");
+    read_length_check(out, ctx, node, key, target, &format!("{body}    "));
     let _ = writeln!(out, "{body}    let mut clone_value = None;");
     decode_body(
         out,
@@ -584,6 +581,37 @@ fn read_clone_check_block(
     let _ = writeln!(out, "{body}        }}");
     let _ = writeln!(out, "{body}    }}");
     let _ = writeln!(out, "{body}}}");
+    let _ = writeln!(out, "{pad}}}");
+}
+
+/// Emits, inside `if let Some(raw) = value`, the `VALUE_TOO_LONG` warning for
+/// a `raw` longer than the node's `max_length` (the source is assumed valid,
+/// so an over-long value only warns).
+fn read_length_check(
+    out: &mut String,
+    ctx: &GenCtx,
+    node: &SourceNode,
+    key: &str,
+    target: &Target,
+    pad: &str,
+) {
+    let Some(limit) = ctx.max_length_of(node) else {
+        return;
+    };
+    let _ = writeln!(out, "{pad}if raw.chars().count() > {limit} {{");
+    let msg = format!(
+        "format!(\"value has {{}} characters, more than the {limit} the target allows\", raw.chars().count())"
+    );
+    DiagSpec::new(
+        "Severity::Warning",
+        "VALUE_TOO_LONG",
+        node.id.as_str(),
+        &msg,
+    )
+    .key(key)
+    .path(&node.source_path)
+    .index(target.index_var)
+    .emit(out, &format!("{pad}    "));
     let _ = writeln!(out, "{pad}}}");
 }
 

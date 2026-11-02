@@ -1317,16 +1317,21 @@ fn resolve_match_ref(
             "E130",
             "a `match` reference has the form `$root.Key`".to_string(),
         ))?;
-    let (id, node) = ctx
-        .active
-        .iter()
-        .find(|(id, n)| {
-            n.ty.is_some()
-                && n.clone_of.is_none()
-                && n.canonical_key.as_deref() == Some(key)
-                && id.nearest_collection_scope(|a| collections.contains_key(a)) == Scope::Root
-        })
+    let mut mapping = ctx.active.iter().filter(|(id, n)| {
+        n.ty.is_some()
+            && n.clone_of.is_none()
+            && n.canonical_key.as_deref() == Some(key)
+            && id.nearest_collection_scope(|a| collections.contains_key(a)) == Scope::Root
+    });
+    let (id, node) = mapping
+        .next()
         .ok_or(("E130", format!("no root-level node maps `{key}`")))?;
+    if let Some((other, _)) = mapping.next() {
+        return Err((
+            "E130",
+            format!("`{id}` and `{other}` both map `{key}`; a reference reads one path"),
+        ));
+    }
     if node.fallbacks.as_ref().is_some_and(|f| !f.is_empty()) {
         return Err((
             "E130",

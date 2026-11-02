@@ -1238,6 +1238,64 @@ fn test_vat_total_in_the_tax_currency_survives_ubl_and_cii() {
 }
 
 #[test]
+fn test_vat_total_in_the_tax_currency_needs_the_tax_currency() {
+    let sample =
+        std::fs::read_to_string(workspace().join("testfiles/en16931-full-ubl.xml")).unwrap();
+    // Read: a TaxTotal without breakdown is BT-111 only in the BT-6 currency.
+    let ubl = sample.replacen(
+        "  </cac:TaxTotal>\n",
+        "  </cac:TaxTotal>\n  <cac:TaxTotal>\n    <cbc:TaxAmount currencyID=\"EUR\">125.69</cbc:TaxAmount>\n  </cac:TaxTotal>\n",
+        1,
+    );
+    let hub = Engine::new()
+        .to_hub(Spoke::UblInvoice, ubl.as_bytes())
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(hub.tax_total_amount_in_tax_currency, None);
+    assert_eq!(
+        hub.tax_total_amount,
+        Some(Decimal::from_str("125.69").unwrap())
+    );
+    // Write: BT-111 without BT-6 has no currency to be told apart by, so it
+    // is dropped with a warning, not written as a second BT-110.
+    let mut hub = hub;
+    hub.tax_currency = None;
+    hub.tax_total_amount_in_tax_currency = Some(Decimal::from_str("1440.50").unwrap());
+    for spoke in [Spoke::UblInvoice, Spoke::FacturxInvoice] {
+        let result = Engine::new().from_hub(spoke, hub.clone()).unwrap();
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "NO_TARGET" && d.severity == Severity::Warning),
+            "{spoke:?}: {:?}",
+            result.diagnostics
+        );
+        let xml = result.value.expect("written");
+        assert!(!xml.contains("1440.50"), "{spoke:?}: {xml}");
+    }
+}
+
+#[test]
+fn test_fatturapa_recipient_code_longer_than_seven_is_refused() {
+    let sample =
+        std::fs::read_to_string(workspace().join("testfiles/en16931-full-ubl.xml")).unwrap();
+    let ubl = sample.replacen(
+        r#"<cbc:EndpointID schemeID="0088">4012345670035</cbc:EndpointID>"#,
+        r#"<cbc:EndpointID schemeID="0205">ABC12345</cbc:EndpointID>"#,
+        1,
+    );
+    let refused = refusal(Spoke::UblInvoice, Spoke::Fatturapa, ubl.as_bytes());
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|e| e.starts_with("[VALUE_TOO_LONG]")),
+        "{refused:?}"
+    );
+}
+
+#[test]
 fn test_fatturapa_recipient_is_a_code_a_mailbox_or_0000000() {
     // BT-49 goes to CodiceDestinatario or PECDestinatario by its scheme; an
     // address of another scheme is dropped with a warning.

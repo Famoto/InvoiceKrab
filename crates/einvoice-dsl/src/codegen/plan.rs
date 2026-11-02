@@ -8,7 +8,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::codec::{Codec, CodecTable, Pattern, Rounding, effective_rounding};
+use crate::codec::{
+    Codec, CodecTable, Pattern, Rounding, effective_max_length, effective_rounding,
+};
 use crate::ir::MappingIr;
 use crate::node::{DerivationScope, NodeId, Scope, SourceNode};
 use crate::source_model::SourceModelMeta;
@@ -49,12 +51,11 @@ impl GenCtx<'_> {
     /// The length limit of a node's text: its codec's `max_length`, else
     /// `[meta.defaults].max_length` for a `string` or `identifier` node.
     pub(super) fn max_length_of(&self, node: &SourceNode) -> Option<usize> {
-        use crate::types::MappingType::{Identifier, String};
-        self.codec_of(node).and_then(|c| c.max_length).or_else(|| {
-            matches!(node.source_type, String | Identifier)
-                .then(|| self.ir.meta.default_max_length())
-                .flatten()
-        })
+        effective_max_length(
+            self.codec_of(node),
+            node.source_type,
+            self.ir.meta.default_max_length(),
+        )
     }
 }
 

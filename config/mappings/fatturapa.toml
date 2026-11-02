@@ -106,6 +106,7 @@ type = "identifier"
 canonical_key = "BuyerElectronicAddress"
 when = { BuyerElectronicAddressScheme = ["0205", "0201"] }
 placeholder = ["0000000", "XXXXXXX"]
+codec = "fatturapa-codice-destinatario"
 
 [FatturaElettronica.FatturaElettronicaHeader.DatiTrasmissione.PECDestinatario]
 type = "identifier"

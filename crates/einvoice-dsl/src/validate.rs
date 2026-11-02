@@ -21,7 +21,8 @@
 //!   policy (`join_with` alone implies `multiple = "join"`).
 //! - `E043` `multiple` combined with `fallbacks`.
 //! - `E060` `constant` on a collection node.
-//! - `E061` `constant` literal does not parse under the node's `type`.
+//! - `E061` `constant` literal does not parse under the node's `type`, or is
+//!   longer than the node's `max_length` (`E134` for such a `placeholder`).
 //! - `E062` `constant` combined with `fallbacks`, `multiple` or `codec` (the
 //!   constant is emitted verbatim on write; none of these apply to it —
 //!   `normalize` is read-side and may accompany it).
@@ -47,7 +48,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::codec::CodecTable;
+use crate::codec::{CodecTable, effective_max_length};
 use crate::error::{Diagnostic, Severity};
 use crate::ident::is_canonical_key;
 use crate::ir::MappingIr;
@@ -77,6 +78,7 @@ pub fn validate(input: &ValidationInput) -> Vec<Diagnostic> {
         check_fallbacks(node, input.ir, &mut diags);
         check_codec(node, input.codecs, &mut diags);
         check_constant(node, &mut diags);
+        check_literal_lengths(node, input, &mut diags);
         check_default(node, &mut diags);
         check_clone_of(node, input.ir, &mut diags);
     }
@@ -345,6 +347,42 @@ fn check_constant(node: &SourceNode, diags: &mut Vec<Diagnostic>) {
                 format!(
                     "`constant` cannot be combined with `{field}`; the literal is \
                      emitted verbatim on write"
+                ),
+            ));
+        }
+    }
+}
+
+/// `E061` / `E134` for a `constant` or `placeholder` literal longer than the
+/// node's `max_length` (its codec's, else `[meta.defaults]`): it is written
+/// verbatim, so the limit that refuses a hub value must refuse it at build time.
+fn check_literal_lengths(node: &SourceNode, input: &ValidationInput, diags: &mut Vec<Diagnostic>) {
+    let codec = node.codec.as_deref().and_then(|id| input.codecs.get(id));
+    let Some(limit) =
+        effective_max_length(codec, node.source_type, input.ir.meta.default_max_length())
+    else {
+        return;
+    };
+    let constants = node
+        .constant
+        .iter()
+        .map(|v| ("E061", "constant", v.as_str()));
+    let placeholders = node
+        .placeholder
+        .as_ref()
+        .and_then(|p| p.values())
+        .into_iter()
+        .flatten()
+        .map(|v| ("E134", "placeholder", v.as_str()));
+    for (code, what, value) in constants.chain(placeholders) {
+        let length = value.chars().count();
+        if length > limit {
+            diags.push(err(
+                code,
+                &node.id,
+                format!(
+                    "{what} `{value}` has {length} characters, more than the {limit} \
+                     `max_length` allows"
                 ),
             ));
         }

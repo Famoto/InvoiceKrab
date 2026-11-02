@@ -51,6 +51,12 @@ root = "CrossIndustryInvoice"
 disabled = true
 root_ns = "rsm"
 
+# BT-111 (the VAT total in the tax currency) without BT-6 has no currency to
+# be told apart by: it is dropped with a NO_TARGET warning, not written as a
+# second BT-110.
+[meta.defaults]
+no_target = "warn"
+
 [meta.namespaces]
 rsm = "urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100"
 ram = "urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100"
@@ -996,7 +1002,8 @@ xml = "@currencyID"
 type = "currency"
 clone_of = "DocumentCurrency"
 
-# BT-111 tax total in the VAT accounting currency.
+# BT-111 tax total in the VAT accounting currency (without BT-6 it is
+# dropped, see `[meta.defaults]`).
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.TaxTotalInTaxCurrency]
 xml = "TaxTotalAmount"
 match = { "@currencyID" = "$root.TaxCurrency" }
@@ -1005,6 +1012,7 @@ match = { "@currencyID" = "$root.TaxCurrency" }
 xml = "$text"
 type = "decimal"
 canonical_key = "TaxTotalAmountInTaxCurrency"
+when = { TaxCurrency = { present = true } }
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.SpecifiedTradeSettlementHeaderMonetarySummation.TaxTotalInTaxCurrency.currencyID]
 xml = "@currencyID"

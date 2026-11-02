@@ -520,13 +520,13 @@ Each `match` entry is a condition on one child value; all entries must hold:
 | Form | Holds when the child value | Written back as |
 |---|---|---|
 | `Code = "50"` | equals `50` | `50` |
-| `Code = ["50", "130"]` | equals one of them | `50`, unless the occurrence has its own value |
+| `Code = ["50", "130"]` | equals one of them | `50`, unless the occurrence has one of the listed values |
 | `Code = { present = true }` | exists (`false`: does not exist) | nothing |
 | `Code = "$root.Key"` | equals the document's value for the root key `Key` | that value |
 
 A presence test tells apart occurrences that differ in shape rather than in a
-code, like UBL's two `TaxTotal`s: the one with `TaxSubtotal`s is BT-110, the
-one without is BT-111. A reference compares against another value of the same
+code, like UBL's two `TaxTotal`s: the one without `TaxSubtotal`s (in the tax
+currency) is BT-111, the other BT-110. A reference compares against another value of the same
 document, like CII's two `TaxTotalAmount`s, of which BT-111 is the one in the
 VAT accounting currency:
 
@@ -547,8 +547,8 @@ Rules:
   a node (a helper is enough) under the *first* logical node, in its schema
   position, because the shared item struct orders each child by its first
   declaration.
-- A reference names a root key (`$root.Key`) that a root-level node of the
-  mapping reads from one path of its own, without fallbacks (E130). That
+- A reference names a root key (`$root.Key`) that exactly one root-level node
+  of the mapping reads, from one path of its own, without fallbacks (E130). That
   value is read from the document before any occurrence is sorted (and on
   write, after the root values are written), so its node must not lie beneath
   a repeated or matched element (E131). Reference and document value are both
@@ -717,6 +717,8 @@ Rules:
 
 - The literal must parse under the node's `type` (E061); shape checks only —
   malformed values fail the build instead of surfacing in emitted documents.
+  A literal longer than `[meta.defaults].max_length` (for a `string` or
+  `identifier` node) is E061 too.
 - Not valid on a collection node (E060).
 - Cannot be combined with `fallbacks`, `multiple` or `codec` (E062): the
   constant is emitted verbatim on write, so read-side collapse features don't
@@ -761,7 +763,7 @@ The nodes are the value's **alternatives**:
   `EM`; a hub value that disagrees warns `VALUE_INCONSISTENT` and is kept.
 - **Placeholder.** `placeholder` is written where its node wrote nothing
   (guarded like a constant by the content around it), and reading it back
-  gives no value, so the next alternative supplies the value. A list
+  gives no value, so the next alternative or a fallback supplies the value. A list
   (`["0000000", "XXXXXXX"]`) writes its first value and reads every one of
   them as no value.
 
@@ -784,11 +786,12 @@ Rules:
 - `when` belongs on a keyed scalar or an unkeyed constant, not on a
   collection, clone, lifted key, `multiple` node or pinned constant, and must
   not be empty (E132). Two defaults, a `when` that repeats an earlier
-  alternative's, an alternative with `multiple`, or `required` / `default` on
-  one of several alternatives are E132 too.
+  alternative's, an alternative with `multiple`, a pinned constant (a keyed
+  `constant`, which would write beside the chosen alternative), or `required`
+  / `default` on one of several alternatives are E132 too.
 - `placeholder` belongs on a keyed scalar (not a constant, clone, lifted key
   or `multiple` node) and is a literal of its type or a non-empty list of
-  them (E134).
+  them, none longer than the node's `max_length` (E134).
 
 ---
 
@@ -1414,7 +1417,7 @@ Validation reports **every** problem in one run, never just the first error.
 | `E040` | `multiple = "join"` without `join_with`, or `join_with` with another `multiple` policy |
 | `E043` | `multiple` combined with `fallbacks` |
 | `E060` | `constant` on a collection node |
-| `E061` | `constant` literal does not parse under the node's `type` |
+| `E061` | `constant` literal does not parse under the node's `type`, or is longer than its `max_length` |
 | `E062` | `constant` combined with `fallbacks`, `multiple` or `codec` |
 | `E063` | `default` literal does not parse under the node's `type` |
 | `E064` | `default` on a node without a `canonical_key`, a collection, or a `clone_of` node |
@@ -1441,10 +1444,10 @@ Validation reports **every** problem in one run, never just the first error.
 | `E112` | A `where` key is unknown, or its literal does not fit the key's type |
 | `E113` | An `add` / `subtract` / `requires` operand is no root `decimal` key, or a required operand is derived by this or a later rule |
 | `E114` | A `value` literal does not fit the target key's type |
-| `E130` | A `match` reference is not `$root.Key`, or no root-level node reads `Key` from one path of its own (no fallbacks); a `when` entry names no scalar hub key of the node's scope, tests a decimal or boolean key for a value, or is a reference |
+| `E130` | A `match` reference is not `$root.Key`, or not exactly one root-level node reads `Key`, from one path of its own (no fallbacks); a `when` entry names no scalar hub key of the node's scope, tests a decimal or boolean key for a value, or is a reference |
 | `E131` | A `match` reference's node lies beneath a repeated or matched element |
-| `E132` | A misplaced or empty `when`; two alternatives of one value without `when`, a `when` repeating an earlier alternative's, or an alternative with `multiple`, `required` or `default` |
-| `E134` | A `placeholder` on anything but a keyed scalar, or one that is no literal of the node's type |
+| `E132` | A misplaced or empty `when`; two alternatives of one value without `when`, a `when` repeating an earlier alternative's, or an alternative with `multiple`, `required`, `default` or a pinned `constant` |
+| `E134` | A `placeholder` on anything but a keyed scalar, or one that is no literal of the node's type or is longer than its `max_length` |
 | `E136` | A lifted `canonical_key` (`$root.Key`, `$parent.Key`) outside a collection, on a collection, with `multiple = "join"`, or with an unknown prefix |
 | `W140` | Every alternative of a value has a `when` (warning): a value none of them takes is refused with `NO_TARGET` |
 

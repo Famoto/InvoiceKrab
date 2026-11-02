@@ -2142,6 +2142,78 @@ mod tests {
     }
 
     #[test]
+    fn test_mux_list_discriminator_replaces_value_outside_list() {
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.Means]
+            xml = "PaymentMeans"
+            match = { Code = ["50", "130"] }
+
+            [Invoice.Means.Code]
+            type = "string"
+            canonical_key = "MeansCode"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
+        // A slot value outside the list (`999`) would not demux back in.
+        assert!(
+            out.contains(
+                "if !slot.as_deref().is_some_and(|v| matches!(v.trim(), \"50\" | \"130\")) \
+                 { *slot = Some(CompactString::from(\"50\")); }"
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn test_read_placeholder_primary_falls_back() {
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.Code]
+            type = "identifier"
+            canonical_key = "Addr"
+            placeholder = "0000000"
+            fallbacks = ["Invoice.Mail"]
+
+            [Invoice.Mail]
+            type = "identifier"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
+        let filter = "value = value.filter(|v| !matches!(v.trim(), \"0000000\"));";
+        let first = out
+            .find(filter)
+            .expect("placeholder filtered before fallbacks");
+        let fallback = out.find("if value.is_none() {").expect("fallback");
+        assert!(first < fallback, "{out}");
+        assert!(
+            out.contains(&format!("let {filter}")),
+            "fallback values too: {out}"
+        );
+    }
+
+    #[test]
+    fn test_read_clone_over_length_warns() {
+        let codecs: CodecTable =
+            crate::codec::parse_codecs("[codec.short]\nfor_type = \"string\"\nmax_length = 3\n")
+                .expect("codecs")
+                .into_iter()
+                .map(|c| (c.id.clone(), c))
+                .collect();
+        let src = "[meta]\ndoc_format = \"f\"\nformat_version = \"1\"\nmapping_version = \"1\"\n\
+                   canonical_model = \"c:1\"\nroot = \"Invoice\"\n\
+                   [Invoice.Name]\ntype = \"string\"\ncanonical_key = \"Name\"\n\
+                   [Invoice.Copy]\ntype = \"string\"\nclone_of = \"Name\"\ncodec = \"short\"\n";
+        let (ir, source, diags) = build_ir_with(&[parse_mapping(src).expect("parses")], &codecs);
+        assert!(diags.is_empty(), "{diags:?}");
+        let out = generate_spoke(&ir, &source, &codecs, "super::hub");
+        let clone = &out[out.find("Invoice.Copy: copy of Name").expect("clone block")..];
+        let clone = &clone[..clone.find("CLONE_MISMATCH").expect("compare")];
+        assert!(clone.contains("if raw.chars().count() > 3 {"), "{clone}");
+        assert!(clone.contains("\"VALUE_TOO_LONG\""), "{clone}");
+    }
+
+    #[test]
     fn test_generation_is_deterministic() {
         let (ir, hub, source) = compiled();
         assert_eq!(generate_hub(&hub), generate_hub(&hub));

@@ -147,6 +147,20 @@ pub fn effective_rounding(codec: &Codec, default: Option<Rounding>) -> Option<Ro
         .flatten()
 }
 
+/// The length limit of a node's text: its codec's `max_length`, else the
+/// mapping default for a `string` or `identifier` node.
+pub fn effective_max_length(
+    codec: Option<&Codec>,
+    ty: MappingType,
+    default: Option<usize>,
+) -> Option<usize> {
+    codec.and_then(|c| c.max_length).or_else(|| {
+        matches!(ty, MappingType::String | MappingType::Identifier)
+            .then_some(default)
+            .flatten()
+    })
+}
+
 /// A compiled lexical pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pattern {
