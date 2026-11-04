@@ -257,6 +257,58 @@ pub(super) fn assign_target_expr(
     expr
 }
 
+/// The `Option<&Struct>` expression reaching the interior struct at `path`
+/// without materializing anything: `Some(&src).and_then(|v0| v0.a.as_ref())…`.
+pub(super) fn struct_ref_expr(
+    source: &SourceModelMeta,
+    start_struct: &str,
+    path: &str,
+    src_var: &str,
+) -> String {
+    let Ok(segs) = walk_segments(source, start_struct, path) else {
+        return format!(
+            "compile_error!(\"unresolved owner path `{path}` against `{start_struct}`\")"
+        );
+    };
+    let mut expr = format!("Some(&{src_var})");
+    for (i, seg) in segs.iter().enumerate() {
+        if seg.optional {
+            expr = format!("{expr}.and_then(|v{i}| v{i}.{}.as_ref())", seg.name);
+        } else {
+            expr = format!("{expr}.map(|v{i}| &v{i}.{})", seg.name);
+        }
+    }
+    expr
+}
+
+/// The `bool` expression testing whether the element or value at `path`
+/// exists: a scalar is `Some`, an element with children is materialized, a
+/// repeated element has an occurrence.
+pub(super) fn presence_expr(
+    source: &SourceModelMeta,
+    start_struct: &str,
+    path: &str,
+    base_var: &str,
+) -> String {
+    let Ok(segs) = walk_segments(source, start_struct, path) else {
+        return unresolved(path, start_struct);
+    };
+    match segs.last() {
+        Some(last) if last.repeated => format!(
+            "!{}.is_empty()",
+            collection_slice_expr(source, start_struct, path, base_var)
+        ),
+        Some(last) if last.struct_name.is_some() => format!(
+            "{}.is_some()",
+            struct_ref_expr(source, start_struct, path, base_var)
+        ),
+        _ => format!(
+            "{}.is_some()",
+            access_expr(source, start_struct, path, base_var)
+        ),
+    }
+}
+
 /// Wraps a base access in the node's normalize chain, yielding an
 /// `Option<CompactString>`. `empty_as_missing` can collapse the value to
 /// `None`.

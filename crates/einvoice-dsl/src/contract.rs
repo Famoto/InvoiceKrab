@@ -159,7 +159,13 @@ pub fn spoke_contract(spoke: &str, ir: &MappingIr, source: &SourceModelMeta) -> 
             });
         }
     }
-    keys.sort_by(|a, b| a.label.cmp(&b.label));
+    // Alternatives map one key from several nodes; it is one key (labels are
+    // the contract's identity). An alternative's codec is kept over none, so
+    // a recode through it is reported rather than hidden.
+    // ponytail: of two different codecs the greater id is kept; make `codec`
+    // a list if alternatives ever recode through different codecs.
+    keys.sort_by(|a, b| a.label.cmp(&b.label).then_with(|| b.codec.cmp(&a.codec)));
+    keys.dedup_by(|a, b| a.label == b.label);
 
     let mut selectors = Vec::new();
     for meta in source.structs.values() {
@@ -175,7 +181,11 @@ pub fn spoke_contract(spoke: &str, ir: &MappingIr, source: &SourceModelMeta) -> 
                 selectors.push(Selector {
                     node: alias.node.clone(),
                     element: element.clone(),
-                    selector: alias.selector.clone(),
+                    selector: alias
+                        .selector
+                        .iter()
+                        .map(|(path, cond)| (path.clone(), cond.display()))
+                        .collect(),
                     single: !field.repeated,
                 });
             }
@@ -358,12 +368,16 @@ mod tests {
     }
 
     fn contract_of(body: &str) -> SpokeContract {
+        contract_with(body, &CodecTable::new())
+    }
+
+    fn contract_with(body: &str, codecs: &CodecTable) -> SpokeContract {
         let m = mapping("a", body);
         let spokes = [SpokeInput {
             id: "a".into(),
             chain: std::slice::from_ref(&m),
         }];
-        let out = compile(&spokes, &CodecTable::new());
+        let out = compile(&spokes, codecs);
         assert!(!out.has_errors(), "{:?}", out.diagnostics);
         spoke_contract("a:1", &out.irs["a"], &out.sources["a"])
     }
@@ -447,6 +461,40 @@ mod tests {
         assert_eq!(c.keys[1].ty, "collection");
         assert_eq!(c.keys[7].pinned.as_deref(), Some("2.1"));
         assert_eq!(c.keys[0].pinned, None);
+    }
+
+    #[test]
+    fn test_spoke_contract_alternative_codec_is_kept_over_none() {
+        let codecs: CodecTable = crate::codec::parse_codecs(
+            "[codec.short]\nfor_type = \"identifier\"\nmax_length = 7\n",
+        )
+        .expect("codecs")
+        .into_iter()
+        .map(|c| (c.id.clone(), c))
+        .collect();
+        let c = contract_with(
+            r#"[Doc.Scheme]
+            type = "string"
+            canonical_key = "Scheme"
+
+            [Doc.Mail]
+            type = "identifier"
+            canonical_key = "Addr"
+            when = { Scheme = "M" }
+
+            [Doc.Zip]
+            type = "identifier"
+            canonical_key = "Addr"
+            codec = "short""#,
+            &codecs,
+        );
+        let addr: Vec<Option<&str>> = c
+            .keys
+            .iter()
+            .filter(|k| k.label == "Addr")
+            .map(|k| k.codec.as_deref())
+            .collect();
+        assert_eq!(addr, [Some("short")], "one key, its codec not hidden");
     }
 
     #[test]

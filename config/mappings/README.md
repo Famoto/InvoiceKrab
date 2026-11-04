@@ -29,6 +29,7 @@ pointing at the offending node.
 - [Canonical keys & the hub](#canonical-keys--the-hub)
 - [Fallbacks](#fallbacks)
 - [Constants: pinning write-side values](#constants-pinning-write-side-values)
+- [Alternatives: one value, several possible elements](#alternatives-one-value-several-possible-elements)
 - [Clones: one value, several places](#clones-one-value-several-places)
 - [Codecs](#codecs)
 - [Read defaults](#read-defaults)
@@ -220,6 +221,9 @@ description     = "…"                       # optional, reports only
 profile  = "CustomizationID"
 profiles = ["urn:cen.eu:en16931:2017"]
 
+[meta.defaults]                             # optional — codec settings for every node
+max_length = 200
+
 [meta.schema]                               # optional — the XSD the format is defined by
 xsd = "testfiles/xsd/ubl-2.1/maindoc/UBL-Invoice-2.1.xsd"
 
@@ -242,6 +246,7 @@ file = "testfiles/xrechnung-3.0.2-beispiel.xml"
 | `[meta.namespaces]` | — | `prefix = "URI"` declarations emitted on the root (`""` = default namespace); inherited |
 | `[meta.ns_defaults]` | — | `leaf` / `aggregate` default prefixes; inherited |
 | `[meta.identity]` | — | `profile`/`profiles`, `version`/`versions`, `attributes`: what a document must declare to be read; inherited — see [Document identity](#document-identity--auto-detection) |
+| `[meta.defaults]` | — | `rounding`, `max_length`: [codec settings](#codec-settings-rounding-and-length) for every node whose codec states none; `no_target = "warn"`: drop a value no [alternative](#alternatives-one-value-several-possible-elements) takes, with a warning; inherited key by key |
 | `[meta.schema]` | — | `xsd`, `catalog`, `known_gaps`: the schema the spoke's documents must satisfy; inherited — see [Schema conformance](#schema-conformance) |
 | `[[meta.samples]]` | — | `file`, `source`: sample documents every spoke with a schema must write validly and round-trip; not inherited |
 
@@ -292,13 +297,13 @@ A node plays one of five roles, depending on which fields it declares:
 | Field | Type | Meaning |
 |-------|------|---------|
 | `type` | string | Value type (see [Types](#types)). Required for active nodes (E002). |
-| `canonical_key` | string | Target field in the canonical hub. Omit for a helper node. |
+| `canonical_key` | string | Target field in the canonical hub; `$root.Key` / `$parent.Key` lifts it out of the collection (see [Lifted keys](#lifted-keys-one-value-stated-in-every-item)). Omit for a helper node. |
 | `xml` | string | Leaf binding override (see [below](#the-xml-field-attributes-text-renames)); on a collection or structural node, the physical element it binds (see [Structural matching](#structural-matching-one-element-several-nodes)). |
 | `required` | bool | The node must have a deterministic write route and its value must be present (default `false`; see [`required`](#required-and-the-transformation-contract)). |
 | `normalize` | array | String transforms, applied in order (see [Normalization](#normalization)). |
 | `fallbacks` | array | Other node ids to try, in order, when this node is missing (see [Fallbacks](#fallbacks)). |
 | `multiple` | string | Policy for repeated scalar values (see [Multiple values](#multiple-values)). |
-| `join_with` | string | Separator — required iff `multiple = "join"` (E040). |
+| `join_with` | string | Separator of joined values; implies `multiple = "join"` (E040 with another policy). |
 | `constant` | string | Fixed write-side literal (see [Constants](#constants-pinning-write-side-values)). |
 | `clone_of` | string | Canonical key this node mirrors (see [Clones](#clones-one-value-several-places)). |
 | `codec` | string | Id of a shared codec translating the hub value to the format's form: dates, booleans, code tables, number formats, character sets (see [Codecs](#codecs)). |
@@ -306,7 +311,9 @@ A node plays one of five roles, depending on which fields it declares:
 | `description` | string | Human note, reports only. |
 | `disabled` | bool | Remove this node from the effective mapping (useful with [inheritance](#inheritance)). |
 | `ns` | string | Namespace prefix of this node's own element on write (see [Namespaces](#namespaces)). Alone on a `type`-less table it makes a structural node. |
-| `match` | inline table | Selector on a collection or structural node: child value → literal, e.g. `{ "TypeCode" = "130" }` (see [Structural matching](#structural-matching-one-element-several-nodes)). Not valid on a scalar (E091). |
+| `match` | inline table | Selector on a collection or structural node: child value → condition, e.g. `{ "TypeCode" = "130" }`, `["50", "130"]`, `{ present = true }` or `"$root.Key"` (see [Structural matching](#structural-matching-one-element-several-nodes)). Not valid on a scalar (E091). |
+| `when` | inline table | Write condition on the hub: hub key → condition, in the forms of `match` (see [Alternatives](#alternatives-one-value-several-possible-elements)). On a constant, the constant is written only while it holds. |
+| `placeholder` | string or array | Written where the node has nothing to write, for an element the format requires (a list: its first value); every value reads back as none (see [Alternatives](#alternatives-one-value-several-possible-elements)). |
 | `replace` | bool | Under [inheritance](#inheritance), replace the inherited node whole instead of merging over it. |
 
 Any other field is rejected (E001) — typos never silently no-op.
@@ -414,7 +421,8 @@ multiple = "join"
 join_with = "\n"
 ```
 
-`join_with` is required exactly when the policy is `join` (E040). `multiple`
+`join_with` alone implies `join`, so `multiple = "join"` may be left out;
+`join` without `join_with`, or `join_with` with another policy, is E040. `multiple`
 is only valid on a plain scalar element leaf — not on collections, attributes,
 `$text` overrides, or valued containers — and cannot be combined with
 `fallbacks`: a multi-valued node collapses its own values, and a fallback
@@ -507,18 +515,49 @@ discriminators** — so a node needs no `constant` for its own discriminator; a
 `constant` is only how the selector-less default node pins its code (`916`
 above).
 
+Each `match` entry is a condition on one child value; all entries must hold:
+
+| Form | Holds when the child value | Written back as |
+|---|---|---|
+| `Code = "50"` | equals `50` | `50` |
+| `Code = ["50", "130"]` | equals one of them | `50`, unless the occurrence has one of the listed values |
+| `Code = { present = true }` | exists (`false`: does not exist) | nothing |
+| `Code = "$root.Key"` | equals the document's value for the root key `Key` | that value |
+
+A presence test tells apart occurrences that differ in shape rather than in a
+code, like UBL's two `TaxTotal`s: the one without `TaxSubtotal`s (in the tax
+currency) is BT-111, the other BT-110. A reference compares against another value of the same
+document, like CII's two `TaxTotalAmount`s, of which BT-111 is the one in the
+VAT accounting currency:
+
+```toml
+[Summation.TaxTotalInTaxCurrency]
+xml = "TaxTotalAmount"
+match = { "@currencyID" = "$root.TaxCurrency" }
+```
+
 Rules:
 
 - `match` keys are child paths inside the element — an element (`TypeCode`), a
   nested one (`TaxScheme.ID`), an attribute (`@schemeID`, `ID.@schemeID`) or
   `$text`; values are compared trimmed and exactly. Every key must name a
-  single scalar declared beneath one of the element's logical nodes (E092);
-  declare the discriminator as a node (a helper is enough) under the *first*
-  logical node, in its schema position, because the shared item struct orders
-  each child by its first declaration.
+  single scalar declared beneath one of the element's logical nodes, and a
+  list must not be empty or hold a reference (E092); a presence test may also
+  name a repeated element or one with children. Declare the discriminator as
+  a node (a helper is enough) under the *first* logical node, in its schema
+  position, because the shared item struct orders each child by its first
+  declaration.
+- A reference names a root key (`$root.Key`) that exactly one root-level node
+  of the mapping reads, from one path of its own, without fallbacks (E130). That
+  value is read from the document before any occurrence is sorted (and on
+  write, after the root values are written), so its node must not lie beneath
+  a repeated or matched element (E131). Reference and document value are both
+  compared as written in the document, trimmed.
 - The logical nodes of one element must be **disjoint**: two selectors must
-  share a key with different values, and at most one node may have no
-  selector (E090). `match` belongs on a collection or structural node, never
+  share a key whose conditions no value satisfies both (different literals,
+  disjoint lists, present against absent, or absent against any value), and
+  at most one node may have no selector (E090). A reference may equal
+  anything, so it never makes two selectors disjoint on its own. `match` belongs on a collection or structural node, never
   a scalar (E091). The logical nodes must agree on `ns` (E024 otherwise), and
   a child element declared under several of them must have the same shape.
 - A structural node with a selector is single-valued: its children are
@@ -561,6 +600,36 @@ Rules, all enforced at build time:
 
 A node with **no** `canonical_key` is a *helper* node — it carries no hub
 value itself and exists only to be referenced as a fallback.
+
+### Lifted keys: one value stated in every item
+
+Some formats repeat a document-level value in every occurrence of a
+collection — UBL states the payment means code in each `PaymentMeans`, one
+per account. A node inside a collection lifts its key to the enclosing scope
+with the prefixes `clone_of` uses: `$root.Key` (the invoice root) or
+`$parent.Key` (the scope around the node's collection).
+
+```toml
+[Invoice.PaymentMeans]                  # one item per account
+type = "collection"
+canonical_key = "CreditTransfers"
+
+[Invoice.PaymentMeans.PaymentMeansCode] # stated per item, one value per invoice
+type = "string"
+canonical_key = "$root.PaymentMeansTypeCode"
+```
+
+- **Read.** Each occurrence's value is decoded; the first fills the key and
+  every later one must equal it, else `SCOPE_DISAGREE` (an error).
+  `multiple = "first"` keeps the first value with a warning instead. An
+  occurrence without the value is skipped.
+- **Write.** The key's value goes into every occurrence written. A collection
+  with no items but a lifted value gets one occurrence to carry it.
+
+The key lives in the scope its prefix names, so E010, E013 and
+`krab-cli --keys` treat it like a key declared there. A lift outside a
+collection, on a collection, with `multiple = "join"`, or with an unknown
+prefix is E136.
 
 Use `krab-cli --keys` to browse the current hub vocabulary, and
 `krab-cli --keys <format>` to see which keys a spoke already covers and which
@@ -648,11 +717,81 @@ Rules:
 
 - The literal must parse under the node's `type` (E061); shape checks only —
   malformed values fail the build instead of surfacing in emitted documents.
+  A literal longer than `[meta.defaults].max_length` (for a `string` or
+  `identifier` node) is E061 too.
 - Not valid on a collection node (E060).
 - Cannot be combined with `fallbacks`, `multiple` or `codec` (E062): the
   constant is emitted verbatim on write, so read-side collapse features don't
   apply. `normalize` is fine: it shapes what is *read* from the node, the
   constant is what is *written*.
+
+---
+
+## Alternatives: one value, several possible elements
+
+Sometimes another value decides where a value goes: FatturaPA states the
+buyer's address as a recipient code in `CodiceDestinatario` or as a certified
+mailbox in `PECDestinatario`, depending on the address scheme. Map each
+element as an ordinary node with the same `canonical_key` and give it a
+`when`: a table like `match`, but its keys are **hub keys** of the node's
+scope, and it decides whether the node writes.
+
+```toml
+[Header.Recipient.Code]              # a recipient code, else 0000000
+type = "identifier"
+canonical_key = "BuyerElectronicAddress"
+when = { BuyerElectronicAddressScheme = ["0205", "0201"] }
+placeholder = "0000000"
+
+[Header.Recipient.Mailbox]           # a certified mailbox
+type = "identifier"
+canonical_key = "BuyerElectronicAddress"
+when = { BuyerElectronicAddressScheme = "EM" }
+```
+
+The nodes are the value's **alternatives**:
+
+- **Write.** The first alternative in file order whose `when` holds writes
+  the value. At most one alternative may leave out `when`: it is the default,
+  used when no `when` holds. With no default, a value no `when` takes is the
+  error `NO_TARGET` (and the build warns, W140). The decision is made before
+  anything in the scope is written.
+- **Read.** The first alternative in file order that has a value supplies
+  it; a later one that also has one warns `MULTIPLE_SOURCES` and is ignored.
+  The supplier's `when` values are filled into the hub where it has none (a
+  list fills its first value), so reading `Mailbox` above sets the scheme to
+  `EM`; a hub value that disagrees warns `VALUE_INCONSISTENT` and is kept.
+- **Placeholder.** `placeholder` is written where its node wrote nothing
+  (guarded like a constant by the content around it), and reading it back
+  gives no value, so the next alternative or a fallback supplies the value. A list
+  (`["0000000", "XXXXXXX"]`) writes its first value and reads every one of
+  them as no value.
+
+A value no alternative takes is refused by default. A mapping that would
+rather drop it says so in `[meta.defaults]`: with `no_target = "warn"`,
+`NO_TARGET` is a warning, the value is not written, and W140 is not
+reported. FatturaPA does this for a buyer address that is neither a
+recipient code nor a mailbox.
+
+A `when` on an unkeyed constant writes the constant only while the `when`
+holds: `when = { DeliveryDate = { present = true } }` pins a code exactly
+when there is a date it qualifies.
+
+Rules:
+
+- `when` entries name scalar hub keys of the node's own scope (in a
+  collection: the item's keys). A value test (`"A"`, `["A", "B"]`) needs a
+  text key; a decimal or boolean key takes `{ present = … }`; references are
+  not supported in `when` (all E130).
+- `when` belongs on a keyed scalar or an unkeyed constant, not on a
+  collection, clone, lifted key, `multiple` node or pinned constant, and must
+  not be empty (E132). Two defaults, a `when` that repeats an earlier
+  alternative's, an alternative with `multiple`, a pinned constant (a keyed
+  `constant`, which would write beside the chosen alternative), or `required`
+  / `default` on one of several alternatives are E132 too.
+- `placeholder` belongs on a keyed scalar (not a constant, clone, lifted key
+  or `multiple` node) and is a literal of its type or a non-empty list of
+  them, none longer than the node's `max_length` (E134).
 
 ---
 
@@ -732,7 +871,7 @@ A codec declares exactly one kind, checked when the codec file loads:
 |---|---|---|---|
 | `lexical` | `date`, `datetime`, `boolean` | the canonical value in the pattern | the pattern decoded |
 | `values = [[canonical, wire], …]` | `string`, `identifier`, `currency`, `unit_code` | the first pair's wire code for the hub value; a hub value without a pair is `CODEC_INVALID`; an empty wire code writes nothing | the first pair's canonical code for the wire value; several wire codes may read as one canonical code |
-| `fraction_digits = [min, max]` | `decimal` | zero-padded to `min` fraction digits, trailing zeros trimmed down to it; a value needing more than `max` is `CODEC_INVALID` (never rounded) | as a decimal |
+| `fraction_digits = [min, max]` | `decimal` | zero-padded to `min` fraction digits, trailing zeros trimmed down to it; a value needing more than `max` is `CODEC_INVALID` unless a `rounding` mode applies | as a decimal |
 | `charset = "latin-1"` | `string`, `identifier` | the text in ISO 8859-1, typographic punctuation transliterated (`—` → `-`, `€` → `EUR`); any other character outside it is `CODEC_INVALID` | as is |
 | `digits = n` | `string`, `identifier` | the value when it is exactly `n` ASCII digits, else `CODEC_INVALID` (never padded or cut) | as is |
 | `split = { at = n, into = [head, tail] }` | `string`, `identifier` | the first `n` characters into child element `head`, the rest into `tail` | the two joined |
@@ -772,6 +911,33 @@ attribute must not collide with an attribute node declared on the same element
 attributes turns its element into a valued container (text plus attributes)
 exactly as an attribute child would. A `split` codec turns its element into a
 container of the two named children and takes no `wire` attributes.
+
+### Codec settings: rounding and length
+
+Two optional settings may accompany a codec's kind:
+
+| Setting | On | Effect |
+|---|---|---|
+| `rounding = "half_up" \| "half_even" \| "down" \| "up"` | a `fraction_digits` codec | a value with more than `max` fraction digits is rounded to `max` with this mode instead of being refused |
+| `max_length = n` | a text codec (`string`, `identifier`, `currency`, `unit_code`; not `split`) | an encoded value longer than `n` characters is refused on write (`VALUE_TOO_LONG` error, never cut) and warned about on read (`VALUE_TOO_LONG` warning) |
+
+A codec may be `max_length` alone, translating nothing. Limits are written by
+hand from the format's schema:
+
+```toml
+# config/codecs/fatturapa.toml — String80LatinType
+[codec.fatturapa-text-80]
+for_type = "string"
+charset = "latin-1"
+max_length = 80
+```
+
+`[meta.defaults]` sets both for a whole mapping: `rounding` for every
+`fraction_digits` codec without its own, `max_length` for every `string` and
+`identifier` node whose codec sets none. A codec's own setting wins; a
+mapping's `[meta.defaults]` wins over its parent's, key by key; a node opts
+out by naming another codec. Without any setting nothing is rounded or
+limited.
 
 ---
 
@@ -1235,7 +1401,7 @@ Validation reports **every** problem in one run, never just the first error.
 | `E010` | Canonical key declared with conflicting types across spokes |
 | `E011` | Canonical key inside a collection that has no `canonical_key` itself |
 | `E012` | Two canonical keys collide in generated code (same Rust field name, or one collection key in two scopes), or a source struct takes a generated hub type's name |
-| `E013` | Same canonical key mapped by two primary nodes in one spoke (use `fallbacks` or `clone_of`) |
+| `E013` | Same canonical key mapped by two primary nodes in one spoke, none of them with a `when` (use `fallbacks`, `clone_of`, or make them [alternatives](#alternatives-one-value-several-possible-elements)) |
 | `E014` | `canonical_key` (or the key a `clone_of` mirrors) is not a PascalCase identifier |
 | `E020` | `[meta].source_model` disagrees with the synthesized model id |
 | `E021` | Node id does not resolve to a source path |
@@ -1248,10 +1414,10 @@ Validation reports **every** problem in one run, never just the first error.
 | `E031` | Fallback target type incompatible with the primary |
 | `E032` | Fallback target in a different scope |
 | `E033` | Fallback reference cycle |
-| `E040` | `multiple = "join"` without `join_with`, or `join_with` without join |
+| `E040` | `multiple = "join"` without `join_with`, or `join_with` with another `multiple` policy |
 | `E043` | `multiple` combined with `fallbacks` |
 | `E060` | `constant` on a collection node |
-| `E061` | `constant` literal does not parse under the node's `type` |
+| `E061` | `constant` literal does not parse under the node's `type`, or is longer than its `max_length` |
 | `E062` | `constant` combined with `fallbacks`, `multiple` or `codec` |
 | `E063` | `default` literal does not parse under the node's `type` |
 | `E064` | `default` on a node without a `canonical_key`, a collection, or a `clone_of` node |
@@ -1266,7 +1432,7 @@ Validation reports **every** problem in one run, never just the first error.
 | `E087` | Codec wire attribute collides with an attribute node on the same element |
 | `E090` | Two logical nodes of one element overlap: identical or non-disjoint `match` selectors, or two nodes without one |
 | `E091` | `match` on a scalar node |
-| `E092` | `match` key does not name a single scalar declared beneath the element's logical nodes (or the selector is empty) |
+| `E092` | `match` key does not name a single scalar declared beneath the element's logical nodes, the selector is empty, or a list is empty or holds a reference |
 | `E093` | Malformed `clone_of` derivation (`$sibling.Key`, `$root.A.B`), or `$parent` at root scope |
 | `W095` | A `required` node needs a hub key no other spoke maps (warning): no transform into this spoke, except from itself, can supply it |
 | `E100` | A `[meta.schema]` (`xsd`, `catalog`, `refuses`) or `[[meta.samples]]` path is absolute or leaves the workspace root, or a sample path (`refuses`, `samples.file`) names no file there |
@@ -1278,9 +1444,16 @@ Validation reports **every** problem in one run, never just the first error.
 | `E112` | A `where` key is unknown, or its literal does not fit the key's type |
 | `E113` | An `add` / `subtract` / `requires` operand is no root `decimal` key, or a required operand is derived by this or a later rule |
 | `E114` | A `value` literal does not fit the target key's type |
+| `E130` | A `match` reference is not `$root.Key`, or not exactly one root-level node reads `Key`, from one path of its own (no fallbacks); a `when` entry names no scalar hub key of the node's scope, tests a decimal or boolean key for a value, or is a reference |
+| `E131` | A `match` reference's node lies beneath a repeated or matched element |
+| `E132` | A misplaced or empty `when`; two alternatives of one value without `when`, a `when` repeating an earlier alternative's, or an alternative with `multiple`, `required`, `default` or a pinned `constant` |
+| `E134` | A `placeholder` on anything but a keyed scalar, or one that is no literal of the node's type or is longer than its `max_length` |
+| `E136` | A lifted `canonical_key` (`$root.Key`, `$parent.Key`) outside a collection, on a collection, with `multiple = "join"`, or with an unknown prefix |
+| `W140` | Every alternative of a value has a `when` (warning): a value none of them takes is refused with `NO_TARGET` |
 
 Runtime (per-document) diagnostics — missing required values, type validation
 failures, taken fallbacks, `CLONE_MISMATCH`, `CODEC_INVALID`,
-`CODEC_WIRE_MISMATCH`, `MATCH_MULTIPLE`, `VALUE_DERIVED`, `VALUE_INCONSISTENT` — are reported with severity and a
+`CODEC_WIRE_MISMATCH`, `VALUE_TOO_LONG`, `SCOPE_DISAGREE`, `MATCH_MULTIPLE`,
+`NO_TARGET`, `MULTIPLE_SOURCES`, `VALUE_DERIVED`, `VALUE_INCONSISTENT` — are reported with severity and a
 source-node reference when a document is transformed; they never silently
 vanish.

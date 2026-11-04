@@ -276,6 +276,47 @@ fn test_shipped_config_is_clean_and_generates_well_formed_code() {
 #[case::join_with_empty_separator(
     "[Doc.A]\ntype=\"string\"\ncanonical_key=\"K\"\nmultiple=\"join\"\njoin_with=\"\"\n"
 )]
+// `join_with` alone implies `multiple = "join"`.
+#[case::join_with_implies_join("[Doc.A]\ntype=\"string\"\ncanonical_key=\"K\"\njoin_with=\", \"\n")]
+// A `fraction_digits` codec rounds under `[meta.defaults]`; a text codec
+// carries a length limit.
+#[case::codec_settings(concat!(
+    "[meta.defaults]\nrounding=\"half_even\"\nmax_length=200\n",
+    "[Doc.Amount]\ntype=\"decimal\"\ncanonical_key=\"Amt\"\ncodec=\"fatturapa-amount-2\"\n",
+    "[Doc.Name]\ntype=\"string\"\ncanonical_key=\"Name\"\ncodec=\"fatturapa-text-80\"\n",
+    "[Doc.Ref]\ntype=\"identifier\"\ncanonical_key=\"Ref\"\n"
+))]
+// Lifted keys: a header value repeated in every item, one level up or to the
+// root, with `multiple = "first"` keeping the first of disagreeing values.
+#[case::lifted_keys(concat!(
+    "[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\n",
+    "[Doc.L.Code]\ntype=\"string\"\ncanonical_key=\"$root.Code\"\nmultiple=\"first\"\n",
+    "[Doc.L.ID]\ntype=\"identifier\"\ncanonical_key=\"LineId\"\n",
+    "[Doc.L.S]\ntype=\"collection\"\ncanonical_key=\"Ss\"\n",
+    "[Doc.L.S.Unit]\ntype=\"unit_code\"\ncanonical_key=\"$parent.Unit\"\n",
+    "[Doc.L.S.Amount]\ntype=\"decimal\"\ncanonical_key=\"$root.Amount\"\nrequired=true\n"
+))]
+// `match` forms: a list, absence, and a reference to a root value.
+#[case::match_conditions(concat!(
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.Ref.Code]\ntype=\"string\"\ncanonical_key=\"RefCode\"\n",
+    "[Doc.Tender]\nxml=\"Ref\"\nmatch={\"Code\"=[\"50\",\"51\"]}\n[Doc.Tender.ID]\ntype=\"identifier\"\ncanonical_key=\"TenderRef\"\n",
+    "[Doc.Bare]\nxml=\"Ref\"\nmatch={\"Code\"={present=false}}\n[Doc.Bare.ID]\ntype=\"identifier\"\ncanonical_key=\"BareRef\"\n",
+    "[Doc.Own]\nxml=\"Ref\"\nmatch={\"Code\"=\"70\",\"ID\"=\"$root.Cur\"}\n[Doc.Own.ID]\ntype=\"identifier\"\ncanonical_key=\"OwnRef\"\n"
+))]
+// Alternatives: a value written to the first element whose `when` holds,
+// a placeholder where nothing is written, a conditional constant, and the
+// same inside a collection.
+#[case::alternatives(concat!(
+    "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n",
+    "[Doc.Code]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Scheme=[\"A\",\"B\"]}\nplaceholder=\"0000000\"\n",
+    "[Doc.Mail]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Scheme=\"M\"}\n",
+    "[Doc.Other]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\n",
+    "[Doc.Flag]\ntype=\"string\"\nconstant=\"1\"\nwhen={Scheme={present=true}}\n",
+    "[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\n[Doc.L.Kind]\ntype=\"string\"\ncanonical_key=\"Kind\"\n",
+    "[Doc.L.Iban]\ntype=\"identifier\"\ncanonical_key=\"Account\"\nwhen={Kind=\"58\"}\n"
+))]
 #[case::datetime_constant_with_zone(
     "[Doc.A]\ntype=\"datetime\"\nconstant=\"2024-01-01T10:00:00+01:00\"\n"
 )]
@@ -447,9 +488,9 @@ fn test_inheritance_merge_and_disabled_base_are_clean() {
     "E040",
     "[Doc.A]\ntype=\"string\"\ncanonical_key=\"K\"\nmultiple=\"join\"\n"
 )]
-#[case::e040_separator_without_join(
+#[case::e040_separator_with_first(
     "E040",
-    "[Doc.A]\ntype=\"string\"\ncanonical_key=\"K\"\njoin_with=\",\"\n"
+    "[Doc.A]\ntype=\"string\"\ncanonical_key=\"K\"\nmultiple=\"first\"\njoin_with=\",\"\n"
 )]
 #[case::e043_multiple_and_fallbacks(
     "E043",
@@ -546,16 +587,119 @@ fn test_inheritance_merge_and_disabled_base_are_clean() {
     "E093",
     "[Doc.ID]\ntype=\"identifier\"\ncanonical_key=\"InvoiceNumber\"\n[Doc.B]\ntype=\"identifier\"\nclone_of=\"$sibling.InvoiceNumber\"\n"
 )]
+#[case::e136_lift_at_root("E136", "[Doc.Code]\ntype=\"string\"\ncanonical_key=\"$root.Code\"\n")]
+#[case::e136_lift_a_collection(
+    "E136",
+    "[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\n[Doc.L.S]\ntype=\"collection\"\ncanonical_key=\"$root.Ss\"\n[Doc.L.S.X]\ntype=\"string\"\n"
+)]
+#[case::e136_lift_joined(
+    "E136",
+    "[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\n[Doc.L.C]\ntype=\"string\"\ncanonical_key=\"$root.Code\"\nmultiple=\"join\"\njoin_with=\",\"\n"
+)]
+#[case::e136_lift_unknown_scope(
+    "E136",
+    "[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\n[Doc.L.C]\ntype=\"string\"\ncanonical_key=\"$sibling.Code\"\n"
+)]
+// A lifted key and a root node mapping the same key collide like any two.
+#[case::e013_lift_and_root_node(
+    "E013",
+    "[Doc.Code]\ntype=\"string\"\ncanonical_key=\"Code\"\n[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\n[Doc.L.C]\ntype=\"string\"\ncanonical_key=\"$root.Code\"\n"
+)]
 fn test_rejected(#[case] code: &str, #[case] body: &str) {
     assert_rejected(&one(body), code);
 }
 
-/// Two logical nodes with identical selectors overlap.
+/// Two logical nodes with identical selectors overlap; malformed conditions,
+/// references and alternatives.
 #[rstest]
 #[case::e090_identical_selectors("E090", concat!(
     "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
     "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"=\"50\"}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n",
     "[Doc.T2]\nxml=\"Ref\"\nmatch={\"ID\"=\"50\"}\n[Doc.T2.X]\ntype=\"identifier\"\ncanonical_key=\"T2\"\n"
+))]
+#[case::e092_empty_list("E092", concat!(
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"=[]}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n"
+))]
+#[case::e092_reference_in_list("E092", concat!(
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"=[\"$root.Cur\"]}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n"
+))]
+#[case::e090_both_present("E090", concat!(
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.T0]\nxml=\"Ref\"\nmatch={\"ID\"={present=true}}\n[Doc.T0.X]\ntype=\"identifier\"\ncanonical_key=\"T0\"\n",
+    "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"={present=true}}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n"
+))]
+#[case::e130_unknown_reference("E130", concat!(
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"=\"$root.Nope\"}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n"
+))]
+#[case::e130_parent_reference("E130", concat!(
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"=\"$parent.Cur\"}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n"
+))]
+#[case::e131_reference_beneath_a_matched_element("E131", concat!(
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.T0]\nxml=\"Ref\"\nmatch={\"ID\"=\"0\"}\n[Doc.T0.X]\ntype=\"identifier\"\ncanonical_key=\"T0\"\n",
+    "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"=\"$root.T0\"}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n"
+))]
+#[case::e132_two_defaults("E132", concat!(
+    "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n[Doc.Amt]\ntype=\"decimal\"\ncanonical_key=\"Amt\"\n",
+    "[Doc.A]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Scheme=\"A\"}\n",
+    "[Doc.B]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\n",
+    "[Doc.C]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\n"
+))]
+#[case::e132_repeated_when("E132", concat!(
+    "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n[Doc.Amt]\ntype=\"decimal\"\ncanonical_key=\"Amt\"\n",
+    "[Doc.A]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Scheme=\"A\"}\n",
+    "[Doc.B]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Scheme=\"A\"}\n"
+))]
+#[case::e132_required_alternative("E132", concat!(
+    "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n[Doc.Amt]\ntype=\"decimal\"\ncanonical_key=\"Amt\"\n",
+    "[Doc.A]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Scheme=\"A\"}\n",
+    "[Doc.B]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nrequired=true\n"
+))]
+#[case::e132_when_on_a_collection("E132", concat!(
+    "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n[Doc.Amt]\ntype=\"decimal\"\ncanonical_key=\"Amt\"\n",
+    "[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\nwhen={Scheme=\"A\"}\n[Doc.L.X]\ntype=\"string\"\ncanonical_key=\"X\"\n"
+))]
+#[case::e130_when_unknown_key("E130", concat!(
+    "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n[Doc.Amt]\ntype=\"decimal\"\ncanonical_key=\"Amt\"\n",
+    "[Doc.A]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Nope=\"A\"}\n"
+))]
+#[case::e130_when_value_on_a_decimal("E130", concat!(
+    "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n[Doc.Amt]\ntype=\"decimal\"\ncanonical_key=\"Amt\"\n",
+    "[Doc.A]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Amt=\"1\"}\n"
+))]
+#[case::e130_when_reference("E130", concat!(
+    "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n[Doc.Amt]\ntype=\"decimal\"\ncanonical_key=\"Amt\"\n",
+    "[Doc.A]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Scheme=\"$root.Amt\"}\n"
+))]
+#[case::e134_placeholder_on_a_constant("E134", concat!(
+    "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n[Doc.Amt]\ntype=\"decimal\"\ncanonical_key=\"Amt\"\n",
+    "[Doc.A]\ntype=\"string\"\nconstant=\"1\"\nplaceholder=\"0\"\n"
+))]
+#[case::e134_placeholder_not_of_the_type("E134", concat!(
+    "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n[Doc.Amt]\ntype=\"decimal\"\ncanonical_key=\"Amt\"\n",
+    "[Doc.A]\ntype=\"decimal\"\ncanonical_key=\"Total\"\nplaceholder=\"none\"\n"
+))]
+#[case::e132_keyed_constant_as_default("E132", concat!(
+    "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n[Doc.Amt]\ntype=\"decimal\"\ncanonical_key=\"Amt\"\n",
+    "[Doc.A]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Scheme=\"A\"}\n",
+    "[Doc.B]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nconstant=\"X\"\n"
+))]
+#[case::e130_reference_to_alternatives("E130", concat!(
+    "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n",
+    "[Doc.Cur]\ntype=\"currency\"\ncanonical_key=\"Cur\"\nwhen={Scheme=\"A\"}\n",
+    "[Doc.Cur2]\ntype=\"currency\"\ncanonical_key=\"Cur\"\n",
+    "[Doc.Ref]\ntype=\"collection\"\ncanonical_key=\"Refs\"\n[Doc.Ref.ID]\ntype=\"identifier\"\ncanonical_key=\"RefId\"\n",
+    "[Doc.T1]\nxml=\"Ref\"\nmatch={\"ID\"=\"$root.Cur\"}\n[Doc.T1.X]\ntype=\"identifier\"\ncanonical_key=\"T1\"\n"
 ))]
 fn test_rejected_selectors(#[case] code: &str, #[case] body: &str) {
     assert_rejected(&one(body), code);
@@ -569,6 +713,16 @@ fn test_rejected_selectors(#[case] code: &str, #[case] body: &str) {
     "E081",
     "[meta.namespaces]\ncbc = \"urn:cbc\"",
     "[Doc.A]\ntype=\"decimal\"\ncanonical_key=\"A\"\n[Doc.A.c]\nxml=\"@c\"\ntype=\"currency\"\ncanonical_key=\"AC\"\nns=\"cbc\"\n"
+)]
+#[case::e061_constant_longer_than_default_max_length(
+    "E061",
+    "[meta.defaults]\nmax_length = 3",
+    "[Doc.A]\ntype=\"string\"\nconstant=\"ABCD\"\n"
+)]
+#[case::e134_placeholder_longer_than_default_max_length(
+    "E134",
+    "[meta.defaults]\nmax_length = 3",
+    "[Doc.A]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nplaceholder=\"0000\"\n"
 )]
 #[case::e026_root_not_an_identifier("E026", "", KEY)]
 fn test_rejected_meta(#[case] code: &str, #[case] extra: &str, #[case] body: &str) {
@@ -616,6 +770,34 @@ fn test_w095_required_key_no_other_spoke_maps() {
     };
     assert_eq!(codes, ["W095"]);
     assert!(!out.has_errors(), "W095 is a warning");
+}
+
+#[test]
+fn test_w140_alternatives_without_a_default() {
+    let out = run(&one(concat!(
+        "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n",
+        "[Doc.A]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Scheme=\"A\"}\n",
+        "[Doc.B]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Scheme=\"B\"}\n"
+    )));
+    let Outcome::Compiled { codes, out, .. } = out else {
+        panic!("load failed")
+    };
+    assert_eq!(codes, ["W140"]);
+    assert!(!out.has_errors(), "W140 is a warning");
+}
+
+#[test]
+fn test_no_target_warn_drops_instead_of_w140() {
+    let body = concat!(
+        "[Doc.Scheme]\ntype=\"string\"\ncanonical_key=\"Scheme\"\n",
+        "[Doc.A]\ntype=\"identifier\"\ncanonical_key=\"Addr\"\nwhen={Scheme=\"A\"}\n"
+    );
+    let file = meta("t", "[meta.defaults]\nno_target = \"warn\"\n") + body;
+    let Outcome::Compiled { codes, out, .. } = run(&[("t.toml".into(), file)]) else {
+        panic!("load failed")
+    };
+    assert!(codes.is_empty(), "{codes:?}");
+    assert!(!out.has_errors());
 }
 
 // --- loader refusals ----------------------------------------------------------

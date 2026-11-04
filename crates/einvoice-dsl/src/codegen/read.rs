@@ -13,6 +13,11 @@
 //! / `$root.Key` clone compares against the enclosing scope's / the root's
 //! value, which is final by then (outer scalars are assigned before the loops).
 //!
+//! A lifted key (`canonical_key = "$root.Key"` inside a collection) is decoded
+//! per occurrence and collapsed into the enclosing scope's field: the first
+//! value fills it, a later one that differs is `SCOPE_DISAGREE` (an error, or
+//! a warning that keeps the first under `multiple = "first"`).
+//!
 //! When the mapping aliases physical elements (`match` selectors), the source
 //! is `demux`ed first: each physical element's items are sorted into the
 //! logical fields the nodes read, and a single-valued logical node that matched
@@ -30,7 +35,7 @@ use std::fmt::Write as _;
 
 use crate::codec::{Codec, Pattern};
 use crate::multiple::MultiplePolicy;
-use crate::node::{DerivationScope, SourceNode};
+use crate::node::{DerivationScope, Lift, SourceNode};
 use crate::normalize::NormalizeOp;
 use crate::source_model::{SourceModelMeta, xml_field_name};
 use crate::types::MappingType;
@@ -49,12 +54,18 @@ use super::plan::{Frame, GenCtx};
 struct Target<'a> {
     /// The hub struct variable assigned into (`main` or `item`).
     struct_var: &'a str,
+    /// The enclosing scope's hub variable (`None` at root), which a
+    /// `$parent.Key` lifted key collapses into.
+    parent_var: Option<&'a str>,
     /// The source access base (`source` at root, `element` in a collection).
     base_var: &'a str,
     /// The collection index variable for diagnostics, if inside a collection.
     index_var: Option<&'a str>,
     /// Whether `base_var` is owned, allowing uniquely-read values to move out.
     owned: bool,
+    /// The scope's alternative sets ([`crate::alt::groups`]): their nodes
+    /// decode into `alt_<position>` locals, combined after the scope's scalars.
+    alts: &'a [Vec<&'a SourceNode>],
 }
 
 /// The source paths read more than once within one scope: each scalar's
@@ -107,7 +118,14 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
         // Aliased elements: sort every physical element's items into the
         // logical fields the mapping reads, warning when a single-valued
         // logical node matched more than one item.
-        out.push_str("    source.demux(&mut |node, extra| {\n");
+        // `$root.Key` references are read before the items are sorted.
+        let (refs, refs_arg) = super::source::match_refs_binding(ctx.source, "source");
+        out.push_str(&refs);
+        if refs_arg.is_empty() {
+            out.push_str("    source.demux(&mut |node, extra| {\n");
+        } else {
+            let _ = writeln!(out, "    source.demux({refs_arg}, &mut |node, extra| {{");
+        }
         out.push_str("        diagnostics.push(MappingDiagnostic::new(\n");
         out.push_str("            Severity::Warning,\n");
         out.push_str("            \"MATCH_MULTIPLE\",\n");
@@ -123,16 +141,20 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
         &ctx.plan.root_clones,
         &ctx.plan.root_collections,
     );
+    let root_alts = crate::alt::groups(ctx.plan.root_scalars.iter().copied());
     let root_target = Target {
         struct_var: "main",
+        parent_var: None,
         base_var: "source",
         index_var: None,
         owned: true,
+        alts: &root_alts,
     };
     for node in &ctx.plan.root_scalars {
         out.push('\n');
         read_scalar_block(out, ctx, node, &ctx.source.root, 1, &root_target, &shared);
     }
+    combine_alternatives(out, 1, &root_target);
 
     // Clone checks run after every primary assign, so the canonical value they
     // compare against is final.
@@ -208,7 +230,7 @@ fn read_scalar_block(
         );
     } else {
         let _ = writeln!(out, "{pad}// {} -> {key}", node.id);
-        if let Some(codec) = ctx.codec_of(node) {
+        if let Some(codec) = ctx.translating_codec_of(node) {
             read_wire_checks(out, ctx, node, codec, key, start_struct, indent, target);
         }
         let binding = if node.fallbacks.is_empty() {
@@ -229,6 +251,25 @@ fn read_scalar_block(
         } else {
             format!("vec![{}]", fallback_chain_literal(node))
         };
+        // A placeholder stands for "nothing here": filtered before the
+        // fallbacks (so they are tried) and after them.
+        let placeholder_filter = node
+            .placeholder
+            .as_ref()
+            .and_then(|p| p.values())
+            .map(|values| {
+                let values: Vec<String> = values.iter().map(|v| format!("{v:?}")).collect();
+                format!(
+                    "value = value.filter(|v| !matches!(v.trim(), {}));",
+                    values.join(" | ")
+                )
+            });
+        if let Some(filter) = placeholder_filter
+            .as_ref()
+            .filter(|_| !node.fallbacks.is_empty())
+        {
+            let _ = writeln!(out, "{pad}{filter}");
+        }
         for fb_id in &node.fallbacks {
             let Some(fb) = ctx.ir.nodes.get(fb_id) else {
                 continue;
@@ -251,20 +292,40 @@ fn read_scalar_block(
             let _ = writeln!(out, "{pad}    }}");
             let _ = writeln!(out, "{pad}}}");
         }
+        if let Some(filter) = &placeholder_filter {
+            let _ = writeln!(out, "{pad}let {filter}");
+        }
     }
 
     // Decode + assign; only a required field gets the missing-value branch,
     // so optional fields emit no dead diagnostic code. A `default` fills the
-    // key instead, so a defaulted field is never missing.
+    // key instead, so a defaulted field is never missing. A lifted key decodes
+    // into a local first and is collapsed into its scope's field below.
+    let lhs = if node.lift.is_some() {
+        let _ = writeln!(out, "{pad}let mut lifted = None;");
+        "lifted".to_string()
+    } else if target.alts.iter().flatten().any(|n| n.id == node.id) {
+        let _ = writeln!(out, "{pad}let mut alt_{} = None;", node.position);
+        format!("alt_{}", node.position)
+    } else {
+        format!("{}.{}", target.struct_var, snake_case(key))
+    };
     let _ = writeln!(out, "{pad}if let Some(raw) = value {{");
-    decode_and_assign(out, node, ctx.codec_of(node), key, indent + 1, target);
+    read_length_check(out, ctx, node, key, target, &format!("{pad}    "));
+    decode_body(
+        out,
+        node,
+        ctx.translating_codec_of(node),
+        key,
+        &"    ".repeat(indent + 1),
+        &lhs,
+        target,
+    );
     if let Some(default) = &node.default {
         let _ = writeln!(out, "{pad}}} else {{");
         let _ = writeln!(
             out,
-            "{pad}    {}.{} = Some({});",
-            target.struct_var,
-            snake_case(key),
+            "{pad}    {lhs} = Some({});",
             typed_literal(node.source_type, default)
         );
     } else if node.required {
@@ -280,6 +341,126 @@ fn read_scalar_block(
         .index(target.index_var)
         .emit(out, &format!("{pad}    "));
     }
+    let _ = writeln!(out, "{pad}}}");
+    if let Some(lift) = node.lift {
+        collapse_lifted(out, node, key, lift, indent, target);
+    }
+}
+
+/// Emits, for each alternative set of the scope, the hand-over of the first
+/// `alt_<position>` with a value (file order) into the hub field, with the
+/// supplier's `when` values filled in (a list's first); a later alternative that
+/// also has a value is `MULTIPLE_SOURCES`.
+fn combine_alternatives(out: &mut String, indent: usize, target: &Target) {
+    let pad = "    ".repeat(indent);
+    for group in target.alts {
+        let key = group[0].canonical_key.as_deref().expect("keyed");
+        let field = format!("{}.{}", target.struct_var, snake_case(key));
+        let _ = writeln!(
+            out,
+            "\n{pad}// alternatives of {key}: the first with a value supplies it"
+        );
+        for (i, node) in group.iter().enumerate() {
+            let _ = writeln!(out, "{pad}if let Some(found) = alt_{} {{", node.position);
+            let _ = writeln!(out, "{pad}    if {field}.is_none() {{");
+            let _ = writeln!(out, "{pad}        {field} = Some(found);");
+            for (when_key, cond) in node.when.iter().flatten() {
+                // A value test is filled in (a list: its first value); a
+                // presence test says nothing to fill.
+                let Some(values) = cond.values().filter(|vs| !vs.is_empty()) else {
+                    continue;
+                };
+                let when_field = format!("{}.{}", target.struct_var, snake_case(when_key));
+                let _ = writeln!(out, "{pad}        if {when_field}.is_none() {{");
+                let _ = writeln!(
+                    out,
+                    "{pad}            {when_field} = Some(CompactString::from({:?}));",
+                    values[0]
+                );
+                let accepted: Vec<String> = values.iter().map(|v| format!("{v:?}")).collect();
+                let _ = writeln!(
+                    out,
+                    "{pad}        }} else if !matches!({when_field}.as_deref(), Some({})) {{",
+                    accepted.join(" | ")
+                );
+                let msg = format!(
+                    "format!(\"the value comes from `{}`, written when `{when_key}` is {}, but the document says `{{}}`\", {when_field}.as_deref().unwrap_or_default())",
+                    node.id,
+                    cond.display()
+                );
+                DiagSpec::new(
+                    "Severity::Warning",
+                    "VALUE_INCONSISTENT",
+                    node.id.as_str(),
+                    &msg,
+                )
+                .key(when_key)
+                .path(&node.source_path)
+                .index(target.index_var)
+                .emit(out, &format!("{pad}            "));
+                let _ = writeln!(out, "{pad}        }}");
+            }
+            if i > 0 {
+                let _ = writeln!(out, "{pad}    }} else {{");
+                let msg = format!(
+                    "\"`{key}` is also given here; the value of an earlier alternative is used\""
+                );
+                DiagSpec::new(
+                    "Severity::Warning",
+                    "MULTIPLE_SOURCES",
+                    node.id.as_str(),
+                    &msg,
+                )
+                .key(key)
+                .path(&node.source_path)
+                .index(target.index_var)
+                .emit(out, &format!("{pad}        "));
+            }
+            let _ = writeln!(out, "{pad}    }}");
+            let _ = writeln!(out, "{pad}}}");
+        }
+    }
+}
+
+/// Emits the collapse of one occurrence's `lifted` value into the field of the
+/// scope the key lives in: the first value fills it, a later different one is
+/// `SCOPE_DISAGREE`.
+fn collapse_lifted(
+    out: &mut String,
+    node: &SourceNode,
+    key: &str,
+    lift: Lift,
+    indent: usize,
+    target: &Target,
+) {
+    let pad = "    ".repeat(indent);
+    let scope_var = match lift.scope {
+        DerivationScope::Root => "main",
+        _ => target
+            .parent_var
+            .expect("E136 rejects a lift outside a collection before codegen"),
+    };
+    let field = format!("{scope_var}.{}", snake_case(key));
+    let (severity, consequence) = if lift.keep_first {
+        ("Severity::Warning", "the first is kept")
+    } else {
+        ("Severity::Error", "occurrences of one value must agree")
+    };
+    let _ = writeln!(out, "{pad}if let Some(found) = lifted {{");
+    let _ = writeln!(out, "{pad}    if let Some(first) = &{field} {{");
+    let _ = writeln!(out, "{pad}        if *first != found {{");
+    let msg = format!(
+        "format!(\"`{{found}}` differs from `{{first}}` read from an earlier occurrence; {consequence}\")"
+    );
+    DiagSpec::new(severity, "SCOPE_DISAGREE", node.id.as_str(), &msg)
+        .key(key)
+        .path(&node.source_path)
+        .index(target.index_var)
+        .emit(out, &format!("{pad}            "));
+    let _ = writeln!(out, "{pad}        }}");
+    let _ = writeln!(out, "{pad}    }} else {{");
+    let _ = writeln!(out, "{pad}        {field} = Some(found);");
+    let _ = writeln!(out, "{pad}    }}");
     let _ = writeln!(out, "{pad}}}");
 }
 
@@ -369,11 +550,12 @@ fn read_clone_check_block(
         node_value(ctx, node, start_struct, target, take)
     );
     let _ = writeln!(out, "{body}if let Some(raw) = value {{");
+    read_length_check(out, ctx, node, key, target, &format!("{body}    "));
     let _ = writeln!(out, "{body}    let mut clone_value = None;");
     decode_body(
         out,
         node,
-        ctx.codec_of(node),
+        ctx.translating_codec_of(node),
         key,
         &"    ".repeat(indent + 2),
         "clone_value",
@@ -399,6 +581,37 @@ fn read_clone_check_block(
     let _ = writeln!(out, "{body}        }}");
     let _ = writeln!(out, "{body}    }}");
     let _ = writeln!(out, "{body}}}");
+    let _ = writeln!(out, "{pad}}}");
+}
+
+/// Emits, inside `if let Some(raw) = value`, the `VALUE_TOO_LONG` warning for
+/// a `raw` longer than the node's `max_length` (the source is assumed valid,
+/// so an over-long value only warns).
+fn read_length_check(
+    out: &mut String,
+    ctx: &GenCtx,
+    node: &SourceNode,
+    key: &str,
+    target: &Target,
+    pad: &str,
+) {
+    let Some(limit) = ctx.max_length_of(node) else {
+        return;
+    };
+    let _ = writeln!(out, "{pad}if raw.chars().count() > {limit} {{");
+    let msg = format!(
+        "format!(\"value has {{}} characters, more than the {limit} the target allows\", raw.chars().count())"
+    );
+    DiagSpec::new(
+        "Severity::Warning",
+        "VALUE_TOO_LONG",
+        node.id.as_str(),
+        &msg,
+    )
+    .key(key)
+    .path(&node.source_path)
+    .index(target.index_var)
+    .emit(out, &format!("{pad}    "));
     let _ = writeln!(out, "{pad}}}");
 }
 
@@ -577,11 +790,14 @@ fn read_collection_block(
         );
     }
     let _ = writeln!(out, "{body}let mut {item} = {hub_item}::default();");
+    let child_alts = crate::alt::groups(children.iter().copied());
     let target = Target {
         struct_var: &item,
+        parent_var: Some(parent_hub),
         base_var: &elem,
         index_var: Some(&idx),
         owned,
+        alts: &child_alts,
     };
     for child in children {
         out.push('\n');
@@ -595,6 +811,7 @@ fn read_collection_block(
             &child_shared,
         );
     }
+    combine_alternatives(out, indent + 1, &target);
     for clone in clones {
         out.push('\n');
         read_clone_check_block(
@@ -696,23 +913,6 @@ fn node_value(
         target,
         take,
     )
-}
-
-/// Emits the decode + assign snippet, given `raw: String` is in scope inside
-/// `if let Some(raw) = value`.
-fn decode_and_assign(
-    out: &mut String,
-    node: &SourceNode,
-    codec: Option<&Codec>,
-    key: &str,
-    indent: usize,
-    target: &Target,
-) {
-    let pad = "    ".repeat(indent);
-    let field = snake_case(key);
-    let lhs = format!("{}.{field}", target.struct_var);
-
-    decode_body(out, node, codec, key, &pad, &lhs, target);
 }
 
 /// Emits the type-specific decode of `raw: String` into the typed `lhs` field.

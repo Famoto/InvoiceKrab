@@ -58,6 +58,12 @@
 //! the enclosing collection's scope and `$root.Key` a key of the invoice root
 //! ([`parse_derivation`]) — how every line amount gets the document currency.
 //!
+//! `canonical_key` takes the same prefixes: a node inside a collection with
+//! `canonical_key = "$root.Key"` maps a key of the enclosing scope (a
+//! [`Lift`]). Its occurrences are read into that one key, which they must
+//! agree on (`SCOPE_DISAGREE`), and the writer puts the key's value into
+//! every occurrence it writes.
+//!
 //! Every raw node also carries its declaration [`RawNode::position`]: a
 //! mapping's **declaration order is its schema order**. The parser records
 //! where each table appears, synthesis orders the source-struct fields by it,
@@ -68,6 +74,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+use crate::cond::Condition;
 use crate::multiple::MultiplePolicy;
 use crate::normalize::NormalizeOp;
 use crate::types::MappingType;
@@ -206,16 +213,28 @@ pub struct RawNode {
     /// `type`-less table this alone makes the table a structural node.
     pub ns: Option<String>,
     /// Structural selector on a collection or structural node: the node binds
-    /// only the occurrences of its element whose child values equal these.
+    /// only the occurrences of its element whose child values satisfy these.
     /// Keys are child element paths inside the element (`TypeCode`,
-    /// `TaxScheme.ID`, `ID.@schemeID`, `@schemeID`), values are the literal
-    /// text to match (trimmed, exact). Several logical nodes may bind one
+    /// `TaxScheme.ID`, `ID.@schemeID`, `@schemeID`), values are
+    /// [`Condition`]s: a literal text (trimmed, exact), a list of them, or
+    /// `{ present = … }`. Several logical nodes may bind one
     /// physical element with disjoint selectors; at most one may carry none
     /// and takes what no selector matched. Not valid on a scalar node (E091);
     /// every key must name a scalar declared beneath one of the element's
     /// logical nodes (E092); selectors on one element must be disjoint (E090).
     #[serde(rename = "match")]
-    pub match_: Option<BTreeMap<String, String>>,
+    pub match_: Option<BTreeMap<String, Condition>>,
+    /// Write condition on the hub: hub keys of the node's scope → the
+    /// [`Condition`]s they must satisfy for this node to write. Nodes sharing
+    /// a `canonical_key` with a `when` are *alternatives*: the first in file
+    /// order whose `when` holds writes the value, the one without `when` (at
+    /// most one) is the default. On a constant, the constant is written only
+    /// while the `when` holds. See [`crate::alt`].
+    pub when: Option<BTreeMap<String, Condition>>,
+    /// Written when the node has nothing to write, for an element the format
+    /// requires; reading it back gives no value. A list is written as its
+    /// first value, and every value in it reads back as none.
+    pub placeholder: Option<Condition>,
     /// Declaration position within the mapping document (0-based, document
     /// order). Assigned by the parser, never authored — a `position` key in the
     /// TOML is rejected like any unknown field. It drives the order of sibling
@@ -227,6 +246,26 @@ pub struct RawNode {
 }
 
 impl RawNode {
+    /// The effective repeated-value policy: the declared `multiple`, or
+    /// `join` when only `join_with` is given (a separator implies joining).
+    /// A lifted key's `multiple` says how its occurrences collapse instead
+    /// (see [`Lift`]), so its element is never repeated itself.
+    pub fn effective_multiple(&self) -> Option<MultiplePolicy> {
+        if self.is_lifted() {
+            return None;
+        }
+        self.multiple
+            .or_else(|| self.join_with.is_some().then_some(MultiplePolicy::Join))
+    }
+
+    /// Whether `canonical_key` names a key of an enclosing scope (`$root.Key`,
+    /// `$parent.Key`).
+    pub fn is_lifted(&self) -> bool {
+        self.canonical_key
+            .as_deref()
+            .is_some_and(|k| k.starts_with('$'))
+    }
+
     /// Whether this node is disabled (default `false`).
     pub fn is_disabled(&self) -> bool {
         self.disabled.unwrap_or(false)
@@ -259,6 +298,8 @@ impl RawNode {
             || self.default.is_some()
             || self.clone_of.is_some()
             || self.codec.is_some()
+            || self.when.is_some()
+            || self.placeholder.is_some()
     }
 
     /// Whether this is a structural node: no `type`, at least one of `ns`,
@@ -309,6 +350,11 @@ impl RawNode {
                 codec: child.codec.clone().or_else(|| self.codec.clone()),
                 ns: child.ns.clone().or_else(|| self.ns.clone()),
                 match_: child.match_.clone().or_else(|| self.match_.clone()),
+                when: child.when.clone().or_else(|| self.when.clone()),
+                placeholder: child
+                    .placeholder
+                    .clone()
+                    .or_else(|| self.placeholder.clone()),
                 position: self.position,
             }
         };
@@ -327,6 +373,18 @@ pub enum DerivationScope {
     Parent,
     /// The invoice root (`$root.Key`).
     Root,
+}
+
+/// A lifted key: a node inside a collection whose `canonical_key` names a key
+/// of an enclosing scope (`$root.Key` or `$parent.Key`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lift {
+    /// The scope the key lives in ([`DerivationScope::Root`] or
+    /// [`DerivationScope::Parent`]).
+    pub scope: DerivationScope,
+    /// `multiple = "first"`: occurrences that disagree keep the first value
+    /// with a warning instead of failing the read.
+    pub keep_first: bool,
 }
 
 /// A parsed `clone_of` value: the scope to look in and the canonical key.
@@ -392,8 +450,11 @@ pub struct SourceNode {
     pub source_path: String,
     /// Value type.
     pub source_type: MappingType,
-    /// Target canonical field, or `None` for a fallback-only helper node.
+    /// Target canonical field, or `None` for a fallback-only helper node. A
+    /// lifted key's scope prefix is stripped into [`SourceNode::lift`].
     pub canonical_key: Option<String>,
+    /// Set when `canonical_key` names a key of an enclosing scope.
+    pub lift: Option<Lift>,
     /// Whether the value is required: the node must have a deterministic write
     /// route (its hub key filled by the source, a `constant`, a resolved
     /// `clone_of`, or a `match` discriminator). A required scalar missing at
@@ -426,6 +487,13 @@ pub struct SourceNode {
     pub ns: Option<String>,
     /// Lexical codec id, if any (validated against the codec table, E084/E085).
     pub codec: Option<String>,
+    /// Write condition on the hub (see [`RawNode::when`]).
+    pub when: Option<BTreeMap<String, Condition>>,
+    /// Written when the node has nothing to write; reads back as no value
+    /// (see [`RawNode::placeholder`]).
+    pub placeholder: Option<Condition>,
+    /// Declaration position in the mapping document (file order).
+    pub position: usize,
 }
 
 impl SourceNode {
@@ -512,8 +580,8 @@ mod tests {
         assert!(n.has_active_field());
         assert!(!n.is_always_present());
         let sel = n.match_.as_ref().unwrap();
-        assert_eq!(sel["TypeCode"], "130");
-        assert_eq!(sel["ID.@schemeID"], "X");
+        assert_eq!(sel["TypeCode"], "130".into());
+        assert_eq!(sel["ID.@schemeID"], "X".into());
         let aliased: RawNode = toml::from_str(r#"xml = "AdditionalReferencedDocument""#).unwrap();
         assert!(aliased.is_structural(), "xml alone aliases an element");
         let coll: RawNode =
@@ -532,7 +600,7 @@ mod tests {
         let override_: RawNode = toml::from_str(r#"match = { "TypeCode" = "51" }"#).unwrap();
         assert_eq!(
             base.merged_with(&override_).match_.unwrap()["TypeCode"],
-            "51",
+            "51".into(),
             "child wins"
         );
     }

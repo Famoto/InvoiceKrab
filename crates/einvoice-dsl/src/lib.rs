@@ -18,9 +18,11 @@
 //!              ─► derive hub ─► validate ─► MappingIr ─► reports / codegen
 //! ```
 
+pub mod alt;
 pub mod codec;
 pub mod codegen;
 pub mod compile;
+pub mod cond;
 pub mod contract;
 pub mod derive;
 pub mod error;

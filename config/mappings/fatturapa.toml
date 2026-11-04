@@ -21,9 +21,10 @@
 # What EN 16931 does not carry is pinned, and documented where it is:
 #   * the transmission data (`DatiTrasmissione`): the transmitter is the seller
 #     (its VAT id is written there too), the transmission counter
-#     `ProgressivoInvio` is `00001` and the recipient code `CodiceDestinatario`
-#     is `0000000` (delivery through the recipient's fiscal drawer): an
-#     intermediary that transmits the file sets its own;
+#     `ProgressivoInvio` is `00001`, and the recipient code `CodiceDestinatario`
+#     is the buyer's SdI code or `0000000` (delivery by certified mail, or
+#     through the recipient's fiscal drawer): an intermediary that transmits
+#     the file sets its own;
 #   * the seller's tax regime (`RegimeFiscale`) is the ordinary regime `RF01`;
 #   * the payment condition (`CondizioniPagamento`) is a full payment `TP02`.
 # FatturaPA makes more terms mandatory than EN 16931 — the seller's and the
@@ -44,6 +45,12 @@ root_ns = "p"
 
 [meta.namespaces]
 p = "http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2"
+
+# A buyer address that is neither an SdI recipient code nor a certified
+# mailbox (a Peppol endpoint, say) has no place in FatturaPA: it is dropped
+# with a NO_TARGET warning, and CodiceDestinatario keeps 0000000.
+[meta.defaults]
+no_target = "warn"
 
 # Document identity: FatturaPA carries no EN 16931 CustomizationID. Besides its
 # root (`FatturaElettronica` in the v1.2 namespace), a document identifies
@@ -88,9 +95,23 @@ constant = "00001"
 type = "string"
 constant = "FPR12"
 
+# BT-49 buyer electronic address: an SdI recipient code (scheme 0201, a public
+# administration's office code, or 0205, a business's code) is the
+# CodiceDestinatario; a certified mailbox (scheme EM) is the PECDestinatario,
+# and CodiceDestinatario is then 0000000, as it is without an address (or with
+# an address of another scheme, see `[meta.defaults]`). Read back, 0000000 and
+# XXXXXXX (SdI's code for a foreign recipient) are no address.
 [FatturaElettronica.FatturaElettronicaHeader.DatiTrasmissione.CodiceDestinatario]
-type = "string"
-constant = "0000000"
+type = "identifier"
+canonical_key = "BuyerElectronicAddress"
+when = { BuyerElectronicAddressScheme = ["0205", "0201"] }
+placeholder = ["0000000", "XXXXXXX"]
+codec = "fatturapa-codice-destinatario"
+
+[FatturaElettronica.FatturaElettronicaHeader.DatiTrasmissione.PECDestinatario]
+type = "identifier"
+canonical_key = "BuyerElectronicAddress"
+when = { BuyerElectronicAddressScheme = "EM" }
 
 # BT-31 seller VAT identifier, BT-27 seller name.
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.DatiAnagrafici.IdFiscaleIVA]
@@ -103,7 +124,7 @@ normalize = ["trim"]
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.DatiAnagrafici.Anagrafica.Denominazione]
 type = "string"
 canonical_key = "SellerName"
-codec = "fatturapa-text"
+codec = "fatturapa-text-80"
 required = true
 
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.DatiAnagrafici.RegimeFiscale]
@@ -114,7 +135,7 @@ constant = "RF01"
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.Sede.Indirizzo]
 type = "string"
 canonical_key = "SellerAddressLine1"
-codec = "fatturapa-text"
+codec = "fatturapa-text-60"
 required = true
 
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.Sede.CAP]
@@ -126,7 +147,7 @@ required = true
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.Sede.Comune]
 type = "string"
 canonical_key = "SellerCity"
-codec = "fatturapa-text"
+codec = "fatturapa-text-60"
 required = true
 
 [FatturaElettronica.FatturaElettronicaHeader.CedentePrestatore.Sede.Nazione]
@@ -145,14 +166,14 @@ normalize = ["trim"]
 [FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.DatiAnagrafici.Anagrafica.Denominazione]
 type = "string"
 canonical_key = "BuyerName"
-codec = "fatturapa-text"
+codec = "fatturapa-text-80"
 required = true
 
 # BG-8 buyer postal address.
 [FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.Sede.Indirizzo]
 type = "string"
 canonical_key = "BuyerAddressLine1"
-codec = "fatturapa-text"
+codec = "fatturapa-text-60"
 required = true
 
 [FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.Sede.CAP]
@@ -164,7 +185,7 @@ required = true
 [FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.Sede.Comune]
 type = "string"
 canonical_key = "BuyerCity"
-codec = "fatturapa-text"
+codec = "fatturapa-text-60"
 required = true
 
 [FatturaElettronica.FatturaElettronicaHeader.CessionarioCommittente.Sede.Nazione]
@@ -209,7 +230,7 @@ codec = "fatturapa-amount-2"
 [FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Causale]
 type = "string"
 canonical_key = "InvoiceNote"
-codec = "fatturapa-text"
+codec = "fatturapa-text-200"
 
 # Document references: BT-13 purchase order, BT-12 contract, BT-25/26
 # preceding invoice.
@@ -247,7 +268,7 @@ required = true
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.Descrizione]
 type = "string"
 canonical_key = "ItemName"
-codec = "fatturapa-text"
+codec = "fatturapa-text-1000"
 required = true
 
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.Quantita]
@@ -348,7 +369,7 @@ required = true
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DatiRiepilogo.RiferimentoNormativo]
 type = "string"
 canonical_key = "VatExemptionReasonText"
-codec = "fatturapa-text"
+codec = "fatturapa-text-100"
 
 # ===========================================================================
 # BODY — payment (DatiPagamento, BG-16/17)
@@ -357,20 +378,26 @@ codec = "fatturapa-text"
 type = "string"
 constant = "TP02"
 
+# One DettaglioPagamento per credit transfer account; the payment means, due
+# date and amount are the invoice's, so every DettaglioPagamento states them.
+[FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento]
+type = "collection"
+canonical_key = "CreditTransfers"
+
 [FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento.ModalitaPagamento]
 type = "string"
-canonical_key = "PaymentMeansTypeCode"
+canonical_key = "$root.PaymentMeansTypeCode"
 codec = "fatturapa-modalita-pagamento"
 required = true
 
 [FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento.DataScadenzaPagamento]
 type = "date"
-canonical_key = "DueDate"
+canonical_key = "$root.DueDate"
 
 # BT-115 amount due for payment.
 [FatturaElettronica.FatturaElettronicaBody.DatiPagamento.DettaglioPagamento.ImportoPagamento]
 type = "decimal"
-canonical_key = "PayableAmount"
+canonical_key = "$root.PayableAmount"
 codec = "fatturapa-amount-2"
 required = true
 

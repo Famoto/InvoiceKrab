@@ -1425,7 +1425,10 @@ mod tests {
         assert!(!out.contains("self.xmlns"), "{out}");
         // Declaration + qualified root (the default namespace leaves it bare).
         assert!(
-            out.contains("String::from(\"<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\"?>\\n\")"),
+            out.contains("String::with_capacity(capacity);")
+                && out.contains(
+                    "out.push_str(\"<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\"?>\\n\");"
+                ),
             "{out}"
         );
         assert!(
@@ -1791,6 +1794,86 @@ mod tests {
     }
 
     #[test]
+    fn test_alternatives_choose_on_write_and_combine_on_read() {
+        let src = "[meta]\ndoc_format = \"x\"\nformat_version = \"1\"\nmapping_version = \"1\"\n\
+                   canonical_model = \"c:1\"\nroot = \"Doc\"\n\
+                   [Doc.S]\ntype = \"string\"\ncanonical_key = \"S\"\n\
+                   [Doc.Code]\ntype = \"identifier\"\ncanonical_key = \"Addr\"\n\
+                   when = { S = [\"A\", \"B\"] }\nplaceholder = \"0000000\"\n\
+                   [Doc.Mail]\ntype = \"identifier\"\ncanonical_key = \"Addr\"\nwhen = { S = \"M\" }\n\
+                   [Doc.Flag]\ntype = \"string\"\nconstant = \"1\"\nwhen = { S = { present = true } }\n";
+        let codecs = CodecTable::new();
+        let (ir, source, diags) = build_ir_with(&[parse_mapping(src).expect("parses")], &codecs);
+        assert!(diags.is_empty(), "{diags:?}");
+        let out = generate_spoke(&ir, &source, &codecs, "super::hub");
+        // Write: decided up front, NO_TARGET without a default, guarded blocks.
+        assert!(
+            out.contains(
+                "let choice_1: usize = if matches!(main.s.as_deref(), Some(\"A\" | \"B\")) { 0 } \
+                 else if main.s.as_deref() == Some(\"M\") { 1 } else { usize::MAX };"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("if choice_1 == usize::MAX && main.addr.is_some() {"));
+        assert!(out.contains("\"NO_TARGET\""));
+        assert!(out.contains("if choice_1 == 1 {"));
+        assert!(out.contains("let when_3: bool = main.s.is_some();"));
+        assert!(out.contains("if when_3 {"));
+        // Read: placeholder is no value; first with a value wins, fills `when`.
+        assert!(out.contains("let value = value.filter(|v| !matches!(v.trim(), \"0000000\"));"));
+        assert!(out.contains("main.s = Some(CompactString::from(\"M\"));"));
+        assert!(out.contains("\"MULTIPLE_SOURCES\""));
+    }
+
+    #[test]
+    fn test_codec_settings_round_and_limit_in_generated_code() {
+        let codecs: CodecTable = crate::codec::parse_codecs(
+            "[codec.amt]\nfor_type = \"decimal\"\nfraction_digits = [2, 2]\n\
+             [codec.amt-down]\nfor_type = \"decimal\"\nfraction_digits = [2, 2]\nrounding = \"down\"\n\
+             [codec.text-5]\nfor_type = \"string\"\nmax_length = 5\n",
+        )
+        .expect("codecs parse")
+        .into_iter()
+        .map(|c| (c.id.clone(), c))
+        .collect();
+        let gen_with = |defaults: &str| {
+            let src = format!(
+                "[meta]\ndoc_format = \"x\"\nformat_version = \"1\"\nmapping_version = \"1\"\n\
+                 canonical_model = \"c:1\"\nroot = \"Doc\"\n{defaults}\n\
+                 [Doc.A]\ntype = \"decimal\"\ncanonical_key = \"A\"\ncodec = \"amt\"\n\
+                 [Doc.B]\ntype = \"decimal\"\ncanonical_key = \"B\"\ncodec = \"amt-down\"\n\
+                 [Doc.C]\ntype = \"string\"\ncanonical_key = \"C\"\ncodec = \"text-5\"\n"
+            );
+            let (ir, source, diags) =
+                build_ir_with(&[parse_mapping(&src).expect("parses")], &codecs);
+            assert!(diags.is_empty(), "{diags:?}");
+            generate_spoke(&ir, &source, &codecs, "super::hub")
+        };
+        let plain = gen_with("");
+        assert!(
+            plain.contains("codec::format_fraction(&value.to_string(), 2, 2)"),
+            "no rounding by default: {plain}"
+        );
+        assert!(
+            plain.contains("RoundingStrategy::ToZero"),
+            "codec's own mode"
+        );
+        assert!(
+            plain.contains("rendered.chars().count() > 5"),
+            "write limit"
+        );
+        assert!(plain.contains("raw.chars().count() > 5"), "read warning");
+        let defaulted = gen_with("[meta.defaults]\nrounding = \"half_even\"\n");
+        assert!(
+            defaulted.contains(
+                "round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointNearestEven)"
+            ),
+            "mapping default: {defaulted}"
+        );
+        assert!(defaulted.contains("RoundingStrategy::ToZero"), "codec wins");
+    }
+
+    #[test]
     fn test_split_codec_synthesizes_its_two_part_elements() {
         let (ir, source, codecs) = fatturapa_like();
         let out = generate_spoke(&ir, &source, &codecs, "super::hub");
@@ -2056,6 +2139,78 @@ mod tests {
             "{out}"
         );
         syn::parse_file(&out).expect("valid Rust");
+    }
+
+    #[test]
+    fn test_mux_list_discriminator_replaces_value_outside_list() {
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.Means]
+            xml = "PaymentMeans"
+            match = { Code = ["50", "130"] }
+
+            [Invoice.Means.Code]
+            type = "string"
+            canonical_key = "MeansCode"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
+        // A slot value outside the list (`999`) would not demux back in.
+        assert!(
+            out.contains(
+                "if !slot.as_deref().is_some_and(|v| matches!(v.trim(), \"50\" | \"130\")) \
+                 { *slot = Some(CompactString::from(\"50\")); }"
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn test_read_placeholder_primary_falls_back() {
+        let (ir, _, source) = compile(
+            r#"
+            [Invoice.Code]
+            type = "identifier"
+            canonical_key = "Addr"
+            placeholder = "0000000"
+            fallbacks = ["Invoice.Mail"]
+
+            [Invoice.Mail]
+            type = "identifier"
+            "#,
+        );
+        let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
+        let filter = "value = value.filter(|v| !matches!(v.trim(), \"0000000\"));";
+        let first = out
+            .find(filter)
+            .expect("placeholder filtered before fallbacks");
+        let fallback = out.find("if value.is_none() {").expect("fallback");
+        assert!(first < fallback, "{out}");
+        assert!(
+            out.contains(&format!("let {filter}")),
+            "fallback values too: {out}"
+        );
+    }
+
+    #[test]
+    fn test_read_clone_over_length_warns() {
+        let codecs: CodecTable =
+            crate::codec::parse_codecs("[codec.short]\nfor_type = \"string\"\nmax_length = 3\n")
+                .expect("codecs")
+                .into_iter()
+                .map(|c| (c.id.clone(), c))
+                .collect();
+        let src = "[meta]\ndoc_format = \"f\"\nformat_version = \"1\"\nmapping_version = \"1\"\n\
+                   canonical_model = \"c:1\"\nroot = \"Invoice\"\n\
+                   [Invoice.Name]\ntype = \"string\"\ncanonical_key = \"Name\"\n\
+                   [Invoice.Copy]\ntype = \"string\"\nclone_of = \"Name\"\ncodec = \"short\"\n";
+        let (ir, source, diags) = build_ir_with(&[parse_mapping(src).expect("parses")], &codecs);
+        assert!(diags.is_empty(), "{diags:?}");
+        let out = generate_spoke(&ir, &source, &codecs, "super::hub");
+        let clone = &out[out.find("Invoice.Copy: copy of Name").expect("clone block")..];
+        let clone = &clone[..clone.find("CLONE_MISMATCH").expect("compare")];
+        assert!(clone.contains("if raw.chars().count() > 3 {"), "{clone}");
+        assert!(clone.contains("\"VALUE_TOO_LONG\""), "{clone}");
     }
 
     #[test]

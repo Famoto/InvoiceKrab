@@ -25,6 +25,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::codec::{CodecTable, Pattern};
+use crate::cond::Condition;
 use crate::error::{Diagnostic, Severity};
 use crate::ident::{RESERVED_TYPE_NAMES, escape_keyword, is_root_type_name, is_xml_name};
 use crate::node::{NodeId, RawNode, Scope};
@@ -257,6 +258,7 @@ pub fn synthesize_source_model_with(
     }
 
     check_selectors(&mut structs, &ctx, &mut diags);
+    let match_refs = resolve_match_refs(&structs, &ctx, &source_paths, &collections, &mut diags);
 
     (
         SourceModelMeta {
@@ -267,6 +269,7 @@ pub fn synthesize_source_model_with(
                 root_prefix: ns.root_prefix.clone(),
                 declared: ns.declared.clone(),
             },
+            match_refs,
         },
         source_paths,
         diags,
@@ -461,8 +464,9 @@ struct Alias {
     physical: NodeId,
     /// XML local name of the physical element.
     xml: String,
-    /// The raw selector (child paths → text), `None` for the default bucket.
-    selector: Option<BTreeMap<String, String>>,
+    /// The raw selector (child paths → conditions), `None` for the default
+    /// bucket.
+    selector: Option<BTreeMap<String, Condition>>,
     /// Declaration position of the logical node (orders siblings for E090).
     position: usize,
 }
@@ -803,7 +807,7 @@ fn insert_node(
     // `multiple` opts a plain scalar element leaf into a `Vec<String>` source
     // field. Every other node shape either cannot repeat in XML (attributes,
     // element text) or already repeats structurally (collections).
-    let multi = node.multiple.is_some();
+    let multi = node.effective_multiple().is_some();
 
     // Collection node: a repeated struct field; children populate the item struct.
     if ty == MappingType::Collection {
@@ -1236,7 +1240,16 @@ fn check_selectors(
         }
         let mut resolved = Vec::new();
         for (key, value) in raw {
-            match resolve_selector_key(structs, &item, key) {
+            if let Some(problem) = value.problem() {
+                diags.push(diag(
+                    "E092",
+                    Some(&node),
+                    format!("`match` key `{key}` on `{node}`: {problem}"),
+                ));
+                continue;
+            }
+            let presence = matches!(value, Condition::Present(_));
+            match resolve_selector_key(structs, &item, key, presence) {
                 Ok(path) => resolved.push((path, value.clone())),
                 Err(reason) => diags.push(diag(
                     "E092",
@@ -1253,15 +1266,118 @@ fn check_selectors(
     }
 }
 
+/// Resolves every `$root.Key` reference in a `match` selector to the
+/// root-struct path of the node that maps `Key`. `E130`: the reference is not
+/// `$root.Key`, or no root-level node reads `Key` from one path of its own;
+/// `E131`: that path lies beneath a repeated or `match`ed element, whose items
+/// are not sorted yet when the reference is read.
+fn resolve_match_refs(
+    structs: &BTreeMap<String, StructMeta>,
+    ctx: &Ctx,
+    source_paths: &BTreeMap<NodeId, String>,
+    collections: &BTreeMap<NodeId, MappingType>,
+    diags: &mut Vec<Diagnostic>,
+) -> BTreeMap<String, String> {
+    let mut refs = BTreeMap::new();
+    for (node, alias) in &ctx.aliases.logical {
+        for cond in alias.selector.iter().flat_map(|s| s.values()) {
+            let Some(reference) = cond.reference() else {
+                continue;
+            };
+            if refs.contains_key(reference) {
+                continue;
+            }
+            match resolve_match_ref(structs, ctx, source_paths, collections, reference) {
+                Ok(path) => {
+                    refs.insert(reference.to_string(), path);
+                }
+                Err((code, why)) => diags.push(diag(
+                    code,
+                    Some(node),
+                    format!("`match` on `{node}` references `{reference}`: {why}"),
+                )),
+            }
+        }
+    }
+    refs
+}
+
+/// One reference of [`resolve_match_refs`]: the path, or the code and reason.
+fn resolve_match_ref(
+    structs: &BTreeMap<String, StructMeta>,
+    ctx: &Ctx,
+    source_paths: &BTreeMap<NodeId, String>,
+    collections: &BTreeMap<NodeId, MappingType>,
+    reference: &str,
+) -> Result<String, (&'static str, String)> {
+    let key = reference
+        .strip_prefix("$root.")
+        .filter(|k| !k.is_empty() && !k.contains('.'))
+        .ok_or((
+            "E130",
+            "a `match` reference has the form `$root.Key`".to_string(),
+        ))?;
+    let mut mapping = ctx.active.iter().filter(|(id, n)| {
+        n.ty.is_some()
+            && n.clone_of.is_none()
+            && n.canonical_key.as_deref() == Some(key)
+            && id.nearest_collection_scope(|a| collections.contains_key(a)) == Scope::Root
+    });
+    let (id, node) = mapping
+        .next()
+        .ok_or(("E130", format!("no root-level node maps `{key}`")))?;
+    if let Some((other, _)) = mapping.next() {
+        return Err((
+            "E130",
+            format!("`{id}` and `{other}` both map `{key}`; a reference reads one path"),
+        ));
+    }
+    if node.fallbacks.as_ref().is_some_and(|f| !f.is_empty()) {
+        return Err((
+            "E130",
+            format!("`{id}` has fallbacks; a reference reads one path"),
+        ));
+    }
+    let path = source_paths
+        .get(id)
+        .ok_or(("E130", format!("`{id}` has no source path")))?;
+    let mut current = ctx.root;
+    for seg in path.split('.') {
+        let Some(meta) = structs.get(current) else {
+            break;
+        };
+        let Some(field) = meta.fields.get(seg) else {
+            break;
+        };
+        let aliased = field.is_logical()
+            || meta
+                .fields
+                .values()
+                .any(|f| f.alias.as_ref().is_some_and(|a| a.physical == seg));
+        if field.repeated || aliased {
+            return Err((
+                "E131",
+                format!(
+                    "`{id}` lies beneath the repeated or `match`ed element `{seg}`; a \
+                     reference is read before those items are sorted"
+                ),
+            ));
+        }
+        if let FieldType::Struct(inner) = &field.ty {
+            current = inner;
+        }
+    }
+    Ok(path.clone())
+}
+
 /// Whether two logical nodes of one element could claim the same item: both
-/// without a selector, or neither selector naming a key the other gives a
-/// different value.
+/// without a selector, or no key on which their conditions exclude each other.
 fn selectors_overlap(a: &Alias, b: &Alias) -> bool {
     match (&a.selector, &b.selector) {
         (None, None) => true,
         (Some(a), Some(b)) => !a
             .iter()
-            .any(|(key, value)| b.get(key).is_some_and(|other| other != value)),
+            .any(|(key, cond)| b.get(key).is_some_and(|other| cond.excludes(other))),
         _ => false,
     }
 }
@@ -1270,11 +1386,13 @@ fn selectors_overlap(a: &Alias, b: &Alias) -> bool {
 /// `@schemeID`, `$text`) against the item struct to the dotted field path of
 /// the scalar it names. Segments are matched by XML binding, so attributes and
 /// text need no snake-casing by the author; a valued container resolves to its
-/// `value`.
+/// `value`. A `presence` test may name any element, repeated or with children,
+/// since it only asks whether one exists.
 fn resolve_selector_key(
     structs: &BTreeMap<String, StructMeta>,
     item: &str,
     key: &str,
+    presence: bool,
 ) -> Result<String, String> {
     if key.is_empty() {
         return Err("the key is empty".to_string());
@@ -1296,12 +1414,16 @@ fn resolve_selector_key(
                 "`{seg}` is not declared beneath the element by any of its logical nodes"
             ));
         };
+        path.push(name.clone());
+        if presence && is_last {
+            return Ok(path.join("."));
+        }
         if field.repeated {
             return Err(format!(
-                "`{seg}` repeats; a selector compares a single value"
+                "`{seg}` repeats; a selector compares a single value (`{{ present = … }}` \
+                 may test any element)"
             ));
         }
-        path.push(name.clone());
         match &field.ty {
             FieldType::Scalar if is_last => return Ok(path.join(".")),
             FieldType::Scalar => {
@@ -2281,7 +2403,7 @@ mod tests {
         assert_eq!(binding.node, "Invoice.Agreement.TenderDocument");
         assert_eq!(
             binding.selector,
-            [("type_code".to_string(), "50".to_string())],
+            [("type_code".to_string(), Condition::from("50"))],
             "selector keys are resolved to item field paths"
         );
 
@@ -2289,7 +2411,7 @@ mod tests {
         assert!(supporting.repeated && supporting.is_logical());
         assert_eq!(
             supporting.alias.as_ref().unwrap().selector,
-            [("type_code".to_string(), "916".to_string())]
+            [("type_code".to_string(), Condition::from("916"))]
         );
 
         // The item struct is the union of every logical node's children.
@@ -2384,9 +2506,9 @@ mod tests {
         assert_eq!(
             object.selector,
             [
-                ("document_type_code".to_string(), "130".to_string()),
-                ("id.scheme_id".to_string(), "ABZ".to_string()),
-                ("scheme.id".to_string(), "S".to_string()),
+                ("document_type_code".to_string(), Condition::from("130")),
+                ("id.scheme_id".to_string(), Condition::from("ABZ")),
+                ("scheme.id".to_string(), Condition::from("S")),
             ]
         );
         // `ID` became a valued container because of the attribute declared
@@ -2426,7 +2548,7 @@ mod tests {
         assert!(logical.is_logical() && !logical.repeated);
         assert_eq!(
             logical.alias.as_ref().unwrap().selector,
-            [("tax_scheme.id".to_string(), "VAT".to_string())]
+            [("tax_scheme.id".to_string(), Condition::from("VAT"))]
         );
         assert_eq!(
             paths[&NodeId::new("Invoice.Party.PartyTaxScheme.CompanyID")],

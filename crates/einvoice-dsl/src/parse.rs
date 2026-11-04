@@ -15,8 +15,8 @@
 //! - The full dotted table name is the node id (`[Invoice.ID]` → `Invoice.ID`).
 //! - A table may be *both* a node and a container (a collection node with child
 //!   nodes). Own scalar/array fields define the node; sub-tables recurse.
-//! - A table's `match` key is its selector (an inline table), never a child
-//!   element: `match` is a reserved node field.
+//! - A table's `match` and `when` keys are its conditions (inline tables),
+//!   never child elements: both are reserved node fields.
 //! - Unknown fields inside a node are rejected (E001).
 //! - Stray top-level scalar keys (outside `[meta]` and any table) are rejected.
 //! - Every node records its declaration [`RawNode::position`]: nodes are
@@ -34,9 +34,9 @@ use crate::error::ConfigError;
 use crate::meta::MappingMeta;
 use crate::node::{NodeId, RawNode};
 
-/// The one node field whose value is a table: the `match` selector. A table
-/// under this key is the node's own field, not a child element.
-const MATCH_FIELD: &str = "match";
+/// The node fields written as inline tables (conditions), which TOML does not
+/// tell apart from sub-tables: the keys are reserved, never child elements.
+const TABLE_FIELDS: [&str; 2] = ["match", "when"];
 
 /// A parsed mapping document: its `[meta]` and its raw nodes (pre-resolution).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,10 +119,10 @@ fn flatten(
 
     for (key, value) in table {
         match value {
-            // A `match` selector is written as an inline table, which TOML
-            // does not distinguish from a sub-table: the key is reserved for
-            // the node field, never a child element.
-            Value::Table(child) if key != MATCH_FIELD => {
+            // A `match` or `when` condition is written as an inline table,
+            // which TOML does not distinguish from a sub-table: the key is
+            // reserved for the node field, never a child element.
+            Value::Table(child) if !TABLE_FIELDS.contains(&key.as_str()) => {
                 children.push((NodeId::new(format!("{id}.{key}")), child));
             }
             other => {
@@ -184,8 +184,8 @@ mod tests {
         .expect("parses");
         let node = &parsed.nodes[&NodeId::new("Invoice.Ref")];
         let selector = node.match_.as_ref().expect("match is a node field");
-        assert_eq!(selector["DocumentTypeCode"], "130");
-        assert_eq!(selector["ID.@schemeID"], "ABZ");
+        assert_eq!(selector["DocumentTypeCode"], "130".into());
+        assert_eq!(selector["ID.@schemeID"], "ABZ".into());
         assert!(
             !parsed.nodes.contains_key(&NodeId::new("Invoice.Ref.match")),
             "the selector table is not a child node"

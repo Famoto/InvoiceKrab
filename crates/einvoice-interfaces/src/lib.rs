@@ -90,11 +90,30 @@ pub enum EngineError {
         error: identity::IdentityError,
     },
     /// Source XML could not be deserialized into the typed model.
-    #[error("source deserialization failed: {0}")]
+    #[error("source deserialization failed: {}", deserialize_problem(.0))]
     Deserialize(#[from] quick_xml::DeError),
     /// The produced model could not be serialized back to XML.
     #[error("target serialization failed: {0}")]
     Serialize(#[from] quick_xml::SeError),
+}
+
+/// A deserialization error in the document's terms: serde's ``duplicate field
+/// `X` `` is an element the mapping reads once and the document repeats (#50).
+fn deserialize_problem(error: &quick_xml::DeError) -> String {
+    let repeated = match error {
+        quick_xml::DeError::Custom(message) => message
+            .strip_prefix("duplicate field `")
+            .and_then(|rest| rest.strip_suffix('`')),
+        _ => None,
+    };
+    match repeated {
+        Some(element) => format!(
+            "element `{element}` occurs more than once, but the mapping reads it as a single \
+             element (a document holding several invoices, or a repeated element the mapping \
+             does not declare as a collection)"
+        ),
+        None => error.to_string(),
+    }
 }
 
 /// The transformation engine. Stateless and cheap to construct; all mapping logic
@@ -157,7 +176,23 @@ impl Engine {
     pub fn from_hub(
         &self,
         spoke: Spoke,
+        hub: MainKey,
+    ) -> Result<MappingResult<String>, EngineError> {
+        self.from_hub_with_capacity(spoke, hub, 0)
+    }
+
+    /// [`Engine::from_hub`] writing into a buffer reserved for `capacity`
+    /// bytes, so a large output is not built by repeated doubling. The hint
+    /// only sizes the first allocation; the output may be shorter or longer.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::from_hub`].
+    pub fn from_hub_with_capacity(
+        &self,
+        spoke: Spoke,
         mut hub: MainKey,
+        capacity: usize,
     ) -> Result<MappingResult<String>, EngineError> {
         // EN 16931 totals the hub lacks are computed by their calculation
         // rules (`config/derivations.toml`) before the writer runs.
@@ -202,7 +237,7 @@ impl Engine {
                 d
             },
         ));
-        let mut written = generated::write(spoke, hub)?;
+        let mut written = generated::write(spoke, hub, capacity)?;
         if !checks.is_empty() {
             written.diagnostics.splice(0..0, checks);
         }
@@ -227,11 +262,18 @@ impl Engine {
         let Some(hub) = read.value else {
             return Ok(MappingResult::new(None, read.diagnostics));
         };
-        let written = self.from_hub(to, hub)?;
+        let written = self.from_hub_with_capacity(to, hub, output_hint(bytes.len()))?;
         let mut diagnostics = read.diagnostics;
         diagnostics.extend(written.diagnostics);
         Ok(MappingResult::new(written.value, diagnostics))
     }
+}
+
+/// The output buffer to reserve for a document read from `input_len` bytes:
+/// 1.5× covers the largest measured growth (Factur-X from UBL, about 1.37×).
+// ponytail: one ratio for every route; per-spoke ratios if a route shrinks a lot.
+pub(crate) fn output_hint(input_len: usize) -> usize {
+    input_len.saturating_add(input_len / 2)
 }
 
 #[cfg(test)]

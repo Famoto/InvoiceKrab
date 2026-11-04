@@ -104,5 +104,8 @@ required = true
 [Invoice.AccountingCustomerParty.Party.PostalAddress.PostalZone]
 required = true
 
+[Invoice.PaymentMeans]
+required = true
+
 [Invoice.PaymentMeans.PaymentMeansCode]
 required = true

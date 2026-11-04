@@ -854,11 +854,11 @@ const KNOWN_ISSUES: &[KnownIssue] = &[
     KnownIssue {
         matches: &[
             "no transform checked",
-            "source deserialization failed: duplicate field",
+            "occurs more than once, but the mapping reads it as a single element",
         ],
-        why: "the UBL readers bind PaymentMeans, TaxTotal, BillingReference and \
-              CommodityClassification as single elements, so a document repeating one \
-              (as UBL and EN 16931 allow) is not read at all",
+        why: "the UBL readers bind BillingReference and CommodityClassification as \
+              single elements, so a document repeating one (as UBL and EN 16931 allow) is \
+              not read at all",
         corpus_only: true,
         doc_allowances: false,
     },
@@ -1111,4 +1111,245 @@ fn test_latin1_transliteration_matches_only_where_characters_left_latin1() {
         !agrees(name, &umlaut, &["Muller".to_string()], true),
         "Latin-1 must survive"
     );
+}
+
+#[test]
+fn test_fatturapa_refuses_a_seller_name_over_its_length_limit() {
+    // Denominazione is a String80LatinType: 80 characters write, 81 are
+    // refused (VALUE_TOO_LONG), never cut.
+    let sample =
+        std::fs::read_to_string(workspace().join("testfiles/en16931-full-ubl.xml")).unwrap();
+    let named = |n: usize| {
+        sample.replace(
+            "<cbc:RegistrationName>Hafenkran Service GmbH</cbc:RegistrationName>",
+            &format!(
+                "<cbc:RegistrationName>{}</cbc:RegistrationName>",
+                "x".repeat(n)
+            ),
+        )
+    };
+    assert_ne!(named(80), sample, "the sample still names its seller");
+    let fits = refusal(Spoke::UblInvoice, Spoke::Fatturapa, named(80).as_bytes());
+    assert!(fits.is_ok_and(|xml| xml.contains(&"x".repeat(80))));
+    let over = refusal(Spoke::UblInvoice, Spoke::Fatturapa, named(81).as_bytes());
+    assert!(
+        over.as_ref()
+            .is_err_and(|e| e.starts_with("[VALUE_TOO_LONG]")),
+        "{over:?}"
+    );
+}
+
+#[test]
+fn test_repeated_payment_means_lift_the_shared_code_and_keep_every_account() {
+    // BG-17 repeats per account; BT-81 is the invoice's, so every PaymentMeans
+    // states it (a lifted key): read once, written into each occurrence.
+    let sample =
+        std::fs::read_to_string(workspace().join("testfiles/en16931-full-ubl.xml")).unwrap();
+    let first = sample
+        .split_once("  <cac:PaymentMeans>")
+        .and_then(|(_, rest)| rest.split_once("</cac:PaymentMeans>\n"))
+        .map(|(block, _)| format!("  <cac:PaymentMeans>{block}</cac:PaymentMeans>\n"))
+        .expect("the sample has a PaymentMeans");
+    let second = first.replace("DE02120300000000202051", "DE89370400440532013000");
+    let two = sample.replacen(&first, &format!("{first}{second}"), 1);
+    for to in [Spoke::UblInvoice, Spoke::FacturxInvoice] {
+        let out = refusal(Spoke::UblInvoice, to, two.as_bytes()).unwrap();
+        for iban in ["DE02120300000000202051", "DE89370400440532013000"] {
+            assert!(out.contains(iban), "{to:?} keeps {iban}");
+        }
+        let code = if to == Spoke::UblInvoice {
+            ">58</cbc:PaymentMeansCode>"
+        } else {
+            "<ram:TypeCode>58<"
+        };
+        assert_eq!(
+            out.matches(code).count(),
+            2,
+            "{to:?}: the code in both occurrences"
+        );
+    }
+    // Occurrences disagreeing on the invoice's payment means are refused.
+    let disagree = sample.replacen(
+        &first,
+        &format!("{first}{}", second.replace(">58<", ">30<")),
+        1,
+    );
+    let refused = refusal(Spoke::UblInvoice, Spoke::UblInvoice, disagree.as_bytes());
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|e| e.starts_with("[SCOPE_DISAGREE]")),
+        "{refused:?}"
+    );
+    // A payment means without any account still gets its one occurrence.
+    let code_only = sample.replace(
+        &first,
+        "  <cac:PaymentMeans>\n    <cbc:PaymentMeansCode>10</cbc:PaymentMeansCode>\n  </cac:PaymentMeans>\n",
+    );
+    let out = refusal(
+        Spoke::UblInvoice,
+        Spoke::FacturxInvoice,
+        code_only.as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(
+        out.matches("<ram:SpecifiedTradeSettlementPaymentMeans>")
+            .count(),
+        1
+    );
+    let back = refusal(Spoke::FacturxInvoice, Spoke::UblInvoice, out.as_bytes()).unwrap();
+    assert!(back.contains(">10</cbc:PaymentMeansCode>"), "{back}");
+}
+
+#[test]
+fn test_vat_total_in_the_tax_currency_survives_ubl_and_cii() {
+    // BT-111 is a second TaxTotal (UBL, told apart by having no TaxSubtotal)
+    // or TaxTotalAmount (CII, told apart by the BT-6 currency) in BT-6.
+    let sample =
+        std::fs::read_to_string(workspace().join("testfiles/en16931-full-ubl.xml")).unwrap();
+    let ubl = sample
+        .replacen(
+            "  <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>\n",
+            "  <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>\n  <cbc:TaxCurrencyCode>SEK</cbc:TaxCurrencyCode>\n",
+            1,
+        )
+        .replacen(
+            "  </cac:TaxTotal>\n",
+            "  </cac:TaxTotal>\n  <cac:TaxTotal>\n    <cbc:TaxAmount currencyID=\"SEK\">1440.50</cbc:TaxAmount>\n  </cac:TaxTotal>\n",
+            1,
+        );
+    let cii = refusal(Spoke::UblInvoice, Spoke::FacturxInvoice, ubl.as_bytes()).unwrap();
+    for amount in [
+        "<ram:TaxTotalAmount currencyID=\"EUR\">125.69</ram:TaxTotalAmount>",
+        "<ram:TaxTotalAmount currencyID=\"SEK\">1440.50</ram:TaxTotalAmount>",
+    ] {
+        assert!(cii.contains(amount), "{amount} in {cii}");
+    }
+    let back = refusal(Spoke::FacturxInvoice, Spoke::UblInvoice, cii.as_bytes()).unwrap();
+    assert!(
+        back.contains("<cbc:TaxAmount currencyID=\"EUR\">125.69</cbc:TaxAmount>"),
+        "{back}"
+    );
+    assert!(
+        back.contains("<cbc:TaxAmount currencyID=\"SEK\">1440.50</cbc:TaxAmount>"),
+        "{back}"
+    );
+    assert_eq!(back.matches("<cac:TaxTotal>").count(), 2, "{back}");
+}
+
+#[test]
+fn test_vat_total_in_the_tax_currency_needs_the_tax_currency() {
+    let sample =
+        std::fs::read_to_string(workspace().join("testfiles/en16931-full-ubl.xml")).unwrap();
+    // Read: a TaxTotal without breakdown is BT-111 only in the BT-6 currency.
+    let ubl = sample.replacen(
+        "  </cac:TaxTotal>\n",
+        "  </cac:TaxTotal>\n  <cac:TaxTotal>\n    <cbc:TaxAmount currencyID=\"EUR\">125.69</cbc:TaxAmount>\n  </cac:TaxTotal>\n",
+        1,
+    );
+    let hub = Engine::new()
+        .to_hub(Spoke::UblInvoice, ubl.as_bytes())
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(hub.tax_total_amount_in_tax_currency, None);
+    assert_eq!(
+        hub.tax_total_amount,
+        Some(Decimal::from_str("125.69").unwrap())
+    );
+    // Write: BT-111 without BT-6 has no currency to be told apart by, so it
+    // is dropped with a warning, not written as a second BT-110.
+    let mut hub = hub;
+    hub.tax_currency = None;
+    hub.tax_total_amount_in_tax_currency = Some(Decimal::from_str("1440.50").unwrap());
+    for spoke in [Spoke::UblInvoice, Spoke::FacturxInvoice] {
+        let result = Engine::new().from_hub(spoke, hub.clone()).unwrap();
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "NO_TARGET" && d.severity == Severity::Warning),
+            "{spoke:?}: {:?}",
+            result.diagnostics
+        );
+        let xml = result.value.expect("written");
+        assert!(!xml.contains("1440.50"), "{spoke:?}: {xml}");
+    }
+}
+
+#[test]
+fn test_fatturapa_recipient_code_longer_than_seven_is_refused() {
+    let sample =
+        std::fs::read_to_string(workspace().join("testfiles/en16931-full-ubl.xml")).unwrap();
+    let ubl = sample.replacen(
+        r#"<cbc:EndpointID schemeID="0088">4012345670035</cbc:EndpointID>"#,
+        r#"<cbc:EndpointID schemeID="0205">ABC12345</cbc:EndpointID>"#,
+        1,
+    );
+    let refused = refusal(Spoke::UblInvoice, Spoke::Fatturapa, ubl.as_bytes());
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|e| e.starts_with("[VALUE_TOO_LONG]")),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn test_fatturapa_recipient_is_a_code_a_mailbox_or_0000000() {
+    // BT-49 goes to CodiceDestinatario or PECDestinatario by its scheme; an
+    // address of another scheme is dropped with a warning.
+    let sample =
+        std::fs::read_to_string(workspace().join("testfiles/en16931-full-ubl.xml")).unwrap();
+    let buyer = r#"<cbc:EndpointID schemeID="0088">4012345670035</cbc:EndpointID>"#;
+    let with = |scheme: &str, address: &str| {
+        sample.replacen(
+            buyer,
+            &format!(r#"<cbc:EndpointID schemeID="{scheme}">{address}</cbc:EndpointID>"#),
+            1,
+        )
+    };
+    for (scheme, address, written) in [
+        (
+            "0205",
+            "ABC1234",
+            "<CodiceDestinatario>ABC1234</CodiceDestinatario></DatiTrasmissione>",
+        ),
+        (
+            "EM",
+            "fatture@pec.example.it",
+            "<CodiceDestinatario>0000000</CodiceDestinatario><PECDestinatario>fatture@pec.example.it</PECDestinatario>",
+        ),
+    ] {
+        let fpa = refusal(
+            Spoke::UblInvoice,
+            Spoke::Fatturapa,
+            with(scheme, address).as_bytes(),
+        )
+        .unwrap();
+        assert!(fpa.contains(written), "{written} in {fpa}");
+        let back = refusal(Spoke::Fatturapa, Spoke::UblInvoice, fpa.as_bytes()).unwrap();
+        let endpoint = format!(r#"<cbc:EndpointID schemeID="{scheme}">{address}</cbc:EndpointID>"#);
+        assert!(back.contains(&endpoint), "{endpoint} in {back}");
+    }
+    let result = Engine::new()
+        .transform(Spoke::UblInvoice, Spoke::Fatturapa, sample.as_bytes())
+        .unwrap();
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "NO_TARGET" && d.severity == Severity::Warning),
+        "{:?}",
+        result.diagnostics
+    );
+    let fpa = result.value.unwrap();
+    assert!(
+        fpa.contains("<CodiceDestinatario>0000000</CodiceDestinatario></DatiTrasmissione>"),
+        "{fpa}"
+    );
+    // SdI's code for a foreign recipient is no address either.
+    let foreign = fpa.replace(">0000000<", ">XXXXXXX<");
+    let back = refusal(Spoke::Fatturapa, Spoke::UblInvoice, foreign.as_bytes()).unwrap();
+    assert!(!back.contains("EndpointID"), "{back}");
 }

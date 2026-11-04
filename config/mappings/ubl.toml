@@ -59,6 +59,12 @@ source_model = "ubl-invoice:2.1"
 canonical_model = "canonical-invoice:1.0"
 root = "Invoice"
 
+# BT-111 (the VAT total in the tax currency) without BT-6 has no currency to
+# be told apart by: it is dropped with a NO_TARGET warning, not written as a
+# second BT-110.
+[meta.defaults]
+no_target = "warn"
+
 # Namespaces (write side): the root sits in the default UBL Invoice namespace,
 # basic components (leaves) are `cbc:`, aggregates `cac:`. Declared once here and
 # inherited by every spoke that `inherits` this one (XRechnung, Peppol).
@@ -622,22 +628,29 @@ canonical_key = "DeliverToPartyName"
 # PAYMENT INSTRUCTIONS (BG-16) + CREDIT TRANSFER (BG-17)
 #   + PAYMENT CARD INFORMATION (BG-18) + DIRECT DEBIT (BG-19)
 # ===========================================================================
+# One PaymentMeans per credit transfer account (BG-17 repeats); the payment
+# means, card and direct debit are stated once per invoice, so they are
+# lifted to the root: every PaymentMeans must agree on them.
+[Invoice.PaymentMeans]
+type = "collection"
+canonical_key = "CreditTransfers"
+
 [Invoice.PaymentMeans.PaymentMeansCode]
 type = "string"
-canonical_key = "PaymentMeansTypeCode"
+canonical_key = "$root.PaymentMeansTypeCode"
 
 [Invoice.PaymentMeans.PaymentMeansCode.name]
 xml = "@name"
 type = "string"
-canonical_key = "PaymentMeansText"
+canonical_key = "$root.PaymentMeansText"
 
 [Invoice.PaymentMeans.PaymentID]
 type = "string"
-canonical_key = "RemittanceInformation"
+canonical_key = "$root.RemittanceInformation"
 
 [Invoice.PaymentMeans.CardAccount.PrimaryAccountNumberID]
 type = "string"
-canonical_key = "PaymentCardPrimaryAccountNumber"
+canonical_key = "$root.PaymentCardPrimaryAccountNumber"
 
 # Mandatory in CardAccountType; EN 16931 carries no network, so it is pinned.
 [Invoice.PaymentMeans.CardAccount.NetworkID]
@@ -646,7 +659,7 @@ constant = "NA"
 
 [Invoice.PaymentMeans.CardAccount.HolderName]
 type = "string"
-canonical_key = "PaymentCardHolderName"
+canonical_key = "$root.PaymentCardHolderName"
 
 [Invoice.PaymentMeans.PayeeFinancialAccount.ID]
 type = "identifier"
@@ -662,11 +675,11 @@ canonical_key = "PaymentServiceProviderIdentifier"
 
 [Invoice.PaymentMeans.PaymentMandate.ID]
 type = "identifier"
-canonical_key = "MandateReferenceIdentifier"
+canonical_key = "$root.MandateReferenceIdentifier"
 
 [Invoice.PaymentMeans.PaymentMandate.PayerFinancialAccount.ID]
 type = "identifier"
-canonical_key = "DebitedAccountIdentifier"
+canonical_key = "$root.DebitedAccountIdentifier"
 
 # ===========================================================================
 # PAYMENT TERMS (BT-20)
@@ -740,6 +753,13 @@ constant = "VAT"
 # ===========================================================================
 # TAX TOTAL (BT-110/111) + VAT BREAKDOWN (BG-23) — TaxTotal/TaxSubtotal (collection)
 # ===========================================================================
+# TaxTotal repeats: a second one without breakdown, in the tax currency
+# (BT-6), states BT-111 (see below); every other occurrence lands here, BT-110
+# in the document currency. (`xml` names the element only to make this a node
+# of its own.)
+[Invoice.TaxTotal]
+xml = "TaxTotal"
+
 [Invoice.TaxTotal.TaxAmount]
 type = "decimal"
 canonical_key = "TaxTotalAmount"
@@ -800,6 +820,22 @@ canonical_key = "VatExemptionReasonText"
 [Invoice.TaxTotal.TaxSubtotal.TaxCategory.TaxScheme.ID]
 type = "identifier"
 constant = "VAT"
+
+# BT-111 total VAT in the tax currency: the TaxTotal without a breakdown, in
+# BT-6 (without BT-6 it is dropped, see `[meta.defaults]`).
+[Invoice.TaxTotalInTaxCurrency]
+xml = "TaxTotal"
+match = { TaxSubtotal = { present = false }, "TaxAmount.@currencyID" = "$root.TaxCurrency" }
+
+[Invoice.TaxTotalInTaxCurrency.TaxAmount]
+type = "decimal"
+canonical_key = "TaxTotalAmountInTaxCurrency"
+when = { TaxCurrency = { present = true } }
+
+[Invoice.TaxTotalInTaxCurrency.TaxAmount.currencyID]
+xml = "@currencyID"
+type = "currency"
+clone_of = "TaxCurrency"
 
 # ===========================================================================
 # DOCUMENT TOTALS (BG-22) — LegalMonetaryTotal

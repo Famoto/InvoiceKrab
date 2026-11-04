@@ -36,8 +36,10 @@
 //! the document signature, the JSON shape of [`formats`], and the
 //! known/unknown-source paths of [`analyze`].
 
+use std::sync::LazyLock;
+
 use crate::cli::{detect_source, render_diagnostics, resolve_spoke};
-use crate::{Engine, EngineError};
+use crate::{Engine, EngineError, Spoke};
 use einvoice_transformator::result::MappingResult;
 
 /// The computed response: status code, body, and any warning text destined
@@ -89,7 +91,7 @@ fn transform(query: &str, body: Vec<u8>) -> Result<Reply, (u16, String)> {
         // The client sent a document in an encoding the engine cannot decode.
         e @ EngineError::Encoding(_) => (400, e.to_string()),
         // The client sent bytes that are not a well-formed `from` document.
-        EngineError::Deserialize(e) => (400, format!("source deserialization failed: {e}")),
+        e @ EngineError::Deserialize(_) => (400, e.to_string()),
         // The engine produced an unserializable model: our bug, not theirs.
         EngineError::Serialize(e) => (500, format!("target serialization failed: {e}")),
     };
@@ -99,11 +101,14 @@ fn transform(query: &str, body: Vec<u8>) -> Result<Reply, (u16, String)> {
     // source is parsed — the write half runs with the raw bytes freed.
     let engine = Engine::new();
     let read = engine.to_hub(from, &body).map_err(status_of)?;
+    let hint = crate::output_hint(body.len());
     drop(body);
     let mut diagnostics = read.diagnostics;
     let value = match read.value {
         Some(hub) => {
-            let written = engine.from_hub(to, hub).map_err(status_of)?;
+            let written = engine
+                .from_hub_with_capacity(to, hub, hint)
+                .map_err(status_of)?;
             diagnostics.extend(written.diagnostics);
             written.value
         }
@@ -162,9 +167,29 @@ pub fn formats() -> String {
     serde_json::to_string(&names).unwrap_or_default()
 }
 
+/// Every `GET /analyze` report, by `(from, to)` (`None`: every spoke), with
+/// its count of transforms that are not lossless. The analysis reads only the
+/// compiled-in contracts, so each report is rendered once per process;
+/// [`router`](super::router::router) forces it at startup, so no request
+/// computes one on the reactor (#37).
+pub(crate) static ANALYSES: LazyLock<Vec<AnalysisEntry>> = LazyLock::new(|| {
+    let scopes = || std::iter::once(None).chain(Spoke::ALL.iter().copied().map(Some));
+    scopes()
+        .flat_map(|from| {
+            scopes().map(move |to| {
+                let (report, lossy) = crate::cli::analyze_report(from, to);
+                (from, to, report, lossy)
+            })
+        })
+        .collect()
+});
+
+/// One [`ANALYSES`] entry: `from`, `to`, the rendered report, its lossy count.
+pub(crate) type AnalysisEntry = (Option<Spoke>, Option<Spoke>, String, usize);
+
 /// The `GET /analyze[?from=<format>[&to=<format>]][&deny_lossy=1]` body: the
 /// static loss/error report of every transform, one source's row, or one pair
-/// in full (the CLI's `--analyze`, verbatim).
+/// in full (the CLI's `--analyze`, verbatim), from [`ANALYSES`].
 ///
 /// # Errors
 ///
@@ -176,13 +201,19 @@ pub fn analyze(query: &str) -> Result<String, (u16, String)> {
         Some("1" | "true" | "yes")
     );
     let (from, to) = (param(query, "from")?, param(query, "to")?);
-    crate::cli::analyze_output(from.as_deref(), to.as_deref(), deny_lossy).map_err(|e| {
-        let status = match e {
-            crate::cli::CliError::Lossy(_) => 422,
-            _ => 400,
-        };
-        (status, e.to_string())
-    })
+    let resolve = |name: Option<String>| {
+        name.map(|n| resolve_spoke(&n))
+            .transpose()
+            .map_err(|e| (400, e.to_string()))
+    };
+    let (from, to) = (resolve(from)?, resolve(to)?);
+    // ponytail: linear scan over (spokes + 1)² entries; a map if that grows.
+    let (.., report, lossy) = ANALYSES
+        .iter()
+        .find(|(f, t, ..)| (*f, *t) == (from, to))
+        .expect("ANALYSES holds every scope");
+    crate::cli::deny_lossy_gate(report.clone(), *lossy, deny_lossy)
+        .map_err(|e| (422, e.to_string()))
 }
 
 #[cfg(test)]
@@ -271,6 +302,24 @@ mod tests {
     fn test_handle_malformed_xml_returns_400() {
         let reply = handle("to=ubl-invoice&from=ubl-invoice", b"not xml <<<".to_vec());
         assert_eq!(reply.status, 400, "{}", reply.body);
+    }
+
+    #[test]
+    fn test_handle_batch_of_invoices_names_the_repeated_element() {
+        // #50: a FatturaPA batch repeats FatturaElettronicaBody, which the
+        // mapping reads once; the 400 says so instead of serde's text.
+        let sample = include_str!("../../../../testfiles/en16931-full-fatturapa.xml");
+        let start = sample.find("<FatturaElettronicaBody>").unwrap();
+        let end = sample.find("</FatturaElettronicaBody>").unwrap() + 25;
+        let batch = format!("{}{}", &sample[..end], &sample[start..]);
+        let reply = handle("to=ubl-invoice&from=fatturapa", batch.into_bytes());
+        assert_eq!(reply.status, 400, "{}", reply.body);
+        assert_eq!(
+            reply.body,
+            "source deserialization failed: element `FatturaElettronicaBody` occurs more than \
+             once, but the mapping reads it as a single element (a document holding several \
+             invoices, or a repeated element the mapping does not declare as a collection)"
+        );
     }
 
     #[test]

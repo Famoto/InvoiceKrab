@@ -47,7 +47,7 @@
 
 use std::convert::Infallible;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -94,6 +94,8 @@ const USAGE: &str = "POST /transform?to=<format>[&from=<format>] | GET /formats 
 /// multiplier (`Content-Length x blowup` bytes are reserved per transform);
 /// `timeouts` bound frame gaps, the whole upload, and the queue wait.
 pub fn router(gate: Arc<MemGate>, blowup: u64, timeouts: Timeouts) -> Router {
+    // Render every `/analyze` report now, before a connection is served.
+    LazyLock::force(&handle::ANALYSES);
     Router::new()
         .route("/health", get(async || "ok"))
         .route("/formats", get(formats))

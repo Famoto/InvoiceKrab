@@ -1,3 +1,7 @@
 [alias]
 check-all = "clippy --workspace --all-targets -- -D warnings"
 ci = "test --workspace --all-features"
+test_workspace = true          # codegen is only checked by einvoice-interfaces
+timeout_multiplier = 3
+exclude_globs = ["**/bin/*.rs"]
+exclude_re = ["replace .* with Default::default\\(\\) in main"]
