@@ -2033,6 +2033,103 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_hub_copy_and_number_rules_fill_items_and_compile() {
+        let mapping = parse_mapping(
+            r#"
+            [meta]
+            doc_format = "f"
+            format_version = "1"
+            mapping_version = "1"
+            canonical_model = "c:1"
+            root = "Doc"
+            [Doc.L]
+            type = "collection"
+            canonical_key = "Lines"
+            [Doc.L.Id]
+            type = "identifier"
+            canonical_key = "LineId"
+            [Doc.C]
+            type = "collection"
+            canonical_key = "Charges"
+            [Doc.C.Is]
+            type = "boolean"
+            canonical_key = "IsCharge"
+            [Doc.C.A]
+            type = "decimal"
+            canonical_key = "Amount"
+            [Doc.C.S]
+            type = "decimal"
+            canonical_key = "Signed"
+            [Doc.C.N]
+            type = "identifier"
+            canonical_key = "Number"
+            "#,
+        )
+        .unwrap();
+        let (ir, _, diags) = build_ir(&[mapping]);
+        assert!(diags.is_empty(), "{diags:?}");
+        let hub = derive_hub(std::slice::from_ref(&ir)).0;
+        let rules = crate::derive::parse_derivations(
+            r#"
+            [[derive]]
+            key = "Charges/Signed"
+            rule = "SIGN"
+            copy = "Amount"
+            negate_where = { IsCharge = "false" }
+
+            [[derive]]
+            key = "Charges/Number"
+            rule = "NUM"
+            number_after = "Lines/LineId"
+            "#,
+        )
+        .unwrap();
+        let diags = crate::derive::check_derivations(&hub, &rules);
+        assert!(diags.is_empty(), "{diags:?}");
+        let out = generate_hub_with(&hub, &rules);
+
+        // Copy: only into an absent target, negated where the filter holds.
+        assert!(
+            out.contains("if i0.signed.is_none() && let Some(value) = i0.amount {"),
+            "{out}"
+        );
+        assert!(
+            out.contains("let negate = i0.is_charge == Some(false);"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "i0.signed = Some(if negate && !value.is_zero() { -value } else { value });"
+            ),
+            "a zero stays unsigned (no `-0.00`): {out}"
+        );
+        // Number: after the largest whole number of either collection.
+        assert!(out.contains("for i0 in &self.lines {"), "{out}");
+        assert!(
+            out.contains("i0.line_id.as_deref().and_then(|v| v.trim().parse::<u64>().ok())"),
+            "{out}"
+        );
+        assert!(
+            out.contains("i0.number.as_deref().and_then(|v| v.trim().parse::<u64>().ok())"),
+            "{out}"
+        );
+        assert!(
+            out.contains("i0.number = Some(CompactString::from(next.to_string()));"),
+            "{out}"
+        );
+        assert!(out.contains("next = next.saturating_add(1);"), "{out}");
+        assert!(
+            out.contains(r#"derived.push(("Charges/Number", "NUM"));"#),
+            "{out}"
+        );
+        assert!(
+            !out.contains("mismatches.push("),
+            "fills are not checked: {out}"
+        );
+        syn::parse_file(&out).expect("valid Rust");
+    }
+
+    #[test]
     fn test_generate_hub_sum_rules_filter_and_check_with_checked_arithmetic() {
         let mapping = parse_mapping(
             r#"

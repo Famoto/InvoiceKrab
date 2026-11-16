@@ -69,6 +69,13 @@ values = [
 for_type = "boolean"
 lexical = "MG|SC"
 
+# BG-20 / BG-21 charge indicator ⇄ DettaglioLinee/TipoCessionePrestazione: a
+# document-level charge is an altra spesa accessoria (AC), an allowance a
+# sconto (SC).
+[codec.fatturapa-cessione-sc-ac]
+for_type = "boolean"
+lexical = "AC|SC"
+
 # Amount2DecimalType / RateType: exactly two fraction digits.
 [codec.fatturapa-amount-2]
 for_type = "decimal"

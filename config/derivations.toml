@@ -21,6 +21,30 @@
 # Rules apply in file order; an operand derived by a rule must be derived
 # before the rule using it (E113). See crates/einvoice-dsl/src/derive.rs.
 
+# FatturaPA writes the document-level allowances and charges (BG-20 / BG-21)
+# as DettaglioLinee lines of their own, so that DatiRiepilogo adds up to them
+# (SdI 00422): an allowance with a negative price, each line numbered after
+# the invoice lines. These rules derive the signed amount and the line
+# number the hub lacks when it comes from another format, and the unsigned
+# amount when it comes from FatturaPA. They come first: BR-CO-11 and BR-CO-12
+# sum the unsigned amounts.
+[[derive]]
+key = "DocumentAllowanceCharges/AllowanceChargeSignedAmount"
+rule = "FatturaPA SC/AC"
+copy = "AllowanceChargeAmount"
+negate_where = { ChargeIndicator = "false" }
+
+[[derive]]
+key = "DocumentAllowanceCharges/AllowanceChargeAmount"
+rule = "FatturaPA SC/AC"
+copy = "AllowanceChargeSignedAmount"
+negate_where = { ChargeIndicator = "false" }
+
+[[derive]]
+key = "DocumentAllowanceCharges/AllowanceChargeLineNumber"
+rule = "FatturaPA SC/AC"
+number_after = "InvoiceLines/LineId"
+
 # BR-CO-10: sum of invoice line net amounts = Σ invoice line net amount (BT-131).
 [[derive]]
 key = "SumOfInvoiceLineNetAmount"

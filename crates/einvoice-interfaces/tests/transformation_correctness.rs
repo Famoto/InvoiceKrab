@@ -236,9 +236,49 @@ struct Doc {
     values: BTreeMap<String, Vec<String>>,
 }
 
+/// FatturaPA states the document-level allowances and charges (BG-20/21) as
+/// `DettaglioLinee` lines with `TipoCessionePrestazione` `SC` / `AC`. The
+/// oracle sees those under the name [`FPA_SC_AC`], so the line terms (BG-25)
+/// see only invoice lines; FatturaPA's 00422 rule counts both.
+fn fatturapa_view(xml: &str) -> std::borrow::Cow<'_, str> {
+    const OPEN: &str = "<DettaglioLinee>";
+    const CLOSE: &str = "</DettaglioLinee>";
+    if !xml.contains("<TipoCessionePrestazione>") {
+        return xml.into();
+    }
+    let mut out = String::with_capacity(xml.len());
+    let mut rest = xml;
+    while let Some(start) = rest.find(OPEN) {
+        let Some(len) = rest[start..].find(CLOSE) else {
+            break;
+        };
+        let end = start + len + CLOSE.len();
+        let line = &rest[start..end];
+        out.push_str(&rest[..start]);
+        if ["SC", "AC"]
+            .iter()
+            .any(|code| line.contains(&format!("<TipoCessionePrestazione>{code}<")))
+        {
+            out.push_str(&format!(
+                "<{FPA_SC_AC}>{}</{FPA_SC_AC}>",
+                &line[OPEN.len()..line.len() - CLOSE.len()]
+            ));
+        } else {
+            out.push_str(line);
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out.into()
+}
+
+/// The oracle's name for a FatturaPA `SC` / `AC` line (see [`fatturapa_view`]).
+const FPA_SC_AC: &str = "DettaglioLineeScontoAccessorio";
+
 impl Doc {
     fn parse(xml: &str) -> Result<Doc, String> {
-        let mut reader = Reader::from_str(xml);
+        let xml = fatturapa_view(xml);
+        let mut reader = Reader::from_str(&xml);
         let mut values: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut stack: Vec<String> = Vec::new();
         let mut texts: Vec<String> = Vec::new();
@@ -434,8 +474,14 @@ fn raw_decimals(doc: &Doc, path: &str) -> Vec<Decimal> {
 /// lists align by position; when they do not, the rule is not listed.
 fn fatturapa_totals(doc: &Doc) -> Vec<(String, bool)> {
     let goods = "/FatturaElettronica/FatturaElettronicaBody/DatiBeniServizi";
-    let line_rate = raw_decimals(doc, &format!("{goods}/DettaglioLinee/AliquotaIVA"));
-    let line_total = raw_decimals(doc, &format!("{goods}/DettaglioLinee/PrezzoTotale"));
+    // Invoice lines, then the SC / AC lines: each list aligns by position.
+    let lines = |field: &str| {
+        let mut all = raw_decimals(doc, &format!("{goods}/DettaglioLinee/{field}"));
+        all.extend(raw_decimals(doc, &format!("{goods}/{FPA_SC_AC}/{field}")));
+        all
+    };
+    let line_rate = lines("AliquotaIVA");
+    let line_total = lines("PrezzoTotale");
     let sum_rate = raw_decimals(doc, &format!("{goods}/DatiRiepilogo/AliquotaIVA"));
     let sum_base = raw_decimals(doc, &format!("{goods}/DatiRiepilogo/ImponibileImporto"));
     if line_rate.len() != line_total.len()
@@ -655,19 +701,14 @@ fn test_transformations_carry_their_source_correctly() {
                 failures.push(Failure {
                     text: format!("{name}: the oracle cannot read the source: {e}"),
                     corpus: *corpus,
-                    doc_allowances: false,
                 });
                 continue;
             }
         };
-        let doc_allowances = source
-            .by_bt("BT-92/99")
-            .is_some_and(|amounts| !amounts.is_empty());
         let mut fail = |what: String| {
             failures.push(Failure {
                 text: format!("{name}: {what}"),
                 corpus: *corpus,
-                doc_allowances,
             })
         };
         for (rule, holds) in totals(&source) {
@@ -795,74 +836,35 @@ struct Failure {
     text: String,
     /// The source is a `KRAB_CORPUS_DIR` document, not a declared sample.
     corpus: bool,
-    /// The source carries document-level allowances or charges (BG-20/21).
-    doc_allowances: bool,
 }
 
 /// An engine issue this harness found that is not fixed yet: a failure line
 /// containing every one of `matches` is reported as known instead of failing.
 /// An issue no failure matches any more fails the test, so its fix is noticed
 /// and the entry removed. A `corpus_only` issue matches only corpus failures
-/// (it shows only with `KRAB_CORPUS_DIR`, and is only held to that then); a
-/// `doc_allowances` one only failures of sources with BG-20/21.
+/// (it shows only with `KRAB_CORPUS_DIR`, and is only held to that then).
 struct KnownIssue {
     matches: &'static [&'static str],
     why: &'static str,
     corpus_only: bool,
-    doc_allowances: bool,
 }
 
 impl KnownIssue {
     fn absorbs(&self, f: &Failure) -> bool {
-        (f.corpus || !self.corpus_only)
-            && (f.doc_allowances || !self.doc_allowances)
-            && self.matches.iter().all(|m| f.text.contains(m))
+        (f.corpus || !self.corpus_only) && self.matches.iter().all(|m| f.text.contains(m))
     }
 }
 
-const KNOWN_ISSUES: &[KnownIssue] = &[
-    KnownIssue {
-        matches: &["-> fatturapa:1.2.2: output violates FatturaPA 00422"],
-        why: "the FatturaPA writer drops document-level allowances and charges (BG-20, BG-21) \
-              but counts them in DatiRiepilogo, so the lines no longer add up to \
-              ImponibileImporto (SdI rejects that with 00422)",
-        corpus_only: false,
-        doc_allowances: true,
-    },
-    KnownIssue {
-        matches: &["-> fatturapa:1.2.2 -> ", "BT-109 total without VAT"],
-        why: "the same dropped document-level allowances and charges: read back from \
-              FatturaPA, BT-109 is derived from the lines alone",
-        corpus_only: false,
-        doc_allowances: true,
-    },
-    KnownIssue {
-        matches: &["-> fatturapa:1.2.2 -> ", "BT-113 paid amount"],
-        why: "FatturaPA carries neither BT-113 nor BT-114: read back, BR-CO-16 derives the \
-              paid amount as BT-112 - BT-115, so a rounding amount becomes a prepayment",
-        corpus_only: false,
-        doc_allowances: false,
-    },
-    KnownIssue {
-        matches: &["BT-31/32 seller VAT/tax id"],
-        why: "the UBL readers bind BT-32 only for PartyTaxScheme/TaxScheme/ID `FC` (`TAX` \
-              for Peppol); EN 16931 allows any value but `VAT`, so others (KoSIT uses `???` \
-              and `ID`) are dropped without a diagnostic",
-        corpus_only: true,
-        doc_allowances: false,
-    },
-    KnownIssue {
-        matches: &[
-            "GR-base-example-TaxRepresentative.xml: no transform checked",
-            "[REQUIRED_MISSING]",
-        ],
-        why: "the Greek tax representative example is invalid itself: it has no seller \
+const KNOWN_ISSUES: &[KnownIssue] = &[KnownIssue {
+    matches: &[
+        "GR-base-example-TaxRepresentative.xml: no transform checked",
+        "[REQUIRED_MISSING]",
+    ],
+    why: "the Greek tax representative example is invalid itself: it has no seller \
               name (BT-27, BR-06; einvoice-validate also reports a schema error), so the \
               readers refuse it with REQUIRED_MISSING, which is correct",
-        corpus_only: true,
-        doc_allowances: false,
-    },
-];
+    corpus_only: true,
+}];
 
 /// Splits `failures` into known issues (one line per issue, with its count),
 /// the remaining failures, and the issues no failure matched any more.
@@ -1010,15 +1012,32 @@ fn test_fatturapa_summary_must_equal_its_lines_per_rate() {
 }
 
 #[test]
+fn test_fatturapa_view_separates_sc_ac_lines_and_00422_counts_them() {
+    let xml = "<FatturaElettronica><FatturaElettronicaBody><DatiBeniServizi>\
+        <DettaglioLinee><NumeroLinea>1</NumeroLinea><PrezzoTotale>100.00</PrezzoTotale><AliquotaIVA>22.00</AliquotaIVA></DettaglioLinee>\
+        <DettaglioLinee><NumeroLinea>2</NumeroLinea><TipoCessionePrestazione>SC</TipoCessionePrestazione><PrezzoTotale>-10.00</PrezzoTotale><AliquotaIVA>22.00</AliquotaIVA></DettaglioLinee>\
+        <DettaglioLinee><NumeroLinea>3</NumeroLinea><TipoCessionePrestazione>AB</TipoCessionePrestazione><PrezzoTotale>5.00</PrezzoTotale><AliquotaIVA>22.00</AliquotaIVA></DettaglioLinee>\
+        <DatiRiepilogo><AliquotaIVA>22.00</AliquotaIVA><ImponibileImporto>95.00</ImponibileImporto></DatiRiepilogo>\
+        </DatiBeniServizi></FatturaElettronicaBody></FatturaElettronica>";
+    let doc = Doc::parse(xml).expect("parses");
+    let ids = doc.by_bt("BT-126").expect("FatturaPA carries line ids");
+    assert_eq!(
+        ids,
+        ["1", "3"],
+        "an SC line is no invoice line; another kind is"
+    );
+    let totals = fatturapa_totals(&doc);
+    assert!(totals.iter().all(|(_, holds)| *holds), "{totals:?}");
+}
+
+#[test]
 fn test_known_issues_absorb_their_failures_and_go_stale_once_fixed() {
-    let fpa = failure(
-        "x.xml: ubl-invoice:2.1 -> fatturapa:1.2.2: output violates FatturaPA 00422 at 19%",
-        false,
+    let gr = failure(
+        "GR-base-example-TaxRepresentative.xml: no transform checked: [REQUIRED_MISSING] seller name",
         true,
     );
     let other = "x.xml: ubl-invoice:2.1 -> facturx-invoice:1.0: BT-1 invoice number: dropped";
-    let (known, unknown, stale) =
-        split_known(vec![fpa.clone(), fpa, failure(other, false, true)], false);
+    let (known, unknown, stale) = split_known(vec![gr.clone(), gr, failure(other, true)], true);
     assert_eq!(
         unknown,
         vec![other.to_string()],
@@ -1026,9 +1045,10 @@ fn test_known_issues_absorb_their_failures_and_go_stale_once_fixed() {
     );
     assert_eq!(known.len(), 1);
     assert!(known[0].contains("(2 failure(s))"), "{known:?}");
-    // The other non-corpus issues matched nothing: stale. The corpus-only one
-    // is not held to it without a corpus.
-    let expected_stale = KNOWN_ISSUES.iter().filter(|k| !k.corpus_only).count() - 1;
+    assert!(stale.is_empty(), "every issue showed: {stale:?}");
+    // Without a corpus, a corpus-only issue is not held to showing.
+    let (_, _, stale) = split_known(Vec::new(), false);
+    let expected_stale = KNOWN_ISSUES.iter().filter(|k| !k.corpus_only).count();
     assert_eq!(stale.len(), expected_stale, "{stale:?}");
     let (_, _, stale) = split_known(Vec::new(), true);
     assert_eq!(
@@ -1038,11 +1058,10 @@ fn test_known_issues_absorb_their_failures_and_go_stale_once_fixed() {
     );
 }
 
-fn failure(text: &str, corpus: bool, doc_allowances: bool) -> Failure {
+fn failure(text: &str, corpus: bool) -> Failure {
     Failure {
         text: text.into(),
         corpus,
-        doc_allowances,
     }
 }
 
@@ -1050,29 +1069,16 @@ fn failure(text: &str, corpus: bool, doc_allowances: bool) -> Failure {
 fn test_corpus_only_issue_does_not_absorb_a_sample_failure() {
     let seller = "GR-base-example-TaxRepresentative.xml: no transform checked: \
                   [REQUIRED_MISSING] seller name";
-    let (known, unknown, _) = split_known(vec![failure(seller, false, false)], true);
+    let (known, unknown, _) = split_known(vec![failure(seller, false)], true);
     assert_eq!(
         unknown,
         vec![seller.to_string()],
         "a sample failure still fails"
     );
     assert!(known.is_empty(), "{known:?}");
-    let (known, unknown, _) = split_known(vec![failure(seller, true, false)], true);
+    let (known, unknown, _) = split_known(vec![failure(seller, true)], true);
     assert!(unknown.is_empty(), "{unknown:?}");
     assert_eq!(known.len(), 1);
-}
-
-#[test]
-fn test_fatturapa_00422_issue_needs_document_level_allowances() {
-    // An 00422 mismatch from a source without BG-20/21 is not the dropped
-    // allowances: it fails.
-    let fpa = "x.xml: ubl-invoice:2.1 -> fatturapa:1.2.2: output violates FatturaPA 00422 at 19%";
-    let (_, unknown, _) = split_known(vec![failure(fpa, false, false)], false);
-    assert_eq!(unknown, vec![fpa.to_string()]);
-    let bt109 =
-        "x.xml: ubl-invoice:2.1 -> fatturapa:1.2.2 -> cii:2.3: BT-109 total without VAT: changed";
-    let (_, unknown, _) = split_known(vec![failure(bt109, true, false)], true);
-    assert_eq!(unknown, vec![bt109.to_string()]);
 }
 
 #[test]

@@ -278,6 +278,12 @@ type = "identifier"
 canonical_key = "LineId"
 required = true
 
+# The line kind: an invoice line has none; SC and AC lines are document-level
+# allowances and charges (the `DocumentAllowanceCharge` node below).
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.TipoCessionePrestazione]
+type = "string"
+description = "Line kind discriminator (SC / AC are BG-20 / BG-21); read by the `match` selector."
+
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.Descrizione]
 type = "string"
 canonical_key = "ItemName"
@@ -346,6 +352,57 @@ required = true
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DettaglioLinee.Natura]
 type = "string"
 canonical_key = "LineVatCategoryCode"
+codec = "fatturapa-natura"
+default = "S"
+
+# BG-20 / BG-21 document-level allowances and charges: FatturaPA has no
+# document-level element that DatiRiepilogo counts, so each one is a
+# DettaglioLinee line of its own, after the invoice lines: a sconto (SC, a
+# negative price) or an altra spesa accessoria (AC). The signed amount and
+# the line number are derived (config/derivations.toml), so they are not
+# `required` here (W095 sees no other spoke map them); a missing reason is
+# written as a placeholder, which reads back as none.
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge]
+xml = "DettaglioLinee"
+type = "collection"
+canonical_key = "DocumentAllowanceCharges"
+match = { TipoCessionePrestazione = ["SC", "AC"] }
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge.NumeroLinea]
+type = "identifier"
+canonical_key = "AllowanceChargeLineNumber"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge.TipoCessionePrestazione]
+type = "boolean"
+canonical_key = "ChargeIndicator"
+codec = "fatturapa-cessione-sc-ac"
+required = true
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge.Descrizione]
+type = "string"
+canonical_key = "AllowanceChargeReason"
+codec = "fatturapa-text-1000"
+placeholder = "Sconto o maggiorazione"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge.PrezzoUnitario]
+type = "decimal"
+canonical_key = "AllowanceChargeSignedAmount"
+codec = "fatturapa-amount-8"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge.PrezzoTotale]
+type = "decimal"
+clone_of = "AllowanceChargeSignedAmount"
+codec = "fatturapa-amount-8"
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge.AliquotaIVA]
+type = "decimal"
+canonical_key = "AllowanceChargeVatRate"
+codec = "fatturapa-amount-2"
+required = true
+
+[FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge.Natura]
+type = "string"
+canonical_key = "AllowanceChargeVatCategoryCode"
 codec = "fatturapa-natura"
 default = "S"
 
