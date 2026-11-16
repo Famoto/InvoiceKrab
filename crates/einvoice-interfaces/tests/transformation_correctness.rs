@@ -841,8 +841,9 @@ const KNOWN_ISSUES: &[KnownIssue] = &[
             "GR-base-example-TaxRepresentative.xml: no transform checked",
             "[REQUIRED_MISSING]",
         ],
-        why: "the Peppol reader reports a required value missing in the Greek tax \
-              representative example, so no target accepts it (not yet diagnosed)",
+        why: "the Greek tax representative example is invalid itself: it has no seller \
+              name (BT-27, BR-06; einvoice-validate also reports a schema error), so the \
+              readers refuse it with REQUIRED_MISSING, which is correct",
         corpus_only: true,
         doc_allowances: false,
     },
