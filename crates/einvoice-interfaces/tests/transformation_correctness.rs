@@ -837,6 +837,21 @@ const KNOWN_ISSUES: &[KnownIssue] = &[
         doc_allowances: true,
     },
     KnownIssue {
+        matches: &["-> fatturapa:1.2.2 -> ", "BT-113 paid amount"],
+        why: "FatturaPA carries neither BT-113 nor BT-114: read back, BR-CO-16 derives the \
+              paid amount as BT-112 - BT-115, so a rounding amount becomes a prepayment",
+        corpus_only: false,
+        doc_allowances: false,
+    },
+    KnownIssue {
+        matches: &["BT-31/32 seller VAT/tax id"],
+        why: "the UBL readers bind BT-32 only for PartyTaxScheme/TaxScheme/ID `FC` (`TAX` \
+              for Peppol); EN 16931 allows any value but `VAT`, so others (KoSIT uses `???` \
+              and `ID`) are dropped without a diagnostic",
+        corpus_only: true,
+        doc_allowances: false,
+    },
+    KnownIssue {
         matches: &[
             "GR-base-example-TaxRepresentative.xml: no transform checked",
             "[REQUIRED_MISSING]",
