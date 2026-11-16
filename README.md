@@ -729,6 +729,22 @@ format: it runs the checks each mapping declares in `[meta.schema]` and
 remaining schema errors are its `known_gaps`, and the check fails both on a
 new error and on a stale gap, so the lists only shrink.
 
+Every document as written by every spoke is also validated against the
+spoke's XML schema and official Schematron rules (CEN EN 16931, XRechnung,
+Peppol BIS Billing, Factur-X) by
+[einvoice-validate](https://crates.io/crates/einvoice-cli), outside the test
+suite: CI and the pre-commit hook run `scripts/validate-documents.sh` on the
+samples and, when fetched, the corpus. Install it and fetch its rule sets
+once:
+
+```bash
+cargo install --locked einvoice-cli --version 0.4.0
+einvoice-validate rules fetch xrechnung peppol factur-x
+```
+
+FatturaPA has no official Schematron, so its output is not validated this
+way.
+
 Install the local pre-commit hooks once per checkout:
 
 ```bash

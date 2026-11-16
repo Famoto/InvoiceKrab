@@ -134,6 +134,12 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   Peppol BIS Billing 3.0 examples, pinned and checksummed, into
   `testfiles/corpus/` (not in the repository). With
   `KRAB_CORPUS_DIR=testfiles/corpus`, the correctness test runs them too.
+- Schematron validation in CI and pre-commit: `scripts/validate-documents.sh`
+  writes every sample and corpus document with the UBL, XRechnung, Peppol
+  and Factur-X spokes and validates the result with `einvoice-validate`
+  (crate `einvoice-cli`): the XML schema, then the official rules (CEN
+  EN 16931 1.3.17, XRechnung 3.0.2, Peppol BIS Billing 3.0.22, Factur-X
+  1.09.2), pinned and checksummed. FatturaPA has no official Schematron.
 
 ### Fixed
 

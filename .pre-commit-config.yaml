@@ -34,3 +34,12 @@ repos:
         language: system
         files: ^(Cargo\.(toml|lock)|crates/.*|config/.*\.toml)$
         pass_filenames: false
+
+      # Needs einvoice-validate (crate einvoice-cli) and its rule sets: see
+      # the script.
+      - id: validate-documents
+        name: einvoice-validate (schema and Schematron of written documents)
+        entry: scripts/validate-documents.sh
+        language: system
+        files: ^(Cargo\.(toml|lock)|crates/.*|config/.*\.toml|testfiles/.*\.xml|scripts/validate-documents\.sh)$
+        pass_filenames: false
