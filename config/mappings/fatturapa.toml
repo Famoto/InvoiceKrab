@@ -226,6 +226,14 @@ type = "decimal"
 canonical_key = "InvoiceTotalWithVat"
 codec = "fatturapa-amount-2"
 
+# BT-114 rounding amount: the rounding on the document total. FatturaPA has no
+# paid amount (BT-113); read back, BR-CO-16 derives it from BT-112, this
+# rounding and the amount due (see derivations.toml).
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Arrotondamento]
+type = "decimal"
+canonical_key = "RoundingAmount"
+codec = "fatturapa-amount-2"
+
 # BT-22 invoice note.
 [FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.Causale]
 type = "string"

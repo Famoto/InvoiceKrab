@@ -182,7 +182,7 @@ const TERMS: &[Term] = &[
     term("BT-110/111 total VAT", Number, false, ubl!("TaxTotal/TaxAmount"), cii_sum!("TaxTotalAmount"), ""),
     term("BT-112 total with VAT", Number, true, ubl!("LegalMonetaryTotal/TaxInclusiveAmount"), cii_sum!("GrandTotalAmount"), fpa_doc!("ImportoTotaleDocumento")),
     term("BT-113 paid amount", Number, true, ubl!("LegalMonetaryTotal/PrepaidAmount"), cii_sum!("TotalPrepaidAmount"), ""),
-    term("BT-114 rounding amount", Number, true, ubl!("LegalMonetaryTotal/PayableRoundingAmount"), cii_sum!("RoundingAmount"), ""),
+    term("BT-114 rounding amount", Number, true, ubl!("LegalMonetaryTotal/PayableRoundingAmount"), cii_sum!("RoundingAmount"), fpa_doc!("Arrotondamento")),
     term("BT-115 amount due", Number, true, ubl!("LegalMonetaryTotal/PayableAmount"), cii_sum!("DuePayableAmount"), ""),
     // VAT breakdown (BG-23)
     term("BT-116 VAT category taxable", Number, false, ubl!("TaxTotal/TaxSubtotal/TaxableAmount"), cii_set!("ApplicableTradeTax/BasisAmount"), fpa_goods!("DatiRiepilogo/ImponibileImporto")),
@@ -835,13 +835,6 @@ const KNOWN_ISSUES: &[KnownIssue] = &[
               FatturaPA, BT-109 is derived from the lines alone",
         corpus_only: false,
         doc_allowances: true,
-    },
-    KnownIssue {
-        matches: &["-> fatturapa:1.2.2 -> ", "BT-113 paid amount"],
-        why: "FatturaPA carries neither BT-113 nor BT-114: read back, BR-CO-16 derives the \
-              paid amount as BT-112 - BT-115, so a rounding amount becomes a prepayment",
-        corpus_only: false,
-        doc_allowances: false,
     },
     KnownIssue {
         matches: &[
