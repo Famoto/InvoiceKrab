@@ -630,7 +630,9 @@ canonical_key = "DeliverToPartyName"
 # ===========================================================================
 # One PaymentMeans per credit transfer account (BG-17 repeats); the payment
 # means, card and direct debit are stated once per invoice, so they are
-# lifted to the root: every PaymentMeans must agree on them.
+# lifted to the root: every PaymentMeans must agree on them. UBL allows the
+# payment means text, the card and the mandate in one PaymentMeans at most
+# (UBL-SR-46, -54, -55): those are written into the first only.
 [Invoice.PaymentMeans]
 type = "collection"
 canonical_key = "CreditTransfers"
@@ -643,6 +645,7 @@ canonical_key = "$root.PaymentMeansTypeCode"
 xml = "@name"
 type = "string"
 canonical_key = "$root.PaymentMeansText"
+write = "first"
 
 [Invoice.PaymentMeans.PaymentID]
 type = "string"
@@ -651,6 +654,7 @@ canonical_key = "$root.RemittanceInformation"
 [Invoice.PaymentMeans.CardAccount.PrimaryAccountNumberID]
 type = "string"
 canonical_key = "$root.PaymentCardPrimaryAccountNumber"
+write = "first"
 
 # Mandatory in CardAccountType; EN 16931 carries no network, so it is pinned.
 [Invoice.PaymentMeans.CardAccount.NetworkID]
@@ -660,6 +664,7 @@ constant = "NA"
 [Invoice.PaymentMeans.CardAccount.HolderName]
 type = "string"
 canonical_key = "$root.PaymentCardHolderName"
+write = "first"
 
 [Invoice.PaymentMeans.PayeeFinancialAccount.ID]
 type = "identifier"
@@ -676,10 +681,12 @@ canonical_key = "PaymentServiceProviderIdentifier"
 [Invoice.PaymentMeans.PaymentMandate.ID]
 type = "identifier"
 canonical_key = "$root.MandateReferenceIdentifier"
+write = "first"
 
 [Invoice.PaymentMeans.PaymentMandate.PayerFinancialAccount.ID]
 type = "identifier"
 canonical_key = "$root.DebitedAccountIdentifier"
+write = "first"
 
 # ===========================================================================
 # PAYMENT TERMS (BT-20)

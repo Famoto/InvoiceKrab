@@ -135,6 +135,14 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   `testfiles/corpus/` (not in the repository). With
   `KRAB_CORPUS_DIR=testfiles/corpus`, the correctness test runs them too.
 
+### Fixed
+
+- The UBL mappings (and XRechnung and Peppol, which inherit them) wrote the
+  payment means text (BT-82), the card (BG-18) and the mandate (BT-89,
+  BT-91) into every `PaymentMeans` of an invoice with several accounts,
+  which UBL-SR-46, -54 and -55 forbid. They go into the first only
+  (`write = "first"`).
+
 ### Documentation
 
 - README: "Using KrabInvoice" — the web API with your own configuration as

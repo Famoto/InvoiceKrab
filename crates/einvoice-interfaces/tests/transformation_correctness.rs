@@ -1202,6 +1202,52 @@ fn test_repeated_payment_means_lift_the_shared_code_and_keep_every_account() {
 }
 
 #[test]
+fn test_payment_means_text_card_and_mandate_are_written_once() {
+    // UBL-SR-46, -54, -55: the payment means text, the card and the mandate
+    // occur in one PaymentMeans at most, however many accounts there are.
+    let sample =
+        std::fs::read_to_string(workspace().join("testfiles/en16931-full-ubl.xml")).unwrap();
+    let first = sample
+        .split_once("  <cac:PaymentMeans>")
+        .and_then(|(_, rest)| rest.split_once("</cac:PaymentMeans>\n"))
+        .map(|(block, _)| format!("  <cac:PaymentMeans>{block}</cac:PaymentMeans>\n"))
+        .expect("the sample has a PaymentMeans");
+    let with_card = first
+        .replace(
+            "    <cac:PayeeFinancialAccount>",
+            "    <cac:CardAccount>\n      <cbc:PrimaryAccountNumberID>1234</cbc:PrimaryAccountNumberID>\n      \
+             <cbc:NetworkID>NA</cbc:NetworkID>\n      <cbc:HolderName>Erika</cbc:HolderName>\n    \
+             </cac:CardAccount>\n    <cac:PayeeFinancialAccount>",
+        )
+        .replace(
+            "  </cac:PaymentMeans>",
+            "    <cac:PaymentMandate>\n      <cbc:ID>MANDATE-1</cbc:ID>\n      <cac:PayerFinancialAccount>\n        \
+             <cbc:ID>DE75512108001245126199</cbc:ID>\n      </cac:PayerFinancialAccount>\n    \
+             </cac:PaymentMandate>\n  </cac:PaymentMeans>",
+        );
+    // The second account states none of them, as UBL-SR-46 wants.
+    let second = first
+        .replace("DE02120300000000202051", "DE89370400440532013000")
+        .replace(" name=\"SEPA credit transfer\"", "");
+    let two = sample.replacen(&first, &format!("{with_card}{second}"), 1);
+    let out = refusal(Spoke::UblInvoice, Spoke::UblInvoice, two.as_bytes()).unwrap();
+    for (once, what) in [
+        ("name=\"SEPA credit transfer\"", "the payment means text"),
+        ("<cac:CardAccount>", "the card"),
+        ("<cac:PaymentMandate>", "the mandate"),
+    ] {
+        assert_eq!(out.matches(once).count(), 1, "{what} once:\n{out}");
+    }
+    assert_eq!(
+        out.matches(">58</cbc:PaymentMeansCode>").count(),
+        2,
+        "{out}"
+    );
+    let again = refusal(Spoke::UblInvoice, Spoke::UblInvoice, out.as_bytes()).unwrap();
+    assert_eq!(again, out, "read back and written again unchanged");
+}
+
+#[test]
 fn test_vat_total_in_the_tax_currency_survives_ubl_and_cii() {
     // BT-111 is a second TaxTotal (UBL, told apart by having no TaxSubtotal)
     // or TaxTotalAmount (CII, told apart by the BT-6 currency) in BT-6.
