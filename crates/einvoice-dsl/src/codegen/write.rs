@@ -26,8 +26,9 @@
 //!
 //! A lifted key (`canonical_key = "$root.Key"` inside a collection) is written
 //! from the enclosing scope's value, borrowed, into every occurrence the
-//! writer emits. A collection with no items but a lifted value still gets one
-//! occurrence to carry it, so the value is never dropped.
+//! writer emits, or with `write = "first"` into the first only. A collection
+//! with no items but a lifted value still gets one occurrence to carry it, so
+//! the value is never dropped.
 //!
 //! An attribute of a *valued* element (`PayableAmount/@currencyID`) is written
 //! only when the element has its text value, so an absent amount never shows up
@@ -454,6 +455,13 @@ fn write_collection_block(
     );
     for child in scalar_write_order(ctx.source, &src_item_struct, children, clones) {
         let chosen = open_choice(out, &child_alts, child, indent + 1);
+        // `write = "first"`: a lifted key the format allows once goes into
+        // the first occurrence only.
+        let first_only = child.lift.is_some_and(|lift| lift.first_only);
+        let guard = "    ".repeat(indent + 1 + usize::from(chosen));
+        if first_only {
+            let _ = writeln!(out, "{guard}if {idx} == 0 {{");
+        }
         write_scalar_block(
             out,
             ctx,
@@ -462,9 +470,12 @@ fn write_collection_block(
             &child_vars,
             &elem,
             Some(&idx),
-            indent + 1 + usize::from(chosen),
+            indent + 1 + usize::from(chosen) + usize::from(first_only),
             owned && !child_shared.contains(hub_key(child)),
         );
+        if first_only {
+            let _ = writeln!(out, "{guard}}}");
+        }
         close_choice(out, chosen, indent + 1);
     }
     for nested_coll in nested {

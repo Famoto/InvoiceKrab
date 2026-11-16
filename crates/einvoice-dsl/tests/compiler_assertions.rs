@@ -291,6 +291,7 @@ fn test_shipped_config_is_clean_and_generates_well_formed_code() {
 #[case::lifted_keys(concat!(
     "[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\n",
     "[Doc.L.Code]\ntype=\"string\"\ncanonical_key=\"$root.Code\"\nmultiple=\"first\"\n",
+    "[Doc.L.Text]\ntype=\"string\"\ncanonical_key=\"$root.Text\"\nwrite=\"first\"\n",
     "[Doc.L.ID]\ntype=\"identifier\"\ncanonical_key=\"LineId\"\n",
     "[Doc.L.S]\ntype=\"collection\"\ncanonical_key=\"Ss\"\n",
     "[Doc.L.S.Unit]\ntype=\"unit_code\"\ncanonical_key=\"$parent.Unit\"\n",
@@ -595,6 +596,10 @@ fn test_inheritance_merge_and_disabled_base_are_clean() {
 #[case::e136_lift_joined(
     "E136",
     "[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\n[Doc.L.C]\ntype=\"string\"\ncanonical_key=\"$root.Code\"\nmultiple=\"join\"\njoin_with=\",\"\n"
+)]
+#[case::e136_write_without_lift(
+    "E136",
+    "[Doc.L]\ntype=\"collection\"\ncanonical_key=\"Ls\"\n[Doc.L.C]\ntype=\"string\"\ncanonical_key=\"Code\"\nwrite=\"first\"\n"
 )]
 #[case::e136_lift_unknown_scope(
     "E136",

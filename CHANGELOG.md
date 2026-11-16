@@ -60,6 +60,9 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   (`[[meta.samples]]`, `refuses`) must still exist. Without a declared schema
   file, `krab-cli --check` and the XSD test skip schema validation with a
   notice, as they do without `xmllint`.
+- **Added** `write = "first"` on a lifted key: it is written into the first
+  occurrence of its collection only, for a value the format allows once
+  (UBL-SR-46). `write` on a node that lifts nothing is E136.
 
 ### Changed
 
