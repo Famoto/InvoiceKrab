@@ -564,9 +564,11 @@ Rules:
 - A structural node with a selector is single-valued: its children are
   ordinary scalars of the enclosing scope (`TenderOrLotReference` above is a
   root key). A collection with a selector is a collection like any other.
-- Under [inheritance](#inheritance) a CIUS restates only the selector
-  ([peppol.toml](peppol.toml) changes the tax-registration scheme id from
-  `FC` to `TAX`); the `xml` alias and the children are inherited.
+- Under [inheritance](#inheritance) a CIUS restates only what differs, a
+  selector or a discriminator's `constant`; the `xml` alias and the other
+  children are inherited ([peppol.toml](peppol.toml) writes the
+  tax-registration scheme id `TAX` instead of `FC` by restating the
+  constant of the selector-less BT-32 node).
 
 ---
 

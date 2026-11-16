@@ -38,7 +38,7 @@
 # other UBL-syntax spokes:
 #   * Sibling elements distinguished only by a child value are split with a
 #     `match` selector: the seller's `PartyTaxScheme` elements by `TaxScheme/ID`
-#     (`VAT` → BT-31, `FC` → BT-32), and `AdditionalDocumentReference` by
+#     (`VAT` → BT-31, the rest → BT-32, written `FC`), and `AdditionalDocumentReference` by
 #     `DocumentTypeCode` (`130` → BT-18, the rest → BG-24). Document- and
 #     line-level `AllowanceCharge` are single collections that carry the
 #     `ChargeIndicator` (true = charge BG-21/BG-28, false = allowance BG-20/27),
@@ -366,8 +366,11 @@ normalize = ["trim", "uppercase"]
 required = true
 
 # BT-31 / BT-32: the seller may carry two `PartyTaxScheme` elements, told apart
-# by `TaxScheme/ID`. Each is a structural node with a `match` selector on the
-# same physical element; the selector value is written back as the scheme id.
+# by `TaxScheme/ID`: `VAT` is the VAT identifier (BT-31), and EN 16931 allows
+# any other scheme id for the tax registration (BT-32; KoSIT uses `ID`). So
+# BT-31 is the structural node with a `match` selector and BT-32 the
+# selector-less node on the same physical element, taking what BT-31 does not;
+# on write, BT-31's selector and BT-32's constant are the scheme ids.
 [Invoice.AccountingSupplierParty.Party.PartyTaxScheme]
 match = { "TaxScheme.ID" = "VAT" }
 
@@ -382,12 +385,15 @@ description = "Scheme discriminator; written from the `match` selector."
 
 [Invoice.AccountingSupplierParty.Party.SellerTaxRegistration]
 xml = "PartyTaxScheme"
-match = { "TaxScheme.ID" = "FC" }
 
 [Invoice.AccountingSupplierParty.Party.SellerTaxRegistration.CompanyID]
 type = "identifier"
 canonical_key = "SellerTaxRegistrationIdentifier"
 normalize = ["trim"]
+
+[Invoice.AccountingSupplierParty.Party.SellerTaxRegistration.TaxScheme.ID]
+type = "identifier"
+constant = "FC"
 
 [Invoice.AccountingSupplierParty.Party.PartyLegalEntity.RegistrationName]
 type = "string"

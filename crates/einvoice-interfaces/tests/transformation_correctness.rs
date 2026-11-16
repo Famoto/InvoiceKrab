@@ -844,14 +844,6 @@ const KNOWN_ISSUES: &[KnownIssue] = &[
         doc_allowances: false,
     },
     KnownIssue {
-        matches: &["BT-31/32 seller VAT/tax id"],
-        why: "the UBL readers bind BT-32 only for PartyTaxScheme/TaxScheme/ID `FC` (`TAX` \
-              for Peppol); EN 16931 allows any value but `VAT`, so others (KoSIT uses `???` \
-              and `ID`) are dropped without a diagnostic",
-        corpus_only: true,
-        doc_allowances: false,
-    },
-    KnownIssue {
         matches: &[
             "GR-base-example-TaxRepresentative.xml: no transform checked",
             "[REQUIRED_MISSING]",
@@ -1047,7 +1039,8 @@ fn failure(text: &str, corpus: bool, doc_allowances: bool) -> Failure {
 
 #[test]
 fn test_corpus_only_issue_does_not_absorb_a_sample_failure() {
-    let seller = "x.xml: ubl-invoice:2.1 -> cii:2.3: BT-31/32 seller VAT/tax id: dropped";
+    let seller = "GR-base-example-TaxRepresentative.xml: no transform checked: \
+                  [REQUIRED_MISSING] seller name";
     let (known, unknown, _) = split_known(vec![failure(seller, false, false)], true);
     assert_eq!(
         unknown,
