@@ -24,9 +24,10 @@
 # and `[meta.namespaces]` is declared on the root, so the output is a real,
 # schema-valid namespaced UBL document.
 #
-# Collections nest to any depth: invoice-line allowances/charges (BG-27/28) and
-# item attributes (BG-32) are modelled as collections inside the invoice-line
-# collection.
+# Collections nest to any depth: invoice-line allowances/charges (BG-27/28),
+# item classifications (BT-158) and item attributes (BG-32) are modelled as
+# collections inside the invoice-line collection. Preceding invoice references
+# (BG-3) are a root collection.
 #
 # Tables are declared in the UBL 2.1 XSD *sequence* order, group by group:
 # declaration order is schema order (see mappings/README.md), so the writer emits
@@ -201,6 +202,11 @@ canonical_key = "PurchaseOrderReference"
 [Invoice.OrderReference.SalesOrderID]
 type = "identifier"
 canonical_key = "SalesOrderReference"
+
+# BG-3 repeats: one BillingReference per preceding invoice.
+[Invoice.BillingReference]
+type = "collection"
+canonical_key = "PrecedingInvoices"
 
 [Invoice.BillingReference.InvoiceDocumentReference.ID]
 type = "identifier"
@@ -1079,6 +1085,11 @@ canonical_key = "ItemStandardIdentifierScheme"
 type = "string"
 canonical_key = "ItemCountryOfOrigin"
 normalize = ["trim", "uppercase"]
+
+# BT-158 repeats: one CommodityClassification per classification.
+[InvoiceLine.Item.CommodityClassification]
+type = "collection"
+canonical_key = "ItemClassifications"
 
 [InvoiceLine.Item.CommodityClassification.ItemClassificationCode]
 type = "string"

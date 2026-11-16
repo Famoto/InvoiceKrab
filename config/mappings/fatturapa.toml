@@ -242,6 +242,11 @@ canonical_key = "PurchaseOrderReference"
 type = "identifier"
 canonical_key = "ContractReference"
 
+# BG-3 repeats: one DatiFattureCollegate per preceding invoice.
+[FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiFattureCollegate]
+type = "collection"
+canonical_key = "PrecedingInvoices"
+
 [FatturaElettronica.FatturaElettronicaBody.DatiGenerali.DatiFattureCollegate.IdDocumento]
 type = "identifier"
 canonical_key = "PrecedingInvoiceReference"

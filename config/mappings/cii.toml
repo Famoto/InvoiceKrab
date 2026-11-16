@@ -186,7 +186,11 @@ type = "string"
 canonical_key = "ItemAttributeValue"
 required = true
 
-# BT-158 classification, BT-159 origin country — follow the attributes in the schema.
+# BT-158 classifications (repeating), BT-159 origin country — follow the attributes in the schema.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedTradeProduct.DesignatedProductClassification]
+type = "collection"
+canonical_key = "ItemClassifications"
+
 [CrossIndustryInvoice.SupplyChainTradeTransaction.IncludedSupplyChainTradeLineItem.SpecifiedTradeProduct.DesignatedProductClassification.ClassCode]
 type = "string"
 canonical_key = "ItemClassificationIdentifier"
@@ -1040,6 +1044,11 @@ type = "decimal"
 canonical_key = "PayableAmount"
 required = true
 
+
+# BG-3 repeats: one InvoiceReferencedDocument per preceding invoice.
+[CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.InvoiceReferencedDocument]
+type = "collection"
+canonical_key = "PrecedingInvoices"
 
 [CrossIndustryInvoice.SupplyChainTradeTransaction.ApplicableHeaderTradeSettlement.InvoiceReferencedDocument.IssuerAssignedID]
 type = "identifier"

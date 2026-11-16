@@ -853,17 +853,6 @@ const KNOWN_ISSUES: &[KnownIssue] = &[
     },
     KnownIssue {
         matches: &[
-            "no transform checked",
-            "occurs more than once, but the mapping reads it as a single element",
-        ],
-        why: "the UBL readers bind BillingReference and CommodityClassification as \
-              single elements, so a document repeating one (as UBL and EN 16931 allow) is \
-              not read at all",
-        corpus_only: true,
-        doc_allowances: false,
-    },
-    KnownIssue {
-        matches: &[
             "GR-base-example-TaxRepresentative.xml: no transform checked",
             "[REQUIRED_MISSING]",
         ],
