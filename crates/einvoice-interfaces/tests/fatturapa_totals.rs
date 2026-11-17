@@ -103,3 +103,29 @@ fn test_fatturapa_writes_document_allowances_and_charges_as_numbered_lines() {
         "{ubl}"
     );
 }
+
+#[test]
+fn test_fatturapa_reads_an_allowance_or_charge_line_by_its_total() {
+    // A producer may state an AC line with a quantity: its total, which
+    // DatiRiepilogo counts, is the charge amount, not the unit price.
+    let engine = Engine::new();
+    let xml = engine
+        .transform(Spoke::UblInvoice, Spoke::Fatturapa, &full_ubl())
+        .expect("well-formed source")
+        .value
+        .expect("written document")
+        .replace(
+            "<Descrizione>Freight</Descrizione><PrezzoUnitario>30.00</PrezzoUnitario>",
+            "<Descrizione>Freight</Descrizione><Quantita>2.00</Quantita><PrezzoUnitario>15.00</PrezzoUnitario>",
+        );
+    assert!(xml.contains("<Quantita>2.00</Quantita>"), "{xml}");
+    let back = engine
+        .transform(Spoke::Fatturapa, Spoke::UblInvoice, xml.as_bytes())
+        .expect("well-formed document");
+    assert!(!back.has_errors(), "{:?}", back.diagnostics);
+    let ubl = back.value.expect("written document");
+    assert!(
+        ubl.contains(r#"<cbc:AllowanceChargeReason>Freight</cbc:AllowanceChargeReason><cbc:Amount currencyID="EUR">30.00</cbc:Amount>"#),
+        "{ubl}"
+    );
+}

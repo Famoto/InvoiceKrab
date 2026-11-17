@@ -384,14 +384,16 @@ canonical_key = "AllowanceChargeReason"
 codec = "fatturapa-text-1000"
 placeholder = "Sconto o maggiorazione"
 
+# The amount is the line total, which DatiRiepilogo counts; written without
+# a quantity, the unit price is the same amount.
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge.PrezzoUnitario]
 type = "decimal"
-canonical_key = "AllowanceChargeSignedAmount"
+clone_of = "AllowanceChargeSignedAmount"
 codec = "fatturapa-amount-8"
 
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge.PrezzoTotale]
 type = "decimal"
-clone_of = "AllowanceChargeSignedAmount"
+canonical_key = "AllowanceChargeSignedAmount"
 codec = "fatturapa-amount-8"
 
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge.AliquotaIVA]
