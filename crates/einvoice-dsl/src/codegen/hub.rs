@@ -120,8 +120,9 @@ fn push_values_fn(out: &mut String, hub: &CanonicalModel, scope: &CanonicalScope
 /// derived, and `MainKey::check_derived` (see [`check_fn`]).
 fn derive_fns(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]) {
     out.push_str(
-        "    /// The derivation rules (`config/derivations.toml`), in order: target\n\
-         \x20\x20\x20\x20/// label, rule reference, and the labels the rule cannot derive without.\n",
+        "    /// The derivation rules (the mappings' own, then `config/derivations.toml`'s),\n\
+         \x20\x20\x20\x20/// in order: target label, rule reference, and the labels the rule cannot\n\
+         \x20\x20\x20\x20/// derive without.\n",
     );
     out.push_str(
         "    pub const DERIVATIONS: &'static [(&'static str, &'static str, &'static [&'static str])] = &[\n",
