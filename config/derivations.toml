@@ -20,6 +20,10 @@
 #
 # Rules apply in file order; an operand derived by a rule must be derived
 # before the rule using it (E113). See crates/einvoice-dsl/src/derive.rs.
+#
+# A rule for keys only one mapping declares goes in that mapping's file, in the
+# same [[derive]] syntax (fatturapa.toml carries its SC / AC line rules): it is
+# loaded only while the mapping is compiled, and runs before the rules here.
 
 # BR-CO-10: sum of invoice line net amounts = Σ invoice line net amount (BT-131).
 [[derive]]

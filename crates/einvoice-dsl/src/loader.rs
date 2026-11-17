@@ -49,7 +49,7 @@
 //! sample resolution and the declared-file checks, and each structural error
 //! path, over temp directories.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use crate::codec::{CodecTable, parse_codecs};
@@ -91,8 +91,10 @@ pub struct LoadOutput {
     pub declared_files: Vec<PathBuf>,
     /// The workspace root the declared paths are relative to.
     pub root: PathBuf,
-    /// The derivation rules of `<dir>/derivations.toml`, in file order
-    /// (empty without the file, and for [`load_dir`]).
+    /// The derivation rules, in the order they run: every compiled mapping's
+    /// own `[[derive]]` rules (spokes in slug order, each chain ancestor-first,
+    /// each mapping once), then those of `<dir>/derivations.toml` in file
+    /// order ([`load_config`] only).
     pub derivations: Vec<Derivation>,
 }
 
@@ -143,14 +145,14 @@ pub fn load_config(dir: &Path) -> Result<LoadOutput, ConfigError> {
     let mut files = codec_files;
     files.extend(mappings.files);
     let derivations_file = dir.join("derivations.toml");
-    let mut derivations = Vec::new();
+    let mut derivations = mappings.derivations;
     if derivations_file.is_file() {
         let src = std::fs::read_to_string(&derivations_file).map_err(|e| {
             ConfigError::msg(format!("cannot read `{}`: {e}", derivations_file.display()))
         })?;
-        derivations = parse_derivations(&src).map_err(|e| {
+        derivations.extend(parse_derivations(&src).map_err(|e| {
             ConfigError::msg(format!("{}: {}", derivations_file.display(), e.message))
-        })?;
+        })?);
         files.push(derivations_file);
     }
     Ok(LoadOutput {
@@ -306,13 +308,24 @@ pub fn load_dir(dir: &Path, root: &Path) -> Result<LoadOutput, ConfigError> {
     declared_files.sort();
     declared_files.dedup();
 
+    // A mapping's own rules name keys only it declares, so they come with the
+    // mapping: a base reached only through `inherits` counts, a mapping no
+    // spoke compiles does not.
+    let mut seen = BTreeSet::new();
+    let derivations = spokes
+        .iter()
+        .flat_map(|s| &s.chain)
+        .filter(|m| seen.insert(mapping_id(m)))
+        .flat_map(|m| m.derivations.iter().cloned())
+        .collect();
+
     Ok(LoadOutput {
         codecs: CodecTable::new(),
         spokes,
         files,
         declared_files,
         root: root.to_path_buf(),
-        derivations: Vec::new(),
+        derivations,
     })
 }
 

@@ -120,8 +120,9 @@ fn push_values_fn(out: &mut String, hub: &CanonicalModel, scope: &CanonicalScope
 /// derived, and `MainKey::check_derived` (see [`check_fn`]).
 fn derive_fns(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]) {
     out.push_str(
-        "    /// The derivation rules (`config/derivations.toml`), in order: target\n\
-         \x20\x20\x20\x20/// label, rule reference, and the labels the rule cannot derive without.\n",
+        "    /// The derivation rules (the mappings' own, then `config/derivations.toml`'s),\n\
+         \x20\x20\x20\x20/// in order: target label, rule reference, and the labels the rule cannot\n\
+         \x20\x20\x20\x20/// derive without.\n",
     );
     out.push_str(
         "    pub const DERIVATIONS: &'static [(&'static str, &'static str, &'static [&'static str])] = &[\n",
@@ -241,6 +242,63 @@ fn derive_fns(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]
                 }
                 let _ = writeln!(out, "        if filled {{\n            {push}\n        }}");
             }
+            DerivationKind::Copy { from, negate_where } => {
+                let (collections, key) = d.target_path();
+                let mut scope = CanonicalScope::Root;
+                let mut var = "self".to_string();
+                let mut pad = "        ".to_string();
+                out.push_str("        let mut filled = false;\n");
+                for (depth, coll) in collections.iter().enumerate() {
+                    let item = format!("i{depth}");
+                    let _ = writeln!(out, "{pad}for {item} in &mut {var}.{} {{", snake_case(coll));
+                    scope = scope.child(coll);
+                    var = item;
+                    pad.push_str("    ");
+                }
+                // `-0` would be written `-0.00`: a zero is never negated.
+                let target = snake_case(key);
+                let _ = writeln!(
+                    out,
+                    "{pad}if {var}.{target}.is_none() && let Some(value) = {var}.{} {{",
+                    snake_case(from)
+                );
+                let _ = writeln!(
+                    out,
+                    "{pad}    let negate = {};",
+                    filter_expr(hub, &scope, negate_where, &var)
+                );
+                let _ = writeln!(
+                    out,
+                    "{pad}    {var}.{target} = Some(if negate && !value.is_zero() {{ -value }} else {{ value }});\n{pad}    filled = true;\n{pad}}}"
+                );
+                for _ in &collections {
+                    pad.truncate(pad.len() - 4);
+                    let _ = writeln!(out, "{pad}}}");
+                }
+                let _ = writeln!(out, "        if filled {{\n            {push}\n        }}");
+            }
+            DerivationKind::Number { collection, item } => {
+                // Whole numbers only: a value that is not one (a UBL line id
+                // `A-1`) neither takes part nor stops the numbering. Numbers
+                // past `u64::MAX` derive nothing, never a repeated number.
+                let (collections, key) = d.target_path();
+                let target_coll = snake_case(collections[0]);
+                let target = snake_case(key);
+                out.push_str("        {\n            let mut next: Option<u64> = Some(1);\n");
+                for (coll, field) in [
+                    (snake_case(collection), snake_case(item)),
+                    (target_coll.clone(), target.clone()),
+                ] {
+                    let _ = writeln!(
+                        out,
+                        "            for i0 in &self.{coll} {{\n                if let Some(n) = i0.{field}.as_deref().and_then(|v| v.trim().parse::<u64>().ok()) {{\n                    next = next.zip(n.checked_add(1)).map(|(a, b)| a.max(b));\n                }}\n            }}"
+                    );
+                }
+                let _ = writeln!(
+                    out,
+                    "            let missing = self.{target_coll}.iter().filter(|i0| i0.{target}.is_none()).count() as u64;\n            if missing > 0 && let Some(mut next) = next.filter(|n| n.checked_add(missing).is_some()) {{\n                for i0 in &mut self.{target_coll} {{\n                    if i0.{target}.is_none() {{\n                        i0.{target} = Some(CompactString::from(next.to_string()));\n                        next += 1;\n                    }}\n                }}\n                {push}\n            }}\n        }}"
+                );
+            }
         }
     }
     out.push_str("        derived\n    }\n");
@@ -317,7 +375,9 @@ fn check_fn(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]) 
                 );
                 out.push_str("        }\n");
             }
-            DerivationKind::Value { .. } => {}
+            DerivationKind::Value { .. }
+            | DerivationKind::Copy { .. }
+            | DerivationKind::Number { .. } => {}
         }
     }
     out.push_str("        mismatches\n    }\n");
@@ -390,6 +450,30 @@ fn emit_filter(
         };
         let _ = writeln!(out, "{pad}if {test} {{\n{pad}    continue;\n{pad}}}");
     }
+}
+
+/// The condition that every one of `filter`'s equalities holds on the item
+/// `var` of `scope` (`false` for no equalities: nothing is negated).
+fn filter_expr(
+    hub: &CanonicalModel,
+    scope: &CanonicalScope,
+    filter: &[(String, String)],
+    var: &str,
+) -> String {
+    if filter.is_empty() {
+        return "false".to_string();
+    }
+    filter
+        .iter()
+        .map(|(key, literal)| {
+            let field = snake_case(key);
+            match hub.get(scope, key).map(|f| f.ty) {
+                Some(MappingType::Boolean) => format!("{var}.{field} == Some({literal})"),
+                _ => format!("{var}.{field}.as_deref() == Some({literal:?})"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" && ")
 }
 
 /// The Rust expression of a canonical literal of type `ty` in the hub.

@@ -1054,6 +1054,9 @@ unless = ["LineAllowanceChargeReason"]
 | `value` | A literal set on the target (on every item matching `where`) when neither it nor any `unless` key is present |
 | `where` | `{ Key = "literal" }`: an item filter on another key of the item |
 | `unless` | Keys whose presence (on the item) suppresses a `value` |
+| `copy` | Another `decimal` key of the target's item, copied onto every item that lacks the target |
+| `negate_where` | `copy` only, `{ Key = "literal" }`: the items whose copy is negated (a zero stays unsigned) |
+| `number_after` | `Collection/Key` of a root collection's `identifier` / `string` key: every item of the target's root collection that lacks a number gets the next one after the largest whole number among those values and the target's (values that are not whole numbers are ignored; numbers past 18446744073709551615 derive nothing) |
 
 Rules apply in file order, so a rule may use a total an earlier rule derived.
 The build checks the file against the hub: a computed target must be a root
@@ -1062,7 +1065,46 @@ key under different filters) (E110); a `sum` must name a `decimal` key of a
 root collection (E111); a `where` key must exist and its literal fit its type
 (E112); an operand must be a root `decimal` key, and a `requires` operand must
 not be derived by this or a later rule (E113); a `value` must fit its key's
-type (E114).
+type (E114). A `copy` target is a `decimal` key of a collection item and its
+source another `decimal` key of that item (E115); a `number_after` target is
+an `identifier` or `string` key of a root collection's item, numbered after an
+`identifier` or `string` key of a root collection (E116).
+
+`copy` and `number_after` fill in what a format needs but EN 16931 leaves
+implicit. FatturaPA has no document-level allowance or charge that its VAT
+summary counts, so it writes BG-20 / BG-21 as `DettaglioLinee` lines of their
+own (`TipoCessionePrestazione` `SC` / `AC`), each with a signed price and a
+line number after the invoice lines.
+
+A rule for keys only one mapping declares belongs in that mapping's file, in
+the same `[[derive]]` syntax: it is loaded only while the mapping is compiled,
+so a configuration without the mapping builds without its rules (in
+`derivations.toml` it would fail E110). The rules of every compiled mapping
+run before those of `derivations.toml`, each mapping's once (an `inherits`
+base included). [fatturapa.toml](fatturapa.toml) carries the SC / AC rules:
+
+```toml
+# In fatturapa.toml.
+# The signed amount FatturaPA writes: an allowance negative.
+[[derive]]
+key = "DocumentAllowanceCharges/AllowanceChargeSignedAmount"
+rule = "FatturaPA SC/AC"
+copy = "AllowanceChargeAmount"
+negate_where = { ChargeIndicator = "false" }
+
+# And back: the unsigned amount, for a hub read from FatturaPA.
+[[derive]]
+key = "DocumentAllowanceCharges/AllowanceChargeAmount"
+rule = "FatturaPA SC/AC"
+copy = "AllowanceChargeSignedAmount"
+negate_where = { ChargeIndicator = "false" }
+
+# Lines 1–3 are the invoice lines, so the allowances and charges are 4, 5, …
+[[derive]]
+key = "DocumentAllowanceCharges/AllowanceChargeLineNumber"
+rule = "FatturaPA SC/AC"
+number_after = "InvoiceLines/LineId"
+```
 
 [`krab-cli --analyze`](#checking-your-mapping) counts a key a target requires
 as available when a derivation can supply it.
@@ -1390,8 +1432,8 @@ cargo run -p einvoice-dsl -- report config
 
 `check` also verifies the samples your `[meta.schema]` and `[[meta.samples]]`
 declare exist and every declared path stays in the workspace (E100), that
-every sample has a reader (E101), and that
-`config/derivations.toml` fits the hub (E110–E114).
+every sample has a reader (E101), and that the derivation rules
+(`config/derivations.toml` and the mappings' own) fit the hub (E110–E116).
 
 Once it builds, the CLI offers two static authoring aids (no input document
 needed), and the schema verdict on your declared samples:
@@ -1458,6 +1500,8 @@ Validation reports **every** problem in one run, never just the first error.
 | `E112` | A `where` key is unknown, or its literal does not fit the key's type |
 | `E113` | An `add` / `subtract` / `requires` operand is no root `decimal` key, or a required operand is derived by this or a later rule |
 | `E114` | A `value` literal does not fit the target key's type |
+| `E115` | A `copy` source is not another `decimal` key of the target's item |
+| `E116` | A `number_after` does not name an `identifier` or `string` key of a root collection |
 | `E130` | A `match` reference is not `$root.Key`, or not exactly one root-level node reads `Key`, from one path of its own (no fallbacks); a `when` entry names no scalar hub key of the node's scope, tests a decimal or boolean key for a value, or is a reference |
 | `E131` | A `match` reference's node lies beneath a repeated or matched element |
 | `E132` | A misplaced or empty `when`; two alternatives of one value without `when`, a `when` repeating an earlier alternative's, or an alternative with `multiple`, `required`, `default` or a pinned `constant` |

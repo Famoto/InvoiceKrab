@@ -6,7 +6,9 @@
 //! A format that omits a total the others require (FatturaPA states no sum of
 //! line net amounts) would otherwise make every transform out of it fail.
 //! The rules live in `config/derivations.toml`, one `[[derive]]` table each,
-//! applied in file order:
+//! applied in file order. A mapping file may carry `[[derive]]` tables of its
+//! own for the keys only it declares: they are loaded only while the mapping
+//! is compiled, and run before `config/derivations.toml`'s:
 //!
 //! ```toml
 //! [[derive]]
@@ -67,6 +69,16 @@
 //! - `value` sets a literal on the target — a root key, or an item key named
 //!   by its label (`Collection/…/Key`) on every item matching `where` — when
 //!   neither the target nor any `unless` key of the item is present.
+//! - `copy` copies another decimal key of the target's item onto every item
+//!   that lacks the target, negated on the items matching `negate_where` (a
+//!   zero is never negated, so no `-0.00` is written). FatturaPA writes a
+//!   document-level allowance as a line with a negative price this way.
+//! - `number_after = "Collection/Key"` numbers every item of the target's
+//!   root collection that lacks a number, continuing after the largest whole
+//!   number among `Collection`'s `Key` values and the target's own (other
+//!   values are ignored): FatturaPA numbers its allowance and charge lines
+//!   after the invoice lines. Numbers that would pass `u64::MAX` derive
+//!   nothing, so no number is ever given twice.
 //!
 //! # Diagnostics
 //!
@@ -78,7 +90,12 @@
 //! key of a root collection, `E112` a `where` / `unless` key that is not a
 //! scalar of the scope or a literal that does not fit its type, `E113` an
 //! operand that is not a root `decimal` key or a required one derived by a
-//! later rule, `E114` a `value` literal that does not fit the target's type.
+//! later rule, `E114` a `value` literal that does not fit the target's type,
+//! `E115` a `copy` source that is not another `decimal` key of the target's
+//! item (its target: `E110` unless a `decimal` item key), `E116` a
+//! `number_after` that does not name an `identifier` or `string` key of a
+//! root collection (its target: `E110` unless such a key of a root
+//! collection's item).
 
 use std::collections::BTreeSet;
 
@@ -152,6 +169,24 @@ pub enum DerivationKind {
         /// Keys of the item whose presence stops the rule.
         unless: Vec<String>,
     },
+    /// Another decimal key of the same item, copied onto the target of every
+    /// item that lacks it, negated on the items satisfying `negate_where`.
+    Copy {
+        /// The item key copied.
+        from: String,
+        /// Equality filters on other keys of the item that negate the copy.
+        negate_where: Vec<(String, String)>,
+    },
+    /// Consecutive numbers for the target of every item of its root
+    /// collection that lacks one, continuing after the largest number among
+    /// `collection`'s `item` values and the target values already present.
+    Number {
+        /// The root collection whose numbers come first.
+        collection: String,
+        /// Its text key holding them (values that are not whole numbers are
+        /// ignored).
+        item: String,
+    },
 }
 
 impl Derivation {
@@ -166,7 +201,14 @@ impl Derivation {
             DerivationKind::Arithmetic { add, requires, .. } => {
                 add.iter().take(1).chain(requires).cloned().collect()
             }
-            DerivationKind::Value { .. } => Vec::new(),
+            DerivationKind::Copy { from, .. } => {
+                let (collections, _) = self.target_path();
+                let mut label = collections.join("/");
+                label.push('/');
+                label.push_str(from);
+                vec![label]
+            }
+            DerivationKind::Value { .. } | DerivationKind::Number { .. } => Vec::new(),
         }
     }
 
@@ -209,6 +251,12 @@ struct RawDerivation {
     #[serde(default)]
     unless: Option<Vec<String>>,
     #[serde(default)]
+    copy: Option<String>,
+    #[serde(default)]
+    negate_where: Option<toml::Table>,
+    #[serde(default)]
+    number_after: Option<String>,
+    #[serde(default)]
     check: Option<String>,
 }
 
@@ -217,14 +265,25 @@ struct RawDerivation {
 /// # Errors
 ///
 /// A TOML error, an unknown field, a rule that declares not exactly one of
-/// `sum`, `add` and `value`, a field beside the wrong kind (`where` on `add`;
-/// `subtract`, `requires`, `skip_zero`, `skip_negative` off `add`; `unless` off `value`), a
-/// `sum` that is not `Collection/Key`, an empty `add`, or a non-string `where`
+/// `sum`, `add`, `value`, `copy` and `number_after`, a field beside the wrong
+/// kind (`where` off `sum` and `value`; `subtract`, `requires`, `skip_zero`,
+/// `skip_negative` off `add`; `unless` off `value`; `negate_where` off `copy`;
+/// `check` off `sum` and `add`), a `sum` or `number_after` that is not
+/// `Collection/Key`, an empty `add`, or a non-string `where` / `negate_where`
 /// value.
 pub fn parse_derivations(src: &str) -> Result<Vec<Derivation>, ConfigError> {
     let file: RawFile = toml::from_str(src)?;
-    file.derive
-        .into_iter()
+    build_all(file.derive)
+}
+
+/// Parses the `[[derive]]` tables of a mapping file (`derive`: its top-level
+/// `derive` array) as [`parse_derivations`] does.
+pub(crate) fn derivations_of(derive: toml::Value) -> Result<Vec<Derivation>, ConfigError> {
+    build_all(Vec::<RawDerivation>::deserialize(derive)?)
+}
+
+fn build_all(raw: Vec<RawDerivation>) -> Result<Vec<Derivation>, ConfigError> {
+    raw.into_iter()
         .map(|raw| {
             let key = raw.key.clone();
             build(raw).map_err(|e| ConfigError::msg(format!("derivation of `{key}`: {e}")))
@@ -233,9 +292,17 @@ pub fn parse_derivations(src: &str) -> Result<Vec<Derivation>, ConfigError> {
 }
 
 fn build(raw: RawDerivation) -> Result<Derivation, String> {
-    let kinds = [raw.sum.is_some(), raw.add.is_some(), raw.value.is_some()];
+    let kinds = [
+        raw.sum.is_some(),
+        raw.add.is_some(),
+        raw.value.is_some(),
+        raw.copy.is_some(),
+        raw.number_after.is_some(),
+    ];
     if kinds.iter().filter(|k| **k).count() != 1 {
-        return Err("declare exactly one of `sum`, `add` and `value`".to_string());
+        return Err(
+            "declare exactly one of `sum`, `add`, `value`, `copy` and `number_after`".to_string(),
+        );
     }
     let off_add = raw.subtract.is_some()
         || raw.requires.is_some()
@@ -250,11 +317,20 @@ fn build(raw: RawDerivation) -> Result<Derivation, String> {
     if raw.value.is_none() && raw.unless.is_some() {
         return Err("`unless` belongs to a `value` rule".to_string());
     }
-    if raw.value.is_some() && raw.check.is_some() {
+    if raw.copy.is_none() && raw.negate_where.is_some() {
+        return Err("`negate_where` belongs to a `copy` rule".to_string());
+    }
+    if raw.filter.is_some() && raw.sum.is_none() && raw.value.is_none() {
+        return Err("`where` belongs to a `sum` or `value` rule".to_string());
+    }
+    // `value`, `copy` and `number_after` fill items; there is no equation to
+    // check a carried value against.
+    let fills = raw.value.is_some() || raw.copy.is_some() || raw.number_after.is_some();
+    if fills && raw.check.is_some() {
         return Err("`check` belongs to a `sum` or `add` rule".to_string());
     }
     let check = match raw.check.as_deref() {
-        None if raw.value.is_some() => CheckLevel::Off,
+        None if fills => CheckLevel::Off,
         None | Some("warning") => CheckLevel::Warning,
         Some("error") => CheckLevel::Error,
         Some("off") => CheckLevel::Off,
@@ -264,16 +340,17 @@ fn build(raw: RawDerivation) -> Result<Derivation, String> {
             ));
         }
     };
-    let filter = || -> Result<Vec<(String, String)>, String> {
+    let equalities = |table: &Option<toml::Table>, field: &str| {
         let mut out = Vec::new();
-        for (k, v) in raw.filter.clone().unwrap_or_default() {
+        for (k, v) in table.clone().unwrap_or_default() {
             let toml::Value::String(v) = v else {
-                return Err(format!("`where.{k}` must be a string literal"));
+                return Err(format!("`{field}.{k}` must be a string literal"));
             };
             out.push((k, v));
         }
         Ok(out)
     };
+    let filter = || equalities(&raw.filter, "where");
     let kind = if let Some(sum) = &raw.sum {
         let Some((collection, item)) = sum.split_once('/') else {
             return Err(format!("`sum = \"{sum}\"` must name `Collection/Key`"));
@@ -284,9 +361,6 @@ fn build(raw: RawDerivation) -> Result<Derivation, String> {
             filter: filter()?,
         }
     } else if let Some(add) = &raw.add {
-        if raw.filter.is_some() {
-            return Err("`where` belongs to a `sum` or `value` rule".to_string());
-        }
         if add.is_empty() {
             return Err("`add` needs at least one operand".to_string());
         }
@@ -296,6 +370,21 @@ fn build(raw: RawDerivation) -> Result<Derivation, String> {
             requires: raw.requires.clone().unwrap_or_default(),
             skip_zero: raw.skip_zero.unwrap_or(false),
             skip_negative: raw.skip_negative.unwrap_or(false),
+        }
+    } else if let Some(from) = &raw.copy {
+        DerivationKind::Copy {
+            from: from.clone(),
+            negate_where: equalities(&raw.negate_where, "negate_where")?,
+        }
+    } else if let Some(after) = &raw.number_after {
+        let Some((collection, item)) = after.split_once('/') else {
+            return Err(format!(
+                "`number_after = \"{after}\"` must name `Collection/Key`"
+            ));
+        };
+        DerivationKind::Number {
+            collection: collection.to_string(),
+            item: item.to_string(),
         }
     } else {
         DerivationKind::Value {
@@ -470,6 +559,62 @@ pub fn check_derivations(hub: &CanonicalModel, derivations: &[Derivation]) -> Ve
                     check_item_keys(hub, scope, filter, &unless, &owner, &mut err);
                 }
             }
+            DerivationKind::Copy { from, negate_where } => {
+                let (collections, key) = d.target_path();
+                let scope = (!collections.is_empty())
+                    .then(|| scope_of(hub, &collections))
+                    .flatten();
+                let decimal = |scope: &CanonicalScope, k: &str| {
+                    hub.get(scope, k)
+                        .is_some_and(|f| f.ty == MappingType::Decimal && !f.is_collection)
+                };
+                match &scope {
+                    Some(scope) if decimal(scope, key) => {
+                        if from == key || !decimal(scope, from) {
+                            err(
+                                "E115",
+                                format!(
+                                    "`copy = \"{from}\"` does not name another `decimal` key of the target's item"
+                                ),
+                            );
+                        }
+                        let owner = collections.join("/");
+                        check_item_keys(hub, scope, negate_where, &[], &owner, &mut err);
+                    }
+                    _ => err(
+                        "E110",
+                        format!("`{}` is not a `decimal` key of a collection item", d.key),
+                    ),
+                }
+            }
+            DerivationKind::Number { collection, item } => {
+                let text = |scope: &CanonicalScope, k: &str| {
+                    hub.get(scope, k).is_some_and(|f| {
+                        !f.is_collection
+                            && matches!(f.ty, MappingType::Identifier | MappingType::String)
+                    })
+                };
+                let (collections, key) = d.target_path();
+                let target_ok = collections.len() == 1
+                    && scope_of(hub, &collections).is_some_and(|s| text(&s, key));
+                if !target_ok {
+                    err(
+                        "E110",
+                        format!(
+                            "`{}` is not an `identifier` or `string` key of a root collection item",
+                            d.key
+                        ),
+                    );
+                }
+                if !scope_of(hub, &[collection.as_str()]).is_some_and(|s| text(&s, item)) {
+                    err(
+                        "E116",
+                        format!(
+                            "`number_after = \"{collection}/{item}\"` does not name an `identifier` or `string` key of a root collection"
+                        ),
+                    );
+                }
+            }
         }
     }
     diags
@@ -577,6 +722,15 @@ mod tests {
             [Doc.AC.M]
             type = "decimal"
             canonical_key = "AllowanceChargeAmount"
+            [Doc.AC.S]
+            type = "decimal"
+            canonical_key = "SignedAmount"
+            [Doc.AC.N]
+            type = "identifier"
+            canonical_key = "LineNumber"
+            [Doc.L.Id]
+            type = "identifier"
+            canonical_key = "LineId"
         "#;
         let (ir, _, diags) = build_ir(&[parse_mapping(src).unwrap()]);
         assert!(diags.is_empty(), "{diags:?}");
@@ -768,6 +922,118 @@ mod tests {
         "key = \"InvoiceNumber\"\nrule = \"R\"\nvalue = \"x\"\nunless = [\"Nope\"]"
     )]
     fn test_value_rules_reject(#[case] code: &str, #[case] body: &str) {
+        let rules = parse_derivations(&format!("[[derive]]\n{body}")).unwrap();
+        let diags = check_derivations(&hub(), &rules);
+        assert!(diags.iter().any(|d| d.code == code), "{code}: {diags:?}");
+    }
+
+    #[test]
+    fn test_parse_reads_copy_and_number_rules() {
+        let src = r#"
+            [[derive]]
+            key = "DocumentAllowanceCharges/SignedAmount"
+            rule = "SIGN"
+            copy = "AllowanceChargeAmount"
+            negate_where = { ChargeIndicator = "false" }
+
+            [[derive]]
+            key = "DocumentAllowanceCharges/LineNumber"
+            rule = "NUM"
+            number_after = "InvoiceLines/LineId"
+        "#;
+        let rules = parse_derivations(src).expect("parses");
+        assert_eq!(
+            rules[0].kind,
+            DerivationKind::Copy {
+                from: "AllowanceChargeAmount".into(),
+                negate_where: vec![("ChargeIndicator".into(), "false".into())],
+            }
+        );
+        assert_eq!(
+            rules[0].needs(),
+            ["DocumentAllowanceCharges/AllowanceChargeAmount"]
+        );
+        assert_eq!(rules[0].check, CheckLevel::Off);
+        assert_eq!(
+            rules[1].kind,
+            DerivationKind::Number {
+                collection: "InvoiceLines".into(),
+                item: "LineId".into(),
+            }
+        );
+        assert!(rules[1].needs().is_empty());
+        assert_eq!(rules[1].check, CheckLevel::Off);
+        let diags = check_derivations(&hub(), &rules);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[rstest]
+    #[case::copy_and_value("copy = \"A\"\nvalue = \"1\"", "exactly one")]
+    #[case::number_and_sum("number_after = \"L/X\"\nsum = \"L/X\"", "exactly one")]
+    #[case::negate_where_on_value(
+        "value = \"1\"\nnegate_where = { K = \"1\" }",
+        "belongs to a `copy`"
+    )]
+    #[case::where_on_copy("copy = \"A\"\nwhere = { K = \"1\" }", "belongs to a `sum` or `value`")]
+    #[case::where_on_number(
+        "number_after = \"L/X\"\nwhere = { K = \"1\" }",
+        "belongs to a `sum` or `value`"
+    )]
+    #[case::check_on_copy("copy = \"A\"\ncheck = \"error\"", "belongs to a `sum` or `add`")]
+    #[case::number_path("number_after = \"NoSlash\"", "Collection/Key")]
+    #[case::non_string_negate_where("copy = \"A\"\nnegate_where = { K = false }", "string literal")]
+    fn test_parse_rejects_bad_copy_and_number_rules(#[case] body: &str, #[case] needle: &str) {
+        let src = format!("[[derive]]\nkey = \"K\"\nrule = \"R\"\n{body}");
+        let err = parse_derivations(&src).unwrap_err();
+        assert!(err.message.contains(needle), "{needle}: {}", err.message);
+    }
+
+    #[rstest]
+    #[case::copy_root_target(
+        "E110",
+        "key = \"InvoiceTotalWithoutVat\"\nrule = \"R\"\ncopy = \"SumOfInvoiceLineNetAmount\""
+    )]
+    #[case::copy_target_not_decimal(
+        "E110",
+        "key = \"DocumentAllowanceCharges/LineNumber\"\nrule = \"R\"\ncopy = \"AllowanceChargeAmount\""
+    )]
+    #[case::copy_source_unknown(
+        "E115",
+        "key = \"DocumentAllowanceCharges/SignedAmount\"\nrule = \"R\"\ncopy = \"Nope\""
+    )]
+    #[case::copy_source_not_decimal(
+        "E115",
+        "key = \"DocumentAllowanceCharges/SignedAmount\"\nrule = \"R\"\ncopy = \"ChargeIndicator\""
+    )]
+    #[case::copy_itself(
+        "E115",
+        "key = \"DocumentAllowanceCharges/SignedAmount\"\nrule = \"R\"\ncopy = \"SignedAmount\""
+    )]
+    #[case::copy_negate_where_unknown(
+        "E112",
+        "key = \"DocumentAllowanceCharges/SignedAmount\"\nrule = \"R\"\ncopy = \"AllowanceChargeAmount\"\nnegate_where = { Nope = \"x\" }"
+    )]
+    #[case::number_root_target(
+        "E110",
+        "key = \"InvoiceNumber\"\nrule = \"R\"\nnumber_after = \"InvoiceLines/LineId\""
+    )]
+    #[case::number_target_decimal(
+        "E110",
+        "key = \"DocumentAllowanceCharges/SignedAmount\"\nrule = \"R\"\nnumber_after = \"InvoiceLines/LineId\""
+    )]
+    #[case::number_after_unknown(
+        "E116",
+        "key = \"DocumentAllowanceCharges/LineNumber\"\nrule = \"R\"\nnumber_after = \"InvoiceLines/Nope\""
+    )]
+    #[case::number_after_decimal(
+        "E116",
+        "key = \"DocumentAllowanceCharges/LineNumber\"\nrule = \"R\"\nnumber_after = \"InvoiceLines/LineNetAmount\""
+    )]
+    #[case::number_after_not_collection(
+        "E116",
+        "key = \"DocumentAllowanceCharges/LineNumber\"\nrule = \"R\"\nnumber_after = \"InvoiceNumber/X\""
+    )]
+    fn test_check_rejects_bad_copy_and_number_rules(#[case] code: &str, #[case] body: &str) {
         let rules = parse_derivations(&format!("[[derive]]\n{body}")).unwrap();
         let diags = check_derivations(&hub(), &rules);
         assert!(diags.iter().any(|d| d.code == code), "{code}: {diags:?}");

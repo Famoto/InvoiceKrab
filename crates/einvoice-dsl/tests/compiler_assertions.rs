@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use einvoice_dsl::{
     CodecTable, CompileOutput, MappingIr, Severity, SourceModelMeta, SpokeInput, SpokeModule,
-    compile, generate_hub, load_config, plan_spoke_dedup,
+    check_derivations, compile, generate_hub, generate_hub_with, load_config, plan_spoke_dedup,
 };
 use rstest::rstest;
 
@@ -48,7 +48,8 @@ fn one(body: &str) -> Vec<(String, String)> {
 }
 
 /// A fresh `config/` directory holding the repository's codecs and `files`
-/// (mapping file name → TOML). Returns the config dir.
+/// (mapping file name → TOML; `derivations.toml` goes to the config root,
+/// where the loader reads it). Returns the config dir.
 fn config_dir(files: &[(String, String)]) -> PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let root = std::env::temp_dir().join(format!(
@@ -66,7 +67,12 @@ fn config_dir(files: &[(String, String)]) -> PathBuf {
         std::fs::copy(&path, config.join("codecs").join(path.file_name().unwrap())).unwrap();
     }
     for (name, body) in files {
-        std::fs::write(config.join("mappings").join(name), body).unwrap();
+        let dir = if name == "derivations.toml" {
+            config.clone()
+        } else {
+            config.join("mappings")
+        };
+        std::fs::write(dir.join(name), body).unwrap();
     }
     config
 }
@@ -759,6 +765,99 @@ fn test_e010_cross_spoke_type_conflict() {
     };
     assert_rejected(&[spoke("a", "date"), spoke("b", "decimal")], "E010");
     assert_rejected(&[spoke("a", "string"), spoke("b", "identifier")], "E010");
+}
+
+/// A spoke with a numbered line collection and a charge collection whose
+/// items carry an amount, a signed copy and a number.
+const ITEMS: &str = "[Doc.L]\ntype = \"collection\"\ncanonical_key = \"Lines\"\n\
+     [Doc.L.Id]\ntype = \"identifier\"\ncanonical_key = \"LineId\"\n\
+     [Doc.C]\ntype = \"collection\"\ncanonical_key = \"Charges\"\n\
+     [Doc.C.Is]\ntype = \"boolean\"\ncanonical_key = \"IsCharge\"\n\
+     [Doc.C.A]\ntype = \"decimal\"\ncanonical_key = \"Amount\"\n\
+     [Doc.C.S]\ntype = \"decimal\"\ncanonical_key = \"Signed\"\n\
+     [Doc.C.N]\ntype = \"identifier\"\ncanonical_key = \"Number\"\n";
+
+/// Loads `rules` as `derivations.toml` beside [`ITEMS`] and checks them
+/// against the compiled hub, as the build script does; returns the codes and
+/// the generated hub.
+fn derivation_codes(rules: &str) -> (Vec<String>, String) {
+    let mut files = one(ITEMS);
+    files.push(("derivations.toml".into(), rules.into()));
+    let dir = config_dir(&files);
+    let loaded = load_config(&dir).expect("loads");
+    let spokes: Vec<SpokeInput> = loaded
+        .spokes
+        .iter()
+        .map(|s| SpokeInput {
+            id: s.slug.clone(),
+            chain: &s.chain,
+        })
+        .collect();
+    let out = compile(&spokes, &loaded.codecs);
+    assert!(!out.has_errors(), "{:?}", out.diagnostics);
+    let codes = check_derivations(&out.hub, &loaded.derivations)
+        .into_iter()
+        .map(|d| d.code)
+        .collect();
+    let hub = generate_hub_with(&out.hub, &loaded.derivations);
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    (codes, hub)
+}
+
+#[test]
+fn test_copy_and_number_derivations_check_clean_and_generate_valid_rust() {
+    let (codes, hub) = derivation_codes(
+        "[[derive]]\nkey = \"Charges/Signed\"\nrule = \"S\"\ncopy = \"Amount\"\n\
+         negate_where = { IsCharge = \"false\" }\n\
+         [[derive]]\nkey = \"Charges/Number\"\nrule = \"N\"\nnumber_after = \"Lines/LineId\"\n",
+    );
+    assert!(codes.is_empty(), "{codes:?}");
+    syn::parse_file(&hub).expect("generated hub is valid Rust");
+}
+
+#[test]
+fn test_a_mappings_own_rules_run_first_and_only_with_it() {
+    let own = "[[derive]]\nkey = \"Charges/Signed\"\nrule = \"own\"\ncopy = \"Amount\"\n";
+    let shared = "[[derive]]\nkey = \"Charges/Number\"\nrule = \"shared\"\nnumber_after = \"Lines/LineId\"\n";
+    let dir = config_dir(&[
+        ("t.toml".into(), format!("{}{ITEMS}{own}", meta("t", ""))),
+        ("derivations.toml".into(), shared.into()),
+    ]);
+    let rules = |dir: &Path| -> Vec<String> {
+        let loaded = load_config(dir).expect("loads");
+        loaded.derivations.into_iter().map(|d| d.rule).collect()
+    };
+    assert_eq!(rules(&dir), ["own", "shared"]);
+    // Another spoke in its place: the mapping's rules go with it.
+    std::fs::remove_file(dir.join("mappings/t.toml")).unwrap();
+    std::fs::write(
+        dir.join("mappings/u.toml"),
+        format!("{}{ITEMS}", meta("u", "")),
+    )
+    .unwrap();
+    assert_eq!(rules(&dir), ["shared"]);
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
+
+#[rstest]
+#[case::copy_source_not_decimal(
+    "E115",
+    "[[derive]]\nkey = \"Charges/Signed\"\nrule = \"S\"\ncopy = \"IsCharge\"\n"
+)]
+#[case::number_after_not_text(
+    "E116",
+    "[[derive]]\nkey = \"Charges/Number\"\nrule = \"N\"\nnumber_after = \"Charges/Amount\"\n"
+)]
+#[case::copy_target_at_root(
+    "E110",
+    "[[derive]]\nkey = \"InvoiceNumber\"\nrule = \"S\"\ncopy = \"Amount\"\n"
+)]
+fn test_rejected_derivations(#[case] code: &str, #[case] rules: &str) {
+    let (codes, _) = derivation_codes(rules);
+    assert!(
+        codes.iter().any(|c| c == code),
+        "expected {code}, got {codes:?}"
+    );
 }
 
 #[test]
