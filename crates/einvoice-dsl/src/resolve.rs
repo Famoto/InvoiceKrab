@@ -23,7 +23,9 @@ use std::collections::BTreeMap;
 
 use crate::error::{Diagnostic, Severity};
 use crate::multiple::MultiplePolicy;
-use crate::node::{DerivationScope, Lift, NodeId, RawNode, Scope, SourceNode, parse_derivation};
+use crate::node::{
+    DerivationScope, Lift, LiftWrite, NodeId, RawNode, Scope, SourceNode, parse_derivation,
+};
 use crate::parse::ParsedMapping;
 use crate::types::MappingType;
 
@@ -181,7 +183,8 @@ pub fn apply_defaults(
 /// # Errors
 ///
 /// `E136`'s message: a malformed prefix, a lift outside a collection, on a
-/// collection, or with a `multiple` policy other than `first`.
+/// collection, or with a `multiple` policy other than `first`; a `write`
+/// setting on a node that lifts nothing.
 fn lifted_key(
     id: &NodeId,
     raw: &RawNode,
@@ -189,6 +192,13 @@ fn lifted_key(
     scope: &Scope,
 ) -> Result<(Option<String>, Option<Lift>), String> {
     let Some(key) = raw.canonical_key.as_deref().filter(|_| raw.is_lifted()) else {
+        if raw.write.is_some() {
+            return Err(
+                "`write` says which occurrences carry a lifted key (`$root.Key`, \
+                 `$parent.Key`), but this node lifts none"
+                    .to_string(),
+            );
+        }
         return Ok((raw.canonical_key.clone(), None));
     };
     let derivation = parse_derivation(key).map_err(|reason| format!("canonical_key {reason}"))?;
@@ -218,6 +228,7 @@ fn lifted_key(
         Some(Lift {
             scope: derivation.scope,
             keep_first,
+            first_only: raw.write == Some(LiftWrite::First),
         }),
     ))
 }

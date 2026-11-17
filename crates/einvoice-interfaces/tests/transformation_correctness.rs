@@ -182,7 +182,7 @@ const TERMS: &[Term] = &[
     term("BT-110/111 total VAT", Number, false, ubl!("TaxTotal/TaxAmount"), cii_sum!("TaxTotalAmount"), ""),
     term("BT-112 total with VAT", Number, true, ubl!("LegalMonetaryTotal/TaxInclusiveAmount"), cii_sum!("GrandTotalAmount"), fpa_doc!("ImportoTotaleDocumento")),
     term("BT-113 paid amount", Number, true, ubl!("LegalMonetaryTotal/PrepaidAmount"), cii_sum!("TotalPrepaidAmount"), ""),
-    term("BT-114 rounding amount", Number, true, ubl!("LegalMonetaryTotal/PayableRoundingAmount"), cii_sum!("RoundingAmount"), ""),
+    term("BT-114 rounding amount", Number, true, ubl!("LegalMonetaryTotal/PayableRoundingAmount"), cii_sum!("RoundingAmount"), fpa_doc!("Arrotondamento")),
     term("BT-115 amount due", Number, true, ubl!("LegalMonetaryTotal/PayableAmount"), cii_sum!("DuePayableAmount"), ""),
     // VAT breakdown (BG-23)
     term("BT-116 VAT category taxable", Number, false, ubl!("TaxTotal/TaxSubtotal/TaxableAmount"), cii_set!("ApplicableTradeTax/BasisAmount"), fpa_goods!("DatiRiepilogo/ImponibileImporto")),
@@ -837,38 +837,13 @@ const KNOWN_ISSUES: &[KnownIssue] = &[
         doc_allowances: true,
     },
     KnownIssue {
-        matches: &["-> fatturapa:1.2.2 -> ", "BT-113 paid amount"],
-        why: "FatturaPA carries neither BT-113 nor BT-114: read back, BR-CO-16 derives the \
-              paid amount as BT-112 - BT-115, so a rounding amount becomes a prepayment",
-        corpus_only: false,
-        doc_allowances: false,
-    },
-    KnownIssue {
-        matches: &["BT-31/32 seller VAT/tax id"],
-        why: "the UBL readers bind BT-32 only for PartyTaxScheme/TaxScheme/ID `FC` (`TAX` \
-              for Peppol); EN 16931 allows any value but `VAT`, so others (KoSIT uses `???` \
-              and `ID`) are dropped without a diagnostic",
-        corpus_only: true,
-        doc_allowances: false,
-    },
-    KnownIssue {
-        matches: &[
-            "no transform checked",
-            "occurs more than once, but the mapping reads it as a single element",
-        ],
-        why: "the UBL readers bind BillingReference and CommodityClassification as \
-              single elements, so a document repeating one (as UBL and EN 16931 allow) is \
-              not read at all",
-        corpus_only: true,
-        doc_allowances: false,
-    },
-    KnownIssue {
         matches: &[
             "GR-base-example-TaxRepresentative.xml: no transform checked",
             "[REQUIRED_MISSING]",
         ],
-        why: "the Peppol reader reports a required value missing in the Greek tax \
-              representative example, so no target accepts it (not yet diagnosed)",
+        why: "the Greek tax representative example is invalid itself: it has no seller \
+              name (BT-27, BR-06; einvoice-validate also reports a schema error), so the \
+              readers refuse it with REQUIRED_MISSING, which is correct",
         corpus_only: true,
         doc_allowances: false,
     },
@@ -1058,7 +1033,8 @@ fn failure(text: &str, corpus: bool, doc_allowances: bool) -> Failure {
 
 #[test]
 fn test_corpus_only_issue_does_not_absorb_a_sample_failure() {
-    let seller = "x.xml: ubl-invoice:2.1 -> cii:2.3: BT-31/32 seller VAT/tax id: dropped";
+    let seller = "GR-base-example-TaxRepresentative.xml: no transform checked: \
+                  [REQUIRED_MISSING] seller name";
     let (known, unknown, _) = split_known(vec![failure(seller, false, false)], true);
     assert_eq!(
         unknown,
@@ -1199,6 +1175,52 @@ fn test_repeated_payment_means_lift_the_shared_code_and_keep_every_account() {
     );
     let back = refusal(Spoke::FacturxInvoice, Spoke::UblInvoice, out.as_bytes()).unwrap();
     assert!(back.contains(">10</cbc:PaymentMeansCode>"), "{back}");
+}
+
+#[test]
+fn test_payment_means_text_card_and_mandate_are_written_once() {
+    // UBL-SR-46, -54, -55: the payment means text, the card and the mandate
+    // occur in one PaymentMeans at most, however many accounts there are.
+    let sample =
+        std::fs::read_to_string(workspace().join("testfiles/en16931-full-ubl.xml")).unwrap();
+    let first = sample
+        .split_once("  <cac:PaymentMeans>")
+        .and_then(|(_, rest)| rest.split_once("</cac:PaymentMeans>\n"))
+        .map(|(block, _)| format!("  <cac:PaymentMeans>{block}</cac:PaymentMeans>\n"))
+        .expect("the sample has a PaymentMeans");
+    let with_card = first
+        .replace(
+            "    <cac:PayeeFinancialAccount>",
+            "    <cac:CardAccount>\n      <cbc:PrimaryAccountNumberID>1234</cbc:PrimaryAccountNumberID>\n      \
+             <cbc:NetworkID>NA</cbc:NetworkID>\n      <cbc:HolderName>Erika</cbc:HolderName>\n    \
+             </cac:CardAccount>\n    <cac:PayeeFinancialAccount>",
+        )
+        .replace(
+            "  </cac:PaymentMeans>",
+            "    <cac:PaymentMandate>\n      <cbc:ID>MANDATE-1</cbc:ID>\n      <cac:PayerFinancialAccount>\n        \
+             <cbc:ID>DE75512108001245126199</cbc:ID>\n      </cac:PayerFinancialAccount>\n    \
+             </cac:PaymentMandate>\n  </cac:PaymentMeans>",
+        );
+    // The second account states none of them, as UBL-SR-46 wants.
+    let second = first
+        .replace("DE02120300000000202051", "DE89370400440532013000")
+        .replace(" name=\"SEPA credit transfer\"", "");
+    let two = sample.replacen(&first, &format!("{with_card}{second}"), 1);
+    let out = refusal(Spoke::UblInvoice, Spoke::UblInvoice, two.as_bytes()).unwrap();
+    for (once, what) in [
+        ("name=\"SEPA credit transfer\"", "the payment means text"),
+        ("<cac:CardAccount>", "the card"),
+        ("<cac:PaymentMandate>", "the mandate"),
+    ] {
+        assert_eq!(out.matches(once).count(), 1, "{what} once:\n{out}");
+    }
+    assert_eq!(
+        out.matches(">58</cbc:PaymentMeansCode>").count(),
+        2,
+        "{out}"
+    );
+    let again = refusal(Spoke::UblInvoice, Spoke::UblInvoice, out.as_bytes()).unwrap();
+    assert_eq!(again, out, "read back and written again unchanged");
 }
 
 #[test]

@@ -3,6 +3,8 @@
 //! value (UBL `AdditionalDocumentReference` / `PartyTaxScheme`, CII
 //! `AdditionalReferencedDocument` / `SpecifiedTaxRegistration`).
 
+use std::io::Write;
+
 use einvoice_interfaces::{Engine, Spoke};
 
 /// A bare-name UBL document carrying every aliased element: two invoiced-object
@@ -116,7 +118,7 @@ fn test_ubl_writer_merges_logical_nodes_with_their_discriminators() {
 }
 
 #[test]
-fn test_peppol_restates_only_the_tax_registration_selector() {
+fn test_peppol_restates_only_the_tax_registration_scheme_id() {
     let engine = Engine::new();
     let out = engine
         .transform(Spoke::UblInvoice, Spoke::PeppolBisBilling, UBL)
@@ -149,9 +151,60 @@ fn test_peppol_restates_only_the_tax_registration_selector() {
         .to_hub(Spoke::PeppolBisBilling, peppol.as_bytes())
         .expect("well-formed");
     assert_eq!(
-        fc.value.expect("hub").seller_tax_registration_identifier,
-        None,
-        "an FC scheme matches no Peppol node and is ignored"
+        fc.value
+            .expect("hub")
+            .seller_tax_registration_identifier
+            .as_deref(),
+        Some("201/113/40209"),
+        "any scheme but VAT is the tax registration, FC in Peppol too"
+    );
+}
+
+#[test]
+fn test_ubl_readers_take_any_non_vat_scheme_as_tax_registration() {
+    // KoSIT tags BT-32 with `ID`: EN 16931 allows any scheme id but `VAT`.
+    let ubl = String::from_utf8(UBL.to_vec())
+        .expect("utf-8 fixture")
+        .replace("<ID>FC</ID>", "<ID>ID</ID>");
+    let engine = Engine::new();
+    for (spoke, customization) in [
+        (Spoke::UblInvoice, "urn:cen.eu:en16931:2017"),
+        (
+            Spoke::XrechnungInvoice,
+            "urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0",
+        ),
+        (
+            Spoke::PeppolBisBilling,
+            "urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0",
+        ),
+    ] {
+        let doc = ubl.replace("urn:cen.eu:en16931:2017<", &format!("{customization}<"));
+        let result = engine.to_hub(spoke, doc.as_bytes()).expect("well-formed");
+        println!("PATCH_REACHED");
+        std::io::stdout().flush().expect("flush stdout");
+        let hub = result.value.expect("hub");
+        assert_eq!(
+            hub.seller_vat_identifier.as_deref(),
+            Some("DE123456789"),
+            "{spoke:?}"
+        );
+        assert_eq!(
+            hub.seller_tax_registration_identifier.as_deref(),
+            Some("201/113/40209"),
+            "{spoke:?}: {:?}",
+            result.diagnostics
+        );
+    }
+
+    // Written back, each spoke tags it with its own code.
+    let out = engine
+        .transform(Spoke::UblInvoice, Spoke::UblInvoice, ubl.as_bytes())
+        .expect("well-formed")
+        .value
+        .expect("document");
+    assert!(
+        out.contains("<cbc:CompanyID>201/113/40209</cbc:CompanyID><cac:TaxScheme><cbc:ID>FC</cbc:ID></cac:TaxScheme>"),
+        "{out}"
     );
 }
 

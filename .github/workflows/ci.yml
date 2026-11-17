@@ -54,6 +54,19 @@ jobs:
       - name: Fetch the third-party test corpus (pinned, checksummed)
         run: scripts/fetch-corpus.sh
 
+      # Schema and Schematron validation of every document as written by
+      # every spoke (scripts/validate-documents.sh). The version is pinned
+      # here (Dependabot does not see it); the rule sets are pinned and
+      # checksummed by einvoice-validate itself.
+      - name: Install einvoice-validate (crate einvoice-cli)
+        run: cargo install --locked einvoice-cli --version 0.4.0
+
+      - name: Fetch the Schematron rule sets (pinned, checksummed)
+        run: einvoice-validate rules fetch xrechnung peppol factur-x
+
+      - name: Validate every document written by every spoke
+        run: scripts/validate-documents.sh
+
       - name: Test workspace
         run: cargo test --workspace --locked
         env:

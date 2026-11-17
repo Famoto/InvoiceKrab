@@ -24,9 +24,10 @@
 # and `[meta.namespaces]` is declared on the root, so the output is a real,
 # schema-valid namespaced UBL document.
 #
-# Collections nest to any depth: invoice-line allowances/charges (BG-27/28) and
-# item attributes (BG-32) are modelled as collections inside the invoice-line
-# collection.
+# Collections nest to any depth: invoice-line allowances/charges (BG-27/28),
+# item classifications (BT-158) and item attributes (BG-32) are modelled as
+# collections inside the invoice-line collection. Preceding invoice references
+# (BG-3) are a root collection.
 #
 # Tables are declared in the UBL 2.1 XSD *sequence* order, group by group:
 # declaration order is schema order (see mappings/README.md), so the writer emits
@@ -37,7 +38,7 @@
 # other UBL-syntax spokes:
 #   * Sibling elements distinguished only by a child value are split with a
 #     `match` selector: the seller's `PartyTaxScheme` elements by `TaxScheme/ID`
-#     (`VAT` → BT-31, `FC` → BT-32), and `AdditionalDocumentReference` by
+#     (`VAT` → BT-31, the rest → BT-32, written `FC`), and `AdditionalDocumentReference` by
 #     `DocumentTypeCode` (`130` → BT-18, the rest → BG-24). Document- and
 #     line-level `AllowanceCharge` are single collections that carry the
 #     `ChargeIndicator` (true = charge BG-21/BG-28, false = allowance BG-20/27),
@@ -202,6 +203,11 @@ canonical_key = "PurchaseOrderReference"
 type = "identifier"
 canonical_key = "SalesOrderReference"
 
+# BG-3 repeats: one BillingReference per preceding invoice.
+[Invoice.BillingReference]
+type = "collection"
+canonical_key = "PrecedingInvoices"
+
 [Invoice.BillingReference.InvoiceDocumentReference.ID]
 type = "identifier"
 canonical_key = "PrecedingInvoiceReference"
@@ -360,8 +366,11 @@ normalize = ["trim", "uppercase"]
 required = true
 
 # BT-31 / BT-32: the seller may carry two `PartyTaxScheme` elements, told apart
-# by `TaxScheme/ID`. Each is a structural node with a `match` selector on the
-# same physical element; the selector value is written back as the scheme id.
+# by `TaxScheme/ID`: `VAT` is the VAT identifier (BT-31), and EN 16931 allows
+# any other scheme id for the tax registration (BT-32; KoSIT uses `ID`). So
+# BT-31 is the structural node with a `match` selector and BT-32 the
+# selector-less node on the same physical element, taking what BT-31 does not;
+# on write, BT-31's selector and BT-32's constant are the scheme ids.
 [Invoice.AccountingSupplierParty.Party.PartyTaxScheme]
 match = { "TaxScheme.ID" = "VAT" }
 
@@ -376,12 +385,15 @@ description = "Scheme discriminator; written from the `match` selector."
 
 [Invoice.AccountingSupplierParty.Party.SellerTaxRegistration]
 xml = "PartyTaxScheme"
-match = { "TaxScheme.ID" = "FC" }
 
 [Invoice.AccountingSupplierParty.Party.SellerTaxRegistration.CompanyID]
 type = "identifier"
 canonical_key = "SellerTaxRegistrationIdentifier"
 normalize = ["trim"]
+
+[Invoice.AccountingSupplierParty.Party.SellerTaxRegistration.TaxScheme.ID]
+type = "identifier"
+constant = "FC"
 
 [Invoice.AccountingSupplierParty.Party.PartyLegalEntity.RegistrationName]
 type = "string"
@@ -630,7 +642,9 @@ canonical_key = "DeliverToPartyName"
 # ===========================================================================
 # One PaymentMeans per credit transfer account (BG-17 repeats); the payment
 # means, card and direct debit are stated once per invoice, so they are
-# lifted to the root: every PaymentMeans must agree on them.
+# lifted to the root: every PaymentMeans must agree on them. UBL allows the
+# payment means text, the card and the mandate in one PaymentMeans at most
+# (UBL-SR-46, -54, -55): those are written into the first only.
 [Invoice.PaymentMeans]
 type = "collection"
 canonical_key = "CreditTransfers"
@@ -643,6 +657,7 @@ canonical_key = "$root.PaymentMeansTypeCode"
 xml = "@name"
 type = "string"
 canonical_key = "$root.PaymentMeansText"
+write = "first"
 
 [Invoice.PaymentMeans.PaymentID]
 type = "string"
@@ -651,6 +666,7 @@ canonical_key = "$root.RemittanceInformation"
 [Invoice.PaymentMeans.CardAccount.PrimaryAccountNumberID]
 type = "string"
 canonical_key = "$root.PaymentCardPrimaryAccountNumber"
+write = "first"
 
 # Mandatory in CardAccountType; EN 16931 carries no network, so it is pinned.
 [Invoice.PaymentMeans.CardAccount.NetworkID]
@@ -660,6 +676,7 @@ constant = "NA"
 [Invoice.PaymentMeans.CardAccount.HolderName]
 type = "string"
 canonical_key = "$root.PaymentCardHolderName"
+write = "first"
 
 [Invoice.PaymentMeans.PayeeFinancialAccount.ID]
 type = "identifier"
@@ -676,10 +693,12 @@ canonical_key = "PaymentServiceProviderIdentifier"
 [Invoice.PaymentMeans.PaymentMandate.ID]
 type = "identifier"
 canonical_key = "$root.MandateReferenceIdentifier"
+write = "first"
 
 [Invoice.PaymentMeans.PaymentMandate.PayerFinancialAccount.ID]
 type = "identifier"
 canonical_key = "$root.DebitedAccountIdentifier"
+write = "first"
 
 # ===========================================================================
 # PAYMENT TERMS (BT-20)
@@ -1072,6 +1091,11 @@ canonical_key = "ItemStandardIdentifierScheme"
 type = "string"
 canonical_key = "ItemCountryOfOrigin"
 normalize = ["trim", "uppercase"]
+
+# BT-158 repeats: one CommodityClassification per classification.
+[InvoiceLine.Item.CommodityClassification]
+type = "collection"
+canonical_key = "ItemClassifications"
 
 [InvoiceLine.Item.CommodityClassification.ItemClassificationCode]
 type = "string"

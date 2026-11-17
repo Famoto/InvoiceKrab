@@ -314,6 +314,7 @@ A node plays one of five roles, depending on which fields it declares:
 | `match` | inline table | Selector on a collection or structural node: child value → condition, e.g. `{ "TypeCode" = "130" }`, `["50", "130"]`, `{ present = true }` or `"$root.Key"` (see [Structural matching](#structural-matching-one-element-several-nodes)). Not valid on a scalar (E091). |
 | `when` | inline table | Write condition on the hub: hub key → condition, in the forms of `match` (see [Alternatives](#alternatives-one-value-several-possible-elements)). On a constant, the constant is written only while it holds. |
 | `placeholder` | string or array | Written where the node has nothing to write, for an element the format requires (a list: its first value); every value reads back as none (see [Alternatives](#alternatives-one-value-several-possible-elements)). |
+| `write` | string | On a lifted key: `"first"` writes it into the first occurrence of its collection only (see [Lifted keys](#lifted-keys-one-value-stated-in-every-item)). Default: every occurrence. |
 | `replace` | bool | Under [inheritance](#inheritance), replace the inherited node whole instead of merging over it. |
 
 Any other field is rejected (E001) — typos never silently no-op.
@@ -563,9 +564,11 @@ Rules:
 - A structural node with a selector is single-valued: its children are
   ordinary scalars of the enclosing scope (`TenderOrLotReference` above is a
   root key). A collection with a selector is a collection like any other.
-- Under [inheritance](#inheritance) a CIUS restates only the selector
-  ([peppol.toml](peppol.toml) changes the tax-registration scheme id from
-  `FC` to `TAX`); the `xml` alias and the children are inherited.
+- Under [inheritance](#inheritance) a CIUS restates only what differs, a
+  selector or a discriminator's `constant`; the `xml` alias and the other
+  children are inherited ([peppol.toml](peppol.toml) writes the
+  tax-registration scheme id `TAX` instead of `FC` by restating the
+  constant of the selector-less BT-32 node).
 
 ---
 
@@ -625,11 +628,22 @@ canonical_key = "$root.PaymentMeansTypeCode"
   occurrence without the value is skipped.
 - **Write.** The key's value goes into every occurrence written. A collection
   with no items but a lifted value gets one occurrence to carry it.
+  `write = "first"` puts it into the first occurrence only, for a value the
+  format allows once however many occurrences there are: UBL states the
+  payment means text (BT-82) in one `PaymentMeans` at most (UBL-SR-46).
+
+```toml
+[Invoice.PaymentMeans.PaymentMeansCode.name]
+xml = "@name"
+type = "string"
+canonical_key = "$root.PaymentMeansText"
+write = "first"
+```
 
 The key lives in the scope its prefix names, so E010, E013 and
 `krab-cli --keys` treat it like a key declared there. A lift outside a
 collection, on a collection, with `multiple = "join"`, or with an unknown
-prefix is E136.
+prefix is E136, and so is `write` on a node that lifts nothing.
 
 Use `krab-cli --keys` to browse the current hub vocabulary, and
 `krab-cli --keys <format>` to see which keys a spoke already covers and which
@@ -1448,7 +1462,7 @@ Validation reports **every** problem in one run, never just the first error.
 | `E131` | A `match` reference's node lies beneath a repeated or matched element |
 | `E132` | A misplaced or empty `when`; two alternatives of one value without `when`, a `when` repeating an earlier alternative's, or an alternative with `multiple`, `required`, `default` or a pinned `constant` |
 | `E134` | A `placeholder` on anything but a keyed scalar, or one that is no literal of the node's type or is longer than its `max_length` |
-| `E136` | A lifted `canonical_key` (`$root.Key`, `$parent.Key`) outside a collection, on a collection, with `multiple = "join"`, or with an unknown prefix |
+| `E136` | A lifted `canonical_key` (`$root.Key`, `$parent.Key`) outside a collection, on a collection, with `multiple = "join"`, or with an unknown prefix; `write` on a node that lifts nothing |
 | `W140` | Every alternative of a value has a `when` (warning): a value none of them takes is refused with `NO_TARGET` |
 
 Runtime (per-document) diagnostics — missing required values, type validation

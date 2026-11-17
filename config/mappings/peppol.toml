@@ -4,7 +4,7 @@
 # semantic model, so this spoke *inherits* `ubl.toml` (`inherits =
 # "ubl-invoice:2.1"`) and adds its own identity, pins its
 # specification and process identifiers, and restates one delta: Peppol tags the seller's tax registration (BT-32) `PartyTaxScheme` with
-# `TaxScheme/ID` `TAX` where EN 16931 / XRechnung use `FC`. Everything else comes
+# `TaxScheme/ID` `TAX` where EN 16931 / XRechnung write `FC`. Everything else comes
 # from the UBL base unchanged, so Peppol documents round-trip through the shared
 # hub with every other spoke.
 [meta]
@@ -36,11 +36,11 @@ profiles = ["urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:bill
 version = "UBLVersionID"
 versions = ["2.1"]
 
-# BT-32 seller tax registration: Peppol BIS Billing discriminates the second
-# `PartyTaxScheme` with `TaxScheme/ID` = `TAX`. Only the selector is restated;
-# the inherited node keeps its `xml` alias and children.
-[Invoice.AccountingSupplierParty.Party.SellerTaxRegistration]
-match = { "TaxScheme.ID" = "TAX" }
+# BT-32 seller tax registration: Peppol BIS Billing tags the second
+# `PartyTaxScheme` with `TaxScheme/ID` = `TAX`. Only the written scheme id is
+# restated; the inherited node still reads any scheme but `VAT`.
+[Invoice.AccountingSupplierParty.Party.SellerTaxRegistration.TaxScheme.ID]
+constant = "TAX"
 
 # Peppol BIS Billing 3.0 identifies itself (BT-24) and its one business process
 # (BT-23) by fixed URNs (PEPPOL-EN16931-R004 / R007), whatever the source said.

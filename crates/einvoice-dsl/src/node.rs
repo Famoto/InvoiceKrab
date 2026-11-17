@@ -62,7 +62,8 @@
 //! `canonical_key = "$root.Key"` maps a key of the enclosing scope (a
 //! [`Lift`]). Its occurrences are read into that one key, which they must
 //! agree on (`SCOPE_DISAGREE`), and the writer puts the key's value into
-//! every occurrence it writes.
+//! every occurrence it writes, or with `write = "first"` ([`LiftWrite`])
+//! into the first only.
 //!
 //! Every raw node also carries its declaration [`RawNode::position`]: a
 //! mapping's **declaration order is its schema order**. The parser records
@@ -235,6 +236,10 @@ pub struct RawNode {
     /// requires; reading it back gives no value. A list is written as its
     /// first value, and every value in it reads back as none.
     pub placeholder: Option<Condition>,
+    /// Which occurrences of its collection a lifted key is written into:
+    /// `"first"` for a value the format allows at most once (UBL-SR-46).
+    /// Default: every occurrence. Only on a lifted key (E136).
+    pub write: Option<LiftWrite>,
     /// Declaration position within the mapping document (0-based, document
     /// order). Assigned by the parser, never authored — a `position` key in the
     /// TOML is rejected like any unknown field. It drives the order of sibling
@@ -300,6 +305,7 @@ impl RawNode {
             || self.codec.is_some()
             || self.when.is_some()
             || self.placeholder.is_some()
+            || self.write.is_some()
     }
 
     /// Whether this is a structural node: no `type`, at least one of `ns`,
@@ -355,6 +361,7 @@ impl RawNode {
                     .placeholder
                     .clone()
                     .or_else(|| self.placeholder.clone()),
+                write: child.write.or(self.write),
                 position: self.position,
             }
         };
@@ -385,6 +392,16 @@ pub struct Lift {
     /// `multiple = "first"`: occurrences that disagree keep the first value
     /// with a warning instead of failing the read.
     pub keep_first: bool,
+    /// `write = "first"`: written into the first occurrence only, not every.
+    pub first_only: bool,
+}
+
+/// The `write` setting of a lifted key: which occurrences carry it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiftWrite {
+    /// The first occurrence only: the format allows the value at most once.
+    First,
 }
 
 /// A parsed `clone_of` value: the scope to look in and the canonical key.
