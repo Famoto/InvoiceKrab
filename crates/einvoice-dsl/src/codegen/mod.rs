@@ -2117,7 +2117,10 @@ mod tests {
             out.contains("i0.number = Some(CompactString::from(next.to_string()));"),
             "{out}"
         );
-        assert!(out.contains("next = next.saturating_add(1);"), "{out}");
+        assert!(
+            out.contains("next.filter(|n| n.checked_add(missing).is_some())"),
+            "numbers past u64::MAX derive nothing, never a repeated one: {out}"
+        );
         assert!(
             out.contains(r#"derived.push(("Charges/Number", "NUM"));"#),
             "{out}"

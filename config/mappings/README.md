@@ -1056,7 +1056,7 @@ unless = ["LineAllowanceChargeReason"]
 | `unless` | Keys whose presence (on the item) suppresses a `value` |
 | `copy` | Another `decimal` key of the target's item, copied onto every item that lacks the target |
 | `negate_where` | `copy` only, `{ Key = "literal" }`: the items whose copy is negated (a zero stays unsigned) |
-| `number_after` | `Collection/Key` of a root collection's `identifier` / `string` key: every item of the target's root collection that lacks a number gets the next one after the largest whole number among those values and the target's (values that are not whole numbers are ignored) |
+| `number_after` | `Collection/Key` of a root collection's `identifier` / `string` key: every item of the target's root collection that lacks a number gets the next one after the largest whole number among those values and the target's (values that are not whole numbers are ignored; numbers past 18446744073709551615 derive nothing) |
 
 Rules apply in file order, so a rule may use a total an earlier rule derived.
 The build checks the file against the hub: a computed target must be a root

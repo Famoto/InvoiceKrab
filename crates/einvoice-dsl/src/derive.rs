@@ -77,7 +77,8 @@
 //!   root collection that lacks a number, continuing after the largest whole
 //!   number among `Collection`'s `Key` values and the target's own (other
 //!   values are ignored): FatturaPA numbers its allowance and charge lines
-//!   after the invoice lines.
+//!   after the invoice lines. Numbers that would pass `u64::MAX` derive
+//!   nothing, so no number is ever given twice.
 //!
 //! # Diagnostics
 //!

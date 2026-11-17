@@ -279,23 +279,24 @@ fn derive_fns(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]
             }
             DerivationKind::Number { collection, item } => {
                 // Whole numbers only: a value that is not one (a UBL line id
-                // `A-1`) neither takes part nor stops the numbering.
+                // `A-1`) neither takes part nor stops the numbering. Numbers
+                // past `u64::MAX` derive nothing, never a repeated number.
                 let (collections, key) = d.target_path();
                 let target_coll = snake_case(collections[0]);
                 let target = snake_case(key);
-                out.push_str("        {\n            let mut next: u64 = 1;\n");
+                out.push_str("        {\n            let mut next: Option<u64> = Some(1);\n");
                 for (coll, field) in [
                     (snake_case(collection), snake_case(item)),
                     (target_coll.clone(), target.clone()),
                 ] {
                     let _ = writeln!(
                         out,
-                        "            for i0 in &self.{coll} {{\n                if let Some(n) = i0.{field}.as_deref().and_then(|v| v.trim().parse::<u64>().ok()) {{\n                    next = next.max(n.saturating_add(1));\n                }}\n            }}"
+                        "            for i0 in &self.{coll} {{\n                if let Some(n) = i0.{field}.as_deref().and_then(|v| v.trim().parse::<u64>().ok()) {{\n                    next = next.zip(n.checked_add(1)).map(|(a, b)| a.max(b));\n                }}\n            }}"
                     );
                 }
                 let _ = writeln!(
                     out,
-                    "            let mut filled = false;\n            for i0 in &mut self.{target_coll} {{\n                if i0.{target}.is_none() {{\n                    i0.{target} = Some(CompactString::from(next.to_string()));\n                    next = next.saturating_add(1);\n                    filled = true;\n                }}\n            }}\n            if filled {{\n                {push}\n            }}\n        }}"
+                    "            let missing = self.{target_coll}.iter().filter(|i0| i0.{target}.is_none()).count() as u64;\n            if missing > 0 && let Some(mut next) = next.filter(|n| n.checked_add(missing).is_some()) {{\n                for i0 in &mut self.{target_coll} {{\n                    if i0.{target}.is_none() {{\n                        i0.{target} = Some(CompactString::from(next.to_string()));\n                        next += 1;\n                    }}\n                }}\n                {push}\n            }}\n        }}"
                 );
             }
         }
