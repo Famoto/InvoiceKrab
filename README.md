@@ -29,10 +29,16 @@ deltas — XRechnung and Peppol are a handful of lines on top of UBL.
 > starting points** for writing your own: they show how the DSL expresses
 > real formats. They are **not certified, not complete, and not maintained
 > against regulatory changes**. They pin values that are wrong for many senders
-> (FatturaPA's tax regime and recipient code, for instance), they are checked
-> against their XSDs but not against the official business rules (EN 16931,
-> XRechnung or Peppol Schematron), and they cover only the document types and
-> profiles listed below.
+> (FatturaPA's tax regime and recipient code, for instance), and they cover
+> only the document types and profiles listed below.
+>
+> Their output is checked against the XSDs and the official business rules
+> (EN 16931, XRechnung, Peppol BIS Billing and Factur-X Schematron; FatturaPA
+> has none) only for the repository's sample documents and the third-party
+> test corpus, in CI and the pre-commit hook (see
+> [Developer commands](#developer-commands)). KrabInvoice does not validate
+> the documents it writes at runtime, so one written from your data can still
+> break a business rule.
 >
 > KrabInvoice is a **framework**: you write the mappings for the formats,
 > profiles and business rules you need, and compile them into your own build.
