@@ -106,16 +106,15 @@ impl Config {
         };
         let mem_blowup = match lookup("KRAB_MEM_BLOWUP") {
             Some(v) => parse_nonzero("KRAB_MEM_BLOWUP", &v)?,
-            // Measured per-request peak RSS over every source x target route
-            // (see docs/PERFORMANCE.md). The worst is a dense FatturaPA
-            // source written as Factur-X: the output alone is ~3x the body.
-            // For bodies >= 1 MB that peaks at 11.5x (glibc) / 9.0x (musl,
-            // the Docker image); 12 covers it on both allocators. Every other
-            // source stays <= 8.8x at any measured size (<= 5.9x from 1 MB),
-            // hence the documented `9` for FatturaPA-free deployments.
-            // FatturaPA bodies under 1 MB run higher ratios, but only a few
-            // MB in absolute terms, which the budget's half-of-memory default
-            // absorbs.
+            // Measured per-request peak RSS, idle excluded, over every
+            // source x target route (see docs/PERFORMANCE.md). The worst is a
+            // dense FatturaPA source written as Factur-X: the output alone is
+            // ~3.5x the body. For bodies >= 1 MB that peaks at 9.3x (glibc) /
+            // 8.0x (musl, the Docker image); 12 covers it on both allocators.
+            // Every other source stays <= 5.7x from 0.9 MB, hence the
+            // documented `6` for FatturaPA-free deployments. Smaller bodies
+            // run higher ratios, a fixed ~3 MB per request in absolute terms,
+            // which the budget's half-of-memory default absorbs.
             None => 12,
         };
         let body_timeout_secs = match lookup("KRAB_BODY_TIMEOUT_SECS") {

@@ -793,4 +793,44 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("unsupported version"), "{err}");
     }
+
+    /// The generated XML writers write what quick-xml's serde serializer
+    /// wrote, byte for byte: every sample read, written as every target, as
+    /// read and with markup characters in its free-text fields.
+    #[test]
+    fn test_generated_writers_match_quick_xml_on_every_sample_and_target() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut pairs = 0;
+        for &reader in Spoke::ALL {
+            for &file in reader.samples() {
+                let bytes = std::fs::read(root.join(file)).expect(file);
+                let hub = generated::read(reader, &bytes)
+                    .expect(file)
+                    .value
+                    .expect(file);
+                let mut spiced = hub.clone();
+                let raw = "a & b < c > d \"e\" 'f'\r\n\tü";
+                spiced.invoice_note = Some(raw.into());
+                spiced.seller_name = Some(raw.into());
+                spiced.buyer_name = Some(raw.into());
+                spiced.payment_terms = Some(raw.into());
+                if let Some(line) = spiced.invoice_lines.first_mut() {
+                    line.item_name = Some(raw.into());
+                }
+                for &target in Spoke::ALL {
+                    for hub in [&hub, &spiced] {
+                        let ours = generated::write(target, hub.clone(), 0).expect(file).value;
+                        let reference = generated::write_serde(target, hub.clone());
+                        assert!(
+                            ours == reference,
+                            "{file} as {}: generated writer differs from quick-xml",
+                            target.name()
+                        );
+                        pairs += 1;
+                    }
+                }
+            }
+        }
+        assert!(pairs > 0);
+    }
 }

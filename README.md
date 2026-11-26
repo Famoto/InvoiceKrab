@@ -502,8 +502,8 @@ it is exhausted, so request traffic can never drive the process out of
 memory. A queued request is shed with `503` after `KRAB_QUEUE_TIMEOUT_SECS`,
 and an admitted one must deliver its whole body within
 `KRAB_REQUEST_TIMEOUT_SECS`, so a slow or stalled client cannot hold the
-budget indefinitely. The default blowup of 12 is the worst measured peak (a FatturaPA
-source written as Factur-X) rounded up; `KRAB_MEM_BLOWUP=9` is safe when
+budget indefinitely. The default blowup of 12 covers the worst measured peak (a
+FatturaPA source written as Factur-X, 9.3x); `KRAB_MEM_BLOWUP=6` is safe when
 FatturaPA is never an input. A request larger than budget / blowup is
 refused with `413` — with the defaults, about 1/24 of the memory limit (e.g.
 ~85 MB for a 2 GB container). See
@@ -525,11 +525,11 @@ docker build --target server -t krab-server .
 # memory budget = half of --memory (cgroup v2).
 docker run --rm -p 8080:8080 --cpus 4 --memory 2g krab-server
 
-# Explicit overrides win over detection (blowup 9: no FatturaPA input).
+# Explicit overrides win over detection (blowup 6: no FatturaPA input).
 docker run --rm -p 8080:8080 \
     -e KRAB_WORKERS=8 \
     -e KRAB_MEM_BUDGET_BYTES=1000000000 \
-    -e KRAB_MEM_BLOWUP=9 \
+    -e KRAB_MEM_BLOWUP=6 \
     krab-server
 ```
 

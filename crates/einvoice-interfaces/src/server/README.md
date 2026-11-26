@@ -56,9 +56,9 @@ from admission control instead: before reading its body, a request reserves
 `Content-Length x KRAB_MEM_BLOWUP` bytes (the measured peak of body + typed
 model + hub + output) from a global budget. The default 12 covers the
 worst measured route: for bodies of 1 MB and up, a FatturaPA source written
-as Factur-X peaks at 11.5x the body under glibc and 9.0x under musl. Every
-other source stays at or below 8.8x at any measured size, so
-`KRAB_MEM_BLOWUP=9` is safe when FatturaPA is never an input (see
+as Factur-X peaks at 9.3x the body under glibc and 8.0x under musl. Every
+other source stays at or below 5.7x from 0.9 MB, so
+`KRAB_MEM_BLOWUP=6` is safe when FatturaPA is never an input (see
 [docs/PERFORMANCE.md](../../../../docs/PERFORMANCE.md#memory)). Requests run
 in parallel while budget remains; when it is exhausted, requests queue FIFO until a
 reservation is released, for at most `KRAB_QUEUE_TIMEOUT_SECS`; after that

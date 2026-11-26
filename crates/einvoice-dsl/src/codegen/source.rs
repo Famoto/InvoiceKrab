@@ -1,13 +1,22 @@
 //! Typed source-struct generation and XML I/O.
 //!
 //! Emits one `#[derive(...)]` struct per struct in the source model (with
-//! serde/XML binding) and the `from_xml` / `to_xml` functions for the root.
+//! serde/XML binding and a `write_xml` method) and the `from_xml` / `to_xml`
+//! functions for the root.
 //!
 //! Struct fields are declared in the model's **emission order**
 //! ([`StructMeta::ordered_fields`]: attributes, then element text, then child
-//! elements by declaration position). serde serializes struct fields in
-//! declaration order, so this is what makes the writer emit sibling elements in
-//! the order the mapping declares them — the schema's sequence order.
+//! elements by declaration position), and `write_xml` writes them in that
+//! order — the order the mapping declares them, the schema's sequence order.
+//!
+//! Writing: `to_xml` calls the root's generated `write_xml`, which writes
+//! straight into one output `String`, tag names as literals. It replaces
+//! quick-xml's serde serializer, which buffered every element's children in a
+//! string of their own and copied it into the parent: the whole document once
+//! per nesting level, up to 5x the output in memory. The output is byte for
+//! byte the serializer's, which stays derived as the reference: `to_xml_serde`
+//! (tests only) writes through it, and the interfaces crate compares the two
+//! on every sample and target.
 //!
 //! Namespaces: reading is namespace-agnostic (quick-xml's deserializer matches
 //! local names), so every element field is renamed with a *split* rename —
@@ -44,6 +53,7 @@ pub(super) fn generate_source_structs(out: &mut String, source: &SourceModelMeta
     for (name, meta) in &source.structs {
         let root_ns = (name == &source.root).then_some(&source.namespaces);
         generate_one_struct(out, name, meta, root_ns);
+        generate_write_xml_impl(out, name, meta, root_ns);
         if io.get(name).copied().unwrap_or(false) {
             generate_alias_io_impl(out, source, name, meta, &io);
         }
@@ -459,6 +469,78 @@ fn generate_one_struct(
     generate_is_empty_impl(out, name, meta);
 }
 
+/// Emits `impl Name { pub fn write_xml(&self, tag, out) }`: the struct as the
+/// element `tag`, as quick-xml's serializer wrote it. Attributes (the root's
+/// namespace declarations first), then text and child elements in emission
+/// order; `None` fields and logical fields are skipped, an empty scalar is
+/// `<tag/>`, and an element with no content is self-closed.
+fn generate_write_xml_impl(
+    out: &mut String,
+    name: &str,
+    meta: &StructMeta,
+    root_ns: Option<&NamespaceMeta>,
+) {
+    const XML: &str = "::einvoice_transformator::xml";
+    let _ = writeln!(out, "impl {name} {{");
+    out.push_str("    /// Writes `self` as the element `tag` onto `out`.\n");
+    out.push_str("    pub fn write_xml(&self, tag: &str, out: &mut String) {\n");
+    out.push_str("        out.push('<');\n        out.push_str(tag);\n");
+    for (prefix, uri) in root_ns.map(|ns| &ns.declared).into_iter().flatten() {
+        let open = format!(" {}=\"", xmlns_attribute(prefix).trim_start_matches('@'));
+        let _ = writeln!(
+            out,
+            "        out.push_str({open:?});\n        {XML}::attr(out, {uri:?});\n        out.push('\"');"
+        );
+    }
+    let fields: Vec<_> = meta
+        .ordered_fields()
+        .into_iter()
+        .filter(|(_, field)| !field.is_logical())
+        .collect();
+    for (fname, field) in fields.iter().filter(|(_, field)| field.is_attribute()) {
+        let open = format!(" {}=\"", written_name(fname, field).trim_start_matches('@'));
+        let write = format!("out.push_str({open:?}); {XML}::attr(out, value); out.push('\"');");
+        if field.optional {
+            let _ = writeln!(
+                out,
+                "        if let Some(value) = &self.{fname} {{ {write} }}"
+            );
+        } else {
+            let _ = writeln!(out, "        {{ let value = &self.{fname}; {write} }}");
+        }
+    }
+    // `>` first; taken back for `/>` when nothing follows it.
+    out.push_str("        out.push('>');\n        let content = out.len();\n");
+    for (fname, field) in fields.iter().filter(|(_, field)| !field.is_attribute()) {
+        let tag = written_name(fname, field);
+        let write = match (&field.ty, field.is_text()) {
+            (_, true) => format!("{XML}::text(out, value);"),
+            (FieldType::Scalar, false) => format!("{XML}::element(out, {tag:?}, value);"),
+            (FieldType::Struct(_), false) => format!("value.write_xml({tag:?}, out);"),
+        };
+        if field.repeated {
+            let _ = writeln!(out, "        for value in &self.{fname} {{ {write} }}");
+        } else if field.optional || matches!(field.ty, FieldType::Struct(_)) {
+            let _ = writeln!(
+                out,
+                "        if let Some(value) = &self.{fname} {{ {write} }}"
+            );
+        } else {
+            let _ = writeln!(out, "        {{ let value = &self.{fname}; {write} }}");
+        }
+    }
+    out.push_str(
+        "        if out.len() == content {\n            out.pop();\n            out.push_str(\"/>\");\n        } else {\n            out.push_str(\"</\");\n            out.push_str(tag);\n            out.push('>');\n        }\n",
+    );
+    out.push_str("    }\n}\n");
+}
+
+/// The name a field is written under: its serde name, which is the Rust field
+/// name when the field has no XML binding.
+fn written_name(fname: &str, field: &FieldMeta) -> String {
+    field.serialized_name().unwrap_or_else(|| fname.to_string())
+}
+
 /// Emits one zero-size marker type per declared namespace. Each serializes as
 /// its URI (so the root's `@xmlns[:prefix]` field writes the declaration) and
 /// deserializes by ignoring whatever the document carries, so a struct that
@@ -648,7 +730,9 @@ pub(super) fn serde_attr(field: &FieldMeta) -> Option<String> {
 }
 
 /// Emits `from_xml` / `to_xml` for the root struct. `to_xml` writes the XML
-/// declaration and the root tag qualified with the mapping's `root_ns`.
+/// declaration and the root tag qualified with the mapping's `root_ns`, with
+/// the generated `write_xml`; `to_xml_serde` (tests only) writes the same
+/// through quick-xml's serializer, the reference `to_xml` must equal.
 pub(super) fn generate_xml_io(out: &mut String, root: &str, ns: &NamespaceMeta) {
     let _ = writeln!(
         out,
@@ -671,16 +755,32 @@ pub(super) fn generate_xml_io(out: &mut String, root: &str, ns: &NamespaceMeta) 
          /// the namespace-qualified root tag, into a buffer reserved for `capacity`\n\
          /// bytes (a size hint: the buffer still grows past it)."
     );
+    let declaration =
+        "    out.push_str(\"<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\"?>\\n\");\n";
+    let qualified = ns.qualified_root(root);
+    // ponytail: the `Result` never fails since the writer is generated; it
+    // keeps the engine's serialize error path for the serde reference.
     let _ = writeln!(
         out,
         "pub fn to_xml(source: &{root}, capacity: usize) -> Result<String, quick_xml::SeError> {{"
     );
     out.push_str("    let mut out = String::with_capacity(capacity);\n");
-    out.push_str("    out.push_str(\"<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\"?>\\n\");\n");
+    out.push_str(declaration);
+    let _ = writeln!(out, "    source.write_xml({qualified:?}, &mut out);");
+    out.push_str("    Ok(out)\n}\n\n");
+
     let _ = writeln!(
         out,
-        "    quick_xml::se::to_writer_with_root(&mut out, {:?}, source)?;",
-        ns.qualified_root(root)
+        "/// `to_xml` through quick-xml's serde serializer: the reference the\n\
+         /// generated writer is tested against.\n\
+         #[cfg(test)]\n\
+         pub fn to_xml_serde(source: &{root}) -> Result<String, quick_xml::SeError> {{"
+    );
+    out.push_str("    let mut out = String::new();\n");
+    out.push_str(declaration);
+    let _ = writeln!(
+        out,
+        "    quick_xml::se::to_writer_with_root(&mut out, {qualified:?}, source)?;"
     );
     out.push_str("    Ok(out)\n}\n");
 }

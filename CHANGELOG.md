@@ -66,6 +66,17 @@ Changes to the mapping DSL are listed under **DSL** in each release.
 
 ### Changed
 
+- Every target format's XML is written by a generated writer: each source
+  struct gets a `write_xml` (`einvoice-dsl` `codegen/source.rs`, escapes in
+  `einvoice_transformator::xml`) that writes straight into the output, in
+  place of quick-xml's serde serializer, which copied the document once per
+  nesting level. The output is byte for byte the same (tested against the
+  serializer on every sample and target). A conversion takes 18–33% less
+  server CPU, and peak memory drops most where the output is large:
+  FatturaPA → Factur-X from 14.7× to 9.3× of the body (glibc, 1 MB). That
+  route could exceed the default 12× reservation before; it now stays
+  inside it. A FatturaPA-free deployment can now set `KRAB_MEM_BLOWUP=6`
+  (was 9).
 - The bundled mappings read repeated payment means: UBL `PaymentMeans`, CII
   `SpecifiedTradeSettlementPaymentMeans` and FatturaPA `DettaglioPagamento`
   are the new hub collection `CreditTransfers` (BG-17, one item per

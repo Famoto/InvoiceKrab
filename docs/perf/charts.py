@@ -43,11 +43,12 @@ ONE_MS = {
     "To FatturaPA": [4.11, 4.90, 15.49, 125.38, 1220.09],
 }
 
-# Single invoice, peak memory (command line), MB.
+# Single invoice, peak memory (command line), MB. Re-measured with the
+# generated XML writer (November 2026).
 ONE_MB = {
-    "To UBL": [7.4, 7.3, 9.0, 39.3, 339.5],
-    "To Factur-X": [7.4, 7.4, 10.8, 56.9, 419.1],
-    "To FatturaPA": [7.4, 7.3, 7.3, 26.4, 219.4],
+    "To UBL": [5.8, 5.9, 8.2, 30.3, 257.0],
+    "To Factur-X": [5.3, 6.1, 8.0, 34.8, 297.9],
+    "To FatturaPA": [5.7, 5.6, 8.0, 30.7, 257.4],
 }
 
 # Server peak memory (MB) with N large (8.9 MB) invoices sent at once,
@@ -58,8 +59,8 @@ CONCURRENT = [(1, 47), (2, 72), (4, 136), (8, 174)]
 # worst output format, invoices of 1 MB and up, one request on a fresh
 # server (idle memory excluded). glibc = Linux build, musl = Docker image.
 FORMAT_BLOWUP = {
-    "glibc (Linux build)": {"FatturaPA": 11.5, "UBL, XRechnung, Peppol": 5.9, "Factur-X": 3.8},
-    "musl (Docker image)": {"FatturaPA": 9.0, "UBL, XRechnung, Peppol": 4.5, "Factur-X": 3.1},
+    "glibc (Linux build)": {"FatturaPA": 9.3, "UBL, XRechnung, Peppol": 3.8, "Factur-X": 4.1},
+    "musl (Docker image)": {"FatturaPA": 8.0, "UBL, XRechnung, Peppol": 3.3, "Factur-X": 3.5},
 }
 BLOWUP_DEFAULT = 12
 

@@ -492,9 +492,10 @@ mod tests {
         assert!(out.contains("pub struct Invoice {"), "{out}");
         assert!(out.contains("pub fn from_xml"), "{out}");
         assert!(out.contains("pub fn to_xml"), "{out}");
+        assert!(out.contains("pub fn write_xml(&self, tag: &str"), "{out}");
         // … and no mappers.
-        assert!(!out.contains("pub fn read"), "{out}");
-        assert!(!out.contains("pub fn write"), "{out}");
+        assert!(!out.contains("pub fn read("), "{out}");
+        assert!(!out.contains("pub fn write("), "{out}");
     }
 
     #[test]

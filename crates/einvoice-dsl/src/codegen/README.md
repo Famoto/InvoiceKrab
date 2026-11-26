@@ -21,8 +21,10 @@ text.
   elsewhere in the crate (canonical keys are PascalCase, no acronym handling).
 - `hub.rs` — `generate_hub`: the `MainKey` struct + one item struct per
   canonical collection.
-- `source.rs` — typed source structs (with serde/XML binding) and `from_xml` /
-  `to_xml`.
+- `source.rs` — typed source structs (serde binding for reading, a generated
+  `write_xml` for writing) and `from_xml` / `to_xml`. The serde serializer
+  stays derived as the reference the writer is tested against
+  (`to_xml_serde`).
 - `read.rs` — the reader: source → `MainKey`.
 - `write.rs` — the writer: `MainKey` → source (inverse of the reader).
 - `access.rs` — source-path access expressions shared by reader and writer
@@ -40,9 +42,16 @@ refactors must not change generated text.
 
 The fields *inside* a generated source struct are the one place sorted order is
 not used: they follow `StructMeta::ordered_fields` — attributes, then `$text`,
-then child elements by declaration position. serde serializes struct fields in
-declaration order, so this is what makes the emitted XML follow the mapping's
-(and the XSD's) element sequence.
+then child elements by declaration position. The generated `write_xml` writes
+them in that order (as serde serializes them in declaration order), so the
+emitted XML follows the mapping's (and the XSD's) element sequence.
+
+`write_xml` writes each element straight into one output `String`, its tag
+names as literals: no serde, and no per-element child buffer. quick-xml's
+serializer buffered every element's children and copied them into the parent,
+the document once per nesting level (up to 5x the output in memory, and 5-10x
+slower). The output is byte-for-byte the serializer's, which the interfaces
+crate checks on every sample and target.
 
 Namespaces are a write-side concern. Every element field gets a split rename —
 `rename(serialize = "cbc:ID", deserialize = "ID")` — so the writer emits the

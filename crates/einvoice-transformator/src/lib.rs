@@ -20,6 +20,7 @@
 //!   forms.
 //! - [`result`] — [`MappingResult`] and [`MappingDiagnostic`], the structured
 //!   mapper output and runtime diagnostic model.
+//! - [`xml`] — the escapes the generated XML writers call.
 //!
 //! # Behavior
 //!
@@ -37,6 +38,7 @@ pub mod codec;
 pub mod normalize;
 pub mod result;
 pub mod validate;
+pub mod xml;
 
 pub use codec::{
     decode_bool, decode_date, decode_datetime, encode_bool, encode_date, encode_datetime,
