@@ -55,8 +55,8 @@
 <text class="val" x="319.8" y="249" stroke="var(--surface)" stroke-width="4" paint-order="stroke">1.9×</text>
 <path d="M250.0,256.0 H299.7 Q303.7,256.0 303.7,260.0 V270.0 Q303.7,274.0 299.7,274.0 H250.0 Z" fill="var(--s2)"><title>Factur-X input, musl (Docker image): 1.6×</title></path>
 <text class="val" x="309.7" y="269" stroke="var(--surface)" stroke-width="4" paint-order="stroke">1.6×</text>
-<line class="ref" x1="652.9" x2="652.9" y1="110" y2="294"/>
-<text class="val" x="652.9" y="104" text-anchor="middle">default booking 12×</text>
+<line class="ref" x1="451.4" x2="451.4" y1="110" y2="294"/>
+<text class="val" x="451.4" y="104" text-anchor="middle">default booking 6×</text>
 <line class="base" x1="250.0" x2="250.0" y1="110" y2="294"/>
 <rect x="24" y="69" width="10" height="10" rx="2" fill="var(--s1)"/>
 <text class="lab" x="40" y="78">glibc (Linux build)</text>

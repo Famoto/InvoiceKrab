@@ -17,45 +17,46 @@ OUT = Path(__file__).resolve().parent
 # Measurements (release build, 4 vCPU — see docs/PERFORMANCE.md)
 # --------------------------------------------------------------------------
 
-# UBL invoice sizes in bytes: 3, 100, 1k, 10k and 100k invoice lines.
-SIZES = [9_065, 95_154, 895_855, 8_911_856, 89_161_857]
+# EN 16931 example invoice as UBL, in bytes: 3, 100, 1k, 10k and 100k
+# invoice lines. Re-measured with the compact records and the packed hub
+# (November 2026).
+SIZES = [16_305, 161_931, 1_528_131, 15_199_131, 151_999_131]
 
 # Server: invoices per second on 4 workers, 32 connections, by invoice size.
 SERVER_SIZES = SIZES[:3]
 SERVER_RPS = {
-    "To UBL / XRechnung": [12_144, 1_787, 216],
-    "To Factur-X": [10_145, 1_558, 179],
+    "To UBL / XRechnung": [11_748, 1_939, 264],
+    "To Factur-X": [11_644, 1_896, 265],
+    "To FatturaPA": [14_336, 2_195, 304],
 }
 
 # Server: invoices per second by worker count (= CPU cores), 16 connections,
-# UBL → XRechnung. The load generator shares the 4 cores, so the 4-core
-# point understates the server (most visibly for the small invoice).
+# UBL → XRechnung (typical invoice at 3 and 4 cores: median of three runs).
+# The load generator shares the 4 cores, so the 4-core point understates
+# the server (most visibly for the small invoice).
 CORES = [1, 2, 3, 4]
 CORE_RPS = {
-    "Typical invoice (9 KB)": [4_409, 8_798, 12_555, 11_683],
-    "100-line invoice (95 KB)": [510, 1_047, 1_507, 1_840],
+    "Typical invoice (16 KB)": [4_076, 8_528, 12_582, 10_949],
+    "100-line invoice (160 KB)": [606, 1_115, 1_778, 1_947],
 }
 
 # Single invoice, end-to-end time (command line, includes start-up), ms.
 ONE_MS = {
-    "To UBL": [4.43, 5.90, 21.94, 175.32, 1992.73],
-    "To Factur-X": [6.05, 6.29, 22.51, 210.41, 2185.22],
-    "To FatturaPA": [4.11, 4.90, 15.49, 125.38, 1220.09],
+    "To UBL": [2.52, 4.47, 16.18, 161.92, 1443.11],
+    "To Factur-X": [2.06, 3.50, 17.63, 147.06, 1445.40],
+    "To FatturaPA": [2.06, 4.42, 14.18, 131.48, 1146.78],
 }
 
-# Single invoice, peak memory (command line), MB. Re-measured with the
-# compact records and the packed hub, the input freed once parsed
-# (November 2026).
+# Single invoice, peak memory (command line), MB.
 ONE_MB = {
-    "To UBL": [4.3, 4.4, 5.4, 16.7, 109.2],
-    "To Factur-X": [4.1, 4.3, 5.6, 20.1, 149.0],
-    "To FatturaPA": [4.2, 4.2, 4.4, 13.3, 103.1],
+    "To UBL": [4.3, 4.5, 6.0, 22.3, 170.6],
+    "To Factur-X": [4.1, 4.3, 6.3, 27.5, 219.2],
+    "To FatturaPA": [4.2, 4.3, 5.0, 20.0, 170.6],
 }
 
-# Server peak memory (MB) with N large (8.9 MB) invoices sent at once,
-# 4 workers, UBL -> XRechnung, Linux build. Idle: 3 MB. Re-measured with
-# the compact records and the packed hub (November 2026).
-CONCURRENT = [(1, 17), (2, 25), (4, 45), (8, 81)]
+# Server peak memory (MB) with N large (15 MB) invoices sent at once,
+# 4 workers, UBL -> XRechnung, Linux build. Idle: 3 MB.
+CONCURRENT = [(1, 23), (2, 38), (4, 71), (8, 132)]
 
 # Server peak memory per request as a multiple of the invoice's file size,
 # worst output format, invoices of 1 MB and up, one request on a fresh
@@ -64,12 +65,12 @@ FORMAT_BLOWUP = {
     "glibc (Linux build)": {"FatturaPA": 4.9, "UBL, XRechnung, Peppol": 3.0, "Factur-X": 1.9},
     "musl (Docker image)": {"FatturaPA": 4.2, "UBL, XRechnung, Peppol": 2.5, "Factur-X": 1.6},
 }
-BLOWUP_DEFAULT = 12
+BLOWUP_DEFAULT = 6
 
 # Typical invoice latency (ms), alone vs. while large invoices are processed.
 HOL = {
-    "Typical invoices only": {"Median": 0.70, "Slowest 1%": 2.17},
-    "While large invoices run": {"Median": 223.39, "Slowest 1%": 319.82},
+    "Typical invoices only": {"Median": 0.79, "Slowest 1%": 2.05},
+    "While large invoices run": {"Median": 159.38, "Slowest 1%": 190.63},
 }
 
 # --------------------------------------------------------------------------
@@ -232,9 +233,9 @@ def single_invoice_time():
     line_chart(
         "invoice-time.svg",
         "Time to convert one invoice",
-        "End to end, command line, from a UBL invoice. Small invoices are dominated by the ~3 ms program start.",
+        "End to end, command line, from a UBL invoice. Small invoices are dominated by the ~2 ms program start.",
         ONE_MS, SIZES, xlog=True, ylog=True,
-        xticks=[5e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1.5e8], yticks=[1, 10, 100, 1_000, 10_000],
+        xticks=[5e3, 1e4, 1e5, 1e6, 1e7, 1e8, 2e8], yticks=[1, 10, 100, 1_000, 10_000],
         xfmt=lambda v: fmt_bytes(int(v)) if v in (1e4, 1e5, 1e6, 1e7, 1e8) else "",
         yfmt=lambda v: (f"{v / 1000:g} s" if v % 1000 == 0 else f"{v / 1000:.1f} s") if v >= 1000 else f"{v:,.0f} ms" if v >= 10 else f"{v:g} ms",
         xlab="Invoice file size (log scale)", ylab="Time (log scale)",
@@ -247,11 +248,11 @@ def single_invoice_memory():
         "Memory needed for one invoice",
         "Peak memory, command line, from a UBL invoice. Dashed line = the invoice's own file size.",
         ONE_MB, SIZES, xlog=True, ylog=True,
-        xticks=[5e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1.5e8], yticks=[1, 10, 100, 1_000],
+        xticks=[5e3, 1e4, 1e5, 1e6, 1e7, 1e8, 2e8], yticks=[1, 10, 100, 1_000],
         xfmt=lambda v: fmt_bytes(int(v)) if v in (1e4, 1e5, 1e6, 1e7, 1e8) else "",
         yfmt=lambda v: f"{v / 1000:g} GB" if v >= 1000 else f"{v:,.0f} MB" if v >= 10 else f"{v:g} MB",
         xlab="Invoice file size (log scale)", ylab="Peak memory (log scale)",
-        ref=([(1e6, 1), (1.5e8, 150)], "file size (1×)", (1.3e7, 8)),
+        ref=([(1e6, 1), (2e8, 200)], "file size (1×)", (1.3e7, 8)),
     )
 
 
@@ -276,11 +277,11 @@ def concurrency_memory():
         b.append(f'<text class="val" x="{x + bw / 2:.1f}" y="{sy(mb) - 8:.1f}" text-anchor="middle">{mb} MB</text>')
         b.append(f'<text class="lab" x="{x + bw / 2:.1f}" y="{B + 20}" text-anchor="middle">{n} at once</text>')
     b.append(f'<line class="base" x1="{L}" x2="{W - R}" y1="{B}" y2="{B}"/>')
-    b.append(f'<text class="axlab" x="{(L + W - R) / 2}" y="{B + 44}" text-anchor="middle">Large (8.9 MB) invoices sent at the same time — 4 workers</text>')
+    b.append(f'<text class="axlab" x="{(L + W - R) / 2}" y="{B + 44}" text-anchor="middle">Large (15 MB) invoices sent at the same time — 4 workers</text>')
     (OUT / "concurrency-memory.svg").write_text(
         svg("\n".join(b) + "\n",
             "Memory stays bounded under load",
-            "Idle: 3 MB. Beyond 4 at once (one per worker) extra invoices wait in line instead of using more memory.",
+            "Idle: 3 MB. Beyond 4 at once (one per worker) extra invoices wait in line, holding only their upload.",
             h)
     )
 
@@ -332,7 +333,7 @@ def mixed_workload():
     for t in [0.1, 1, 10, 100, 1000]:
         b.append(f'<line class="grid" x1="{sx(t):.1f}" x2="{sx(t):.1f}" y1="{T - 6}" y2="{h - 56}"/>')
         b.append(f'<text class="tick" x="{sx(t):.1f}" y="{h - 40}" text-anchor="middle">{t:g} ms</text>')
-    b.append(f'<text class="axlab" x="{(L + W - R) / 2}" y="{h - 18}" text-anchor="middle">Response time for a typical (9 KB) invoice (log scale)</text>')
+    b.append(f'<text class="axlab" x="{(L + W - R) / 2}" y="{h - 18}" text-anchor="middle">Response time for a typical (16 KB) invoice (log scale)</text>')
     y, bh = T + 4, 22
     for metric in ["Median", "Slowest 1%"]:
         b.append(f'<text class="lab" x="{L - 12}" y="{y + bh + 5}" text-anchor="end">{metric}</text>')
@@ -350,7 +351,7 @@ def mixed_workload():
     (OUT / "mixed-workload.svg").write_text(
         svg("\n".join(b) + "\n",
             "Known limitation: large invoices delay small ones",
-            "4-core server. Typical invoices alone vs. while eight 8.9 MB invoices are being converted.",
+            "4-core server. Typical invoices alone vs. while eight 15 MB invoices are being converted.",
             h)
     )
 

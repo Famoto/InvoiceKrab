@@ -27,7 +27,7 @@ router.
 | `KRAB_ADDR`              | `0.0.0.0:8080`                                |
 | `KRAB_WORKERS`           | available parallelism (cgroup-aware)          |
 | `KRAB_MEM_BUDGET_BYTES`  | detected memory x 1/2 (cgroup v2 limit first) |
-| `KRAB_MEM_BLOWUP`        | `12` — reservation = Content-Length x blowup  |
+| `KRAB_MEM_BLOWUP`        | `6` — reservation = Content-Length x blowup   |
 | `KRAB_BODY_TIMEOUT_SECS` | `30` — per-frame body read/write timeout      |
 | `KRAB_REQUEST_TIMEOUT_SECS` | `300` — deadline for the whole request body |
 | `KRAB_QUEUE_TIMEOUT_SECS` | `60` — longest wait for a memory reservation |
@@ -54,7 +54,7 @@ the Docker `HEALTHCHECK` for the `FROM scratch` image, where no curl exists.
 There is deliberately **no per-document size limit**. Memory safety comes
 from admission control instead: before reading its body, a request reserves
 `Content-Length x KRAB_MEM_BLOWUP` bytes (the measured peak of body, source
-record, hub and output) from a global budget. The default 12 covers the
+record, hub and output) from a global budget. The default 6 covers the
 worst measured route: for bodies of 1 MB and up, a FatturaPA source written
 as Factur-X peaks at 4.9x the body under glibc and 4.2x under musl. Every
 other source stays at or below 3.0x from 1 MB, so

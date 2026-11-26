@@ -128,6 +128,18 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   FatturaPA invoice whose lines the rules fill. Outputs and diagnostics are
   byte-identical to the build before on every sample, the corpus and the
   edge cases, for every target.
+- The default `KRAB_MEM_BLOWUP` is 6 instead of 12. With the packed hub the
+  worst measured route peaks at 4.9× the upload (glibc, 4.2× in the Docker
+  image), so the server books half as much memory per request: twice as many
+  large invoices run at once from the same budget, and the largest invoice
+  accepted is 1/12 of the container's memory instead of 1/24 (about 170 MB
+  for 2 GB). `KRAB_MEM_BLOWUP=4` still suits a FatturaPA-free deployment;
+  every other source peaks at 3.0× at most. docs/PERFORMANCE.md is
+  re-measured: throughput, scaling, single-invoice time and memory, under
+  load and overload, on copies of the EN 16931 example invoice (the OASIS
+  example lacks fields that XRechnung, Peppol and FatturaPA require). One
+  core converts about 4,100 typical invoices per second; a 100,000-line
+  invoice (152 MB) takes 1.4 s and 170–220 MB on the command line.
 - The bundled mappings read repeated payment means: UBL `PaymentMeans`, CII
   `SpecifiedTradeSettlementPaymentMeans` and FatturaPA `DettaglioPagamento`
   are the new hub collection `CreditTransfers` (BG-17, one item per
