@@ -451,15 +451,18 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
     }
 
     // read dispatch: source bytes -> MainKey.
-    out.push_str("/// Deserializes `bytes` for `spoke` and runs its generated reader.\n");
+    // The bytes are dropped once parsed: an owned input is freed before the
+    // reader builds the hub, and the source record holds the values alone.
+    out.push_str("/// Deserializes `bytes` for `spoke` and runs its generated reader; owned\n");
+    out.push_str("/// bytes are freed as soon as they are parsed.\n");
     out.push_str(
-        "pub fn read(spoke: Spoke, bytes: &[u8]) -> Result<MappingResult<MainKey>, quick_xml::DeError> {\n",
+        "pub fn read(spoke: Spoke, bytes: std::borrow::Cow<'_, [u8]>) -> Result<MappingResult<MainKey>, quick_xml::DeError> {\n",
     );
     out.push_str("    match spoke {\n");
     for spoke in spokes {
         let _ = writeln!(
             out,
-            "        Spoke::{v} => {{\n            let source = {s}::from_xml(bytes)?;\n            Ok({s}::read(source))\n        }}",
+            "        Spoke::{v} => {{\n            let source = {s}::from_xml(&bytes)?;\n            drop(bytes);\n            Ok({s}::read(source))\n        }}",
             v = spoke.variant,
             s = spoke.slug
         );

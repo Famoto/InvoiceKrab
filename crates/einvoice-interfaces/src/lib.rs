@@ -39,6 +39,8 @@
 //! assert!(!result.has_errors());
 //! ```
 
+use std::borrow::Cow;
+
 use einvoice_transformator::result::{MappingDiagnostic, MappingResult, Severity};
 
 pub mod analysis;
@@ -145,11 +147,39 @@ impl Engine {
         spoke: Spoke,
         bytes: &[u8],
     ) -> Result<MappingResult<MainKey>, EngineError> {
-        let bytes = encoding::to_utf8(bytes)?;
-        let bytes = bytes.as_ref();
+        self.read(spoke, encoding::to_utf8(bytes)?)
+    }
+
+    /// [`Engine::to_hub`] taking the document by value: its bytes are freed
+    /// as soon as they are parsed, before the reader builds the hub, so the
+    /// raw document and the hub are never in memory together.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::to_hub`].
+    pub fn to_hub_owned(
+        &self,
+        spoke: Spoke,
+        bytes: Vec<u8>,
+    ) -> Result<MappingResult<MainKey>, EngineError> {
+        let utf8 = match encoding::to_utf8(&bytes)? {
+            Cow::Owned(transcoded) => {
+                drop(bytes);
+                transcoded
+            }
+            Cow::Borrowed(_) => bytes,
+        };
+        self.read(spoke, Cow::Owned(utf8))
+    }
+
+    fn read(
+        &self,
+        spoke: Spoke,
+        bytes: Cow<'_, [u8]>,
+    ) -> Result<MappingResult<MainKey>, EngineError> {
         spoke
             .identity()
-            .check(bytes)
+            .check(&bytes)
             .map_err(|error| EngineError::Identity {
                 format: spoke.name(),
                 error,
@@ -258,11 +288,38 @@ impl Engine {
         to: Spoke,
         bytes: &[u8],
     ) -> Result<MappingResult<String>, EngineError> {
-        let read = self.to_hub(from, bytes)?;
+        let hint = output_hint(bytes.len());
+        self.write_read(to, self.to_hub(from, bytes)?, hint)
+    }
+
+    /// [`Engine::transform`] taking the document by value, freed once parsed
+    /// ([`Engine::to_hub_owned`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::transform`].
+    pub fn transform_owned(
+        &self,
+        from: Spoke,
+        to: Spoke,
+        bytes: Vec<u8>,
+    ) -> Result<MappingResult<String>, EngineError> {
+        let hint = output_hint(bytes.len());
+        self.write_read(to, self.to_hub_owned(from, bytes)?, hint)
+    }
+
+    /// The write half of a transform: writes the hub `read` produced as `to`,
+    /// after the read half's diagnostics.
+    fn write_read(
+        &self,
+        to: Spoke,
+        read: MappingResult<MainKey>,
+        hint: usize,
+    ) -> Result<MappingResult<String>, EngineError> {
         let Some(hub) = read.value else {
             return Ok(MappingResult::new(None, read.diagnostics));
         };
-        let written = self.from_hub_with_capacity(to, hub, output_hint(bytes.len()))?;
+        let written = self.from_hub_with_capacity(to, hub, hint)?;
         let mut diagnostics = read.diagnostics;
         diagnostics.extend(written.diagnostics);
         Ok(MappingResult::new(written.value, diagnostics))
@@ -619,14 +676,23 @@ mod tests {
                 .bytes()
                 .map(|b| if b == b'@' { 0xE8 } else { b }),
         );
-        let result = Engine::new()
+        let engine = Engine::new();
+        let borrowed = engine
             .to_hub(Spoke::UblInvoice, &xml)
             .expect("Latin-1 is decoded");
-        assert!(!result.has_errors(), "{:?}", result.diagnostics);
+        assert!(!borrowed.has_errors(), "{:?}", borrowed.diagnostics);
         assert_eq!(
-            result.value.expect("hub").invoice_note.as_deref(),
+            borrowed.value.expect("hub").invoice_note.as_deref(),
             Some("Caff\u{E8}")
         );
+        // The owned path reads the same, transcoded or not.
+        for doc in [xml, UBL.to_vec()] {
+            let owned = engine
+                .to_hub_owned(Spoke::UblInvoice, doc.clone())
+                .expect("owned");
+            let borrowed = engine.to_hub(Spoke::UblInvoice, &doc).expect("borrowed");
+            assert_eq!(owned.value, borrowed.value);
+        }
     }
 
     #[test]
@@ -806,7 +872,7 @@ mod tests {
         for &reader in Spoke::ALL {
             for &file in reader.samples() {
                 let bytes = std::fs::read(root.join(file)).expect(file);
-                let mut hub = generated::read(reader, &bytes)
+                let mut hub = generated::read(reader, bytes.as_slice().into())
                     .expect(file)
                     .value
                     .expect(file);
@@ -874,7 +940,7 @@ mod tests {
         ];
         for (name, doc, want) in cases {
             assert!(doc != ubl, "edge case `{name}` changed nothing");
-            let got = match generated::read(Spoke::UblInvoice, doc.as_bytes()) {
+            let got = match generated::read(Spoke::UblInvoice, doc.as_bytes().into()) {
                 Ok(read) => {
                     let hub = read.value.expect("reader always yields a hub");
                     let codes: Vec<_> = read

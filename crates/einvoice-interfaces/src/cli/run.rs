@@ -204,7 +204,7 @@ fn transform(
         None => detect_source(&bytes)?,
     };
 
-    let result: MappingResult<String> = engine.transform(from, to, &bytes)?;
+    let result: MappingResult<String> = engine.transform_owned(from, to, bytes)?;
 
     match result.value {
         Some(mut xml) if !result.has_errors() => {

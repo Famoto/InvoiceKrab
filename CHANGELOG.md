@@ -95,6 +95,19 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   from the generated code (quick-xml stays for parsing); refusals of
   malformed XML are worded as quick-xml's deserializer worded them, which
   a test records on 21 edge cases.
+- The server and the CLI free the uploaded document as soon as it is
+  parsed, before the hub is built (`Engine::to_hub_owned`,
+  `Engine::transform_owned`), so the raw upload and the hub are never in
+  memory together. With the compact records, peak memory per request
+  (fresh server, idle excluded) for a UBL invoice of 10,000 lines (14.5 MB)
+  is 24.8 MB instead of 33.5 MB (glibc) and 16.8 MB in the Docker image
+  (musl), 1.2× the upload. From 1 MB the worst route, FatturaPA →
+  Factur-X, peaks at 6.7× the upload (glibc) and 3.9× (musl), every other
+  source at 3.4× and 2.2× at most; the command line needs 103–164 MB
+  instead of 255–298 MB for an invoice of 100,000 lines. The default
+  `KRAB_MEM_BLOWUP=12` is unchanged; a FatturaPA-free deployment can now
+  set `KRAB_MEM_BLOWUP=4` (was 6). docs/PERFORMANCE.md, its charts and the
+  blowup guidance are updated.
 - The bundled mappings read repeated payment means: UBL `PaymentMeans`, CII
   `SpecifiedTradeSettlementPaymentMeans` and FatturaPA `DettaglioPagamento`
   are the new hub collection `CreditTransfers` (BG-17, one item per

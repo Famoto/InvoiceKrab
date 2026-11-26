@@ -3,9 +3,9 @@
 //! [`handle`] owns everything between "the body has been read" and "the
 //! response is known": query-parameter parsing, format resolution (reusing
 //! the [`cli`](crate::cli) helpers), driving the engine's read and write
-//! halves ([`Engine::to_hub`](crate::Engine::to_hub) then
-//! [`Engine::from_hub`](crate::Engine::from_hub), freeing the body between
-//! them), and mapping outcomes to HTTP status codes. It knows nothing of
+//! halves ([`Engine::to_hub_owned`](crate::Engine::to_hub_owned), which frees
+//! the body once it is parsed, then [`Engine::from_hub`](crate::Engine::from_hub)),
+//! and mapping outcomes to HTTP status codes. It knows nothing of
 //! sockets or the HTTP stack, so the whole decision table is unit-testable
 //! with plain bytes.
 //!
@@ -61,7 +61,7 @@ pub struct Reply {
 /// to an HTTP reply. See the module docs for the status table.
 ///
 /// Takes the body by value so it can be freed as soon as the source document
-/// is parsed: the write half of the transformation then runs without the raw
+/// is parsed: the hub is then built, and the target written, without the raw
 /// upload resident, which matters for multi-hundred-MB documents.
 pub fn handle(query: &str, body: Vec<u8>) -> Reply {
     match transform(query, body) {
@@ -97,12 +97,11 @@ fn transform(query: &str, body: Vec<u8>) -> Result<Reply, (u16, String)> {
     };
 
     // The read and write halves are driven separately (instead of one
-    // `Engine::transform` call) so the body can be dropped the moment the
-    // source is parsed — the write half runs with the raw bytes freed.
+    // `Engine::transform` call) so the errors of each map to their own
+    // status. The body is moved in and freed the moment it is parsed.
     let engine = Engine::new();
-    let read = engine.to_hub(from, &body).map_err(status_of)?;
     let hint = crate::output_hint(body.len());
-    drop(body);
+    let read = engine.to_hub_owned(from, body).map_err(status_of)?;
     let mut diagnostics = read.diagnostics;
     let value = match read.value {
         Some(hub) => {
