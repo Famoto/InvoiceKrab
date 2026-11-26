@@ -71,9 +71,10 @@ pub(super) struct Frame<'a> {
     pub(super) parent_src: &'a str,
     /// The source struct the collection's `source_path` resolves against.
     pub(super) parent_struct: &'a str,
-    /// Whether the enclosing scope's variables are owned (consumable): values
-    /// may then be moved out instead of cloned. `false` inside a collection
-    /// that had to be iterated by reference (its source path is read twice).
+    /// Writer: whether the enclosing hub scope is owned (consumable), so its
+    /// values may be moved out instead of cloned. `false` inside a hub
+    /// collection that had to be iterated by reference (its key is written
+    /// twice). The reader borrows the source and ignores it.
     pub(super) owned: bool,
 }
 

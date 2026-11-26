@@ -18,17 +18,14 @@
 //! value fills it, a later one that differs is `SCOPE_DISAGREE` (an error, or
 //! a warning that keeps the first under `multiple = "first"`).
 //!
-//! When the mapping aliases physical elements (`match` selectors), the source
-//! is `demux`ed first: each physical element's items are sorted into the
-//! logical fields the nodes read, and a single-valued logical node that matched
-//! several items warns `MATCH_MULTIPLE` and keeps the first.
+//! When the mapping aliases physical elements (`match` selectors), a logical
+//! field's nodes read the items of the physical element its selector picks
+//! (the first such item for a single-valued one); `demux` first warns
+//! `MATCH_MULTIPLE` for each single-valued logical node that matched several.
 //!
-//! The reader **consumes** the source struct: paths read exactly once move
-//! their `String`s into the hub (`take`), so a large document's text is not
-//! duplicated. Paths read more than once in a scope — a primary that is also a
-//! fallback target, two nodes sharing a fallback, two collections over one
-//! `Vec` — fall back to borrow + clone, since a second read of a taken path
-//! would see the leftover `Default`.
+//! The reader borrows the source record: each value is read by its id and
+//! copied into the hub (inline, without a heap allocation, for values of up
+//! to 24 bytes), so a path can be read any number of times.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -41,8 +38,7 @@ use crate::source_model::{SourceModelMeta, xml_field_name};
 use crate::types::MappingType;
 
 use super::access::{
-    access_expr, collection_item_struct, collection_slice_expr, collection_take_expr,
-    normalize_chain, take_expr,
+    access_expr, collection_item_struct, items_expr, normalize_chain, values_expr,
 };
 use super::diag::DiagSpec;
 use super::naming::{item_struct_name, snake_case};
@@ -61,70 +57,43 @@ struct Target<'a> {
     base_var: &'a str,
     /// The collection index variable for diagnostics, if inside a collection.
     index_var: Option<&'a str>,
-    /// Whether `base_var` is owned, allowing uniquely-read values to move out.
-    owned: bool,
     /// The scope's alternative sets ([`crate::alt::groups`]): their nodes
     /// decode into `alt_<position>` locals, combined after the scope's scalars.
     alts: &'a [Vec<&'a SourceNode>],
 }
 
-/// The source paths read more than once within one scope: each scalar's
-/// primary path, every fallback target's path, each `clone_of` node's path
-/// (read for the consistency check), and each collection's path.
-/// These must stay borrow + clone reads; unique paths move out.
-fn shared_read_paths(
-    ctx: &GenCtx,
-    scalars: &[&SourceNode],
-    clones: &[&SourceNode],
-    collections: &[&SourceNode],
-) -> BTreeSet<String> {
-    let mut paths: Vec<&str> = Vec::new();
-    for node in scalars {
-        paths.push(&node.source_path);
-        for fb_id in &node.fallbacks {
-            if let Some(fb) = ctx.ir.nodes.get(fb_id) {
-                paths.push(&fb.source_path);
-            }
-        }
-    }
-    for clone in clones {
-        paths.push(&clone.source_path);
-    }
-    for coll in collections {
-        paths.push(&coll.source_path);
-    }
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
-    let mut shared = BTreeSet::new();
-    for path in paths {
-        if !seen.insert(path) {
-            shared.insert(path.to_string());
-        }
-    }
-    shared
-}
-
-/// Emits the `read(mut source: Root) -> MappingResult<MainKey>` function into
-/// `out`. The source is consumed; see the module docs for the move/clone rule.
+/// Emits the `read(source: Root) -> MappingResult<MainKey>` function into
+/// `out`. The record is indexed once and read in place; nothing is moved out.
 pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
-    out.push_str("/// Reads the typed source document into the canonical hub, consuming it\n");
-    out.push_str("/// so uniquely-read values move instead of clone.\n");
+    out.push_str("/// Reads the source document's record into the canonical hub.\n");
     let _ = writeln!(
         out,
-        "pub fn read(mut source: {root}) -> MappingResult<MainKey> {{"
+        "pub fn read(source: {root}) -> MappingResult<MainKey> {{"
     );
     out.push_str("    let mut diagnostics: Vec<MappingDiagnostic> = Vec::new();\n");
     out.push_str("    let mut main = MainKey::default();\n");
+    let _ = writeln!(
+        out,
+        "    let document = source;\n    let source = Index::new(document.0.rec(), {root}::SIZE);"
+    );
     if super::source::root_has_alias_io(ctx.source) {
-        // Aliased elements: sort every physical element's items into the
-        // logical fields the mapping reads, warning when a single-valued
-        // logical node matched more than one item.
-        // `$root.Key` references are read before the items are sorted.
+        // Aliased elements: the logical fields the mapping reads pick their
+        // items from the physical element by selector; a single-valued
+        // logical node that matches more than one item warns first.
+        // `$root.Key` references are read before anything is picked.
         let (refs, refs_arg) = super::source::match_refs_binding(ctx.source, "source");
         out.push_str(&refs);
+        let root = &ctx.source.root;
         if refs_arg.is_empty() {
-            out.push_str("    source.demux(&mut |node, extra| {\n");
+            let _ = writeln!(
+                out,
+                "    {root}::demux(source.rec(), 0, &mut |node, extra| {{"
+            );
         } else {
-            let _ = writeln!(out, "    source.demux({refs_arg}, &mut |node, extra| {{");
+            let _ = writeln!(
+                out,
+                "    {root}::demux(source.rec(), 0, {refs_arg}, &mut |node, extra| {{"
+            );
         }
         out.push_str("        diagnostics.push(MappingDiagnostic::new(\n");
         out.push_str("            Severity::Warning,\n");
@@ -135,24 +104,17 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
         out.push_str("    });\n");
     }
 
-    let shared = shared_read_paths(
-        ctx,
-        &ctx.plan.root_scalars,
-        &ctx.plan.root_clones,
-        &ctx.plan.root_collections,
-    );
     let root_alts = crate::alt::groups(ctx.plan.root_scalars.iter().copied());
     let root_target = Target {
         struct_var: "main",
         parent_var: None,
         base_var: "source",
         index_var: None,
-        owned: true,
         alts: &root_alts,
     };
     for node in &ctx.plan.root_scalars {
         out.push('\n');
-        read_scalar_block(out, ctx, node, &ctx.source.root, 1, &root_target, &shared);
+        read_scalar_block(out, ctx, node, &ctx.source.root, 1, &root_target);
     }
     combine_alternatives(out, 1, &root_target);
 
@@ -160,16 +122,7 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
     // compare against is final.
     for clone in &ctx.plan.root_clones {
         out.push('\n');
-        read_clone_check_block(
-            out,
-            ctx,
-            clone,
-            &ctx.source.root,
-            1,
-            &root_target,
-            None,
-            &shared,
-        );
+        read_clone_check_block(out, ctx, clone, &ctx.source.root, 1, &root_target, None);
     }
 
     for coll in &ctx.plan.root_collections {
@@ -184,9 +137,8 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
                 parent_hub: "main",
                 parent_src: "source",
                 parent_struct: &ctx.source.root,
-                owned: true,
+                owned: false,
             },
-            &shared,
         );
     }
 
@@ -196,8 +148,7 @@ pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
 }
 
 /// Emits the read block for one scalar node: read + normalize + fallbacks +
-/// decode + assign into `target.struct_var.<field>`. `shared` is the scope's
-/// twice-read path set: those paths are cloned, unique ones are moved.
+/// decode + assign into `target.struct_var.<field>`.
 #[allow(clippy::too_many_arguments)]
 fn read_scalar_block(
     out: &mut String,
@@ -206,14 +157,12 @@ fn read_scalar_block(
     start_struct: &str,
     indent: usize,
     target: &Target,
-    shared: &BTreeSet<String>,
 ) {
     let pad = "    ".repeat(indent);
     let key = node
         .canonical_key
         .as_deref()
         .expect("scalar read block requires a canonical key");
-    let take = target.owned && !shared.contains(&node.source_path);
 
     if let Some(policy) = node.multiple {
         let _ = writeln!(out, "{pad}// {} -> {key} (multiple)", node.id);
@@ -226,7 +175,6 @@ fn read_scalar_block(
             policy,
             indent,
             target,
-            take,
         );
     } else {
         let _ = writeln!(out, "{pad}// {} -> {key}", node.id);
@@ -241,7 +189,7 @@ fn read_scalar_block(
         let _ = writeln!(
             out,
             "{pad}let {binding}: Option<CompactString> = {};",
-            node_value(ctx, node, start_struct, target, take)
+            node_value(ctx, node, start_struct, target)
         );
 
         // Fallbacks, in declared order. The fallback chain is the same for every
@@ -274,12 +222,11 @@ fn read_scalar_block(
             let Some(fb) = ctx.ir.nodes.get(fb_id) else {
                 continue;
             };
-            let fb_take = target.owned && !shared.contains(&fb.source_path);
             let _ = writeln!(out, "{pad}if value.is_none() {{");
             let _ = writeln!(
                 out,
                 "{pad}    value = {};",
-                node_value(ctx, fb, start_struct, target, fb_take)
+                node_value(ctx, fb, start_struct, target)
             );
             let _ = writeln!(out, "{pad}    if value.is_some() {{");
             let msg = format!("format!(\"used fallback `{fb_id}` for `{key}`\")");
@@ -523,7 +470,6 @@ fn read_clone_check_block(
     indent: usize,
     target: &Target,
     parent_hub: Option<&str>,
-    shared: &BTreeSet<String>,
 ) {
     let pad = "    ".repeat(indent);
     let body = "    ".repeat(indent + 1);
@@ -540,14 +486,13 @@ fn read_clone_check_block(
         }
     };
     let canonical = format!("{hub_var}.{}", snake_case(key));
-    let take = target.owned && !shared.contains(&node.source_path);
 
     let _ = writeln!(out, "{pad}// {}: copy of {key}, consistency check", node.id);
     let _ = writeln!(out, "{pad}{{");
     let _ = writeln!(
         out,
         "{body}let value: Option<CompactString> = {};",
-        node_value(ctx, node, start_struct, target, take)
+        node_value(ctx, node, start_struct, target)
     );
     let _ = writeln!(out, "{body}if let Some(raw) = value {{");
     read_length_check(out, ctx, node, key, target, &format!("{body}    "));
@@ -629,30 +574,16 @@ fn read_multi_values(
     policy: MultiplePolicy,
     indent: usize,
     target: &Target,
-    take: bool,
 ) {
     let pad = "    ".repeat(indent);
-    // The repeated leaf is a `Vec<CompactString>` field, possibly behind boxed
-    // interior containers — consumed when uniquely read, borrowed as a slice
-    // otherwise. Each item runs through the node's normalize chain;
-    // `empty_as_missing` drops the item.
-    if take {
-        let vec_expr =
-            collection_take_expr(source, start_struct, &node.source_path, target.base_var);
-        let item_chain = normalize_chain("Some(s)", &node.normalize, true);
-        let _ = writeln!(
-            out,
-            "{pad}let values: Vec<CompactString> = {vec_expr}.into_iter().filter_map(|s| {item_chain}).collect();",
-        );
-    } else {
-        let vec_expr =
-            collection_slice_expr(source, start_struct, &node.source_path, target.base_var);
-        let item_chain = normalize_chain("Some(s.as_str())", &node.normalize, false);
-        let _ = writeln!(
-            out,
-            "{pad}let values: Vec<CompactString> = {vec_expr}.iter().filter_map(|s| {item_chain}).collect();",
-        );
-    }
+    // The repeated scalar's values, each through the node's normalize chain;
+    // `empty_as_missing` drops the value.
+    let values = values_expr(source, start_struct, &node.source_path, target.base_var);
+    let item_chain = normalize_chain("Some(s)", &node.normalize, false);
+    let _ = writeln!(
+        out,
+        "{pad}let values: Vec<CompactString> = {values}.filter_map(|s| {item_chain}).collect();",
+    );
 
     match policy {
         MultiplePolicy::Error => {
@@ -718,16 +649,10 @@ fn fallback_chain_literal(node: &SourceNode) -> String {
 /// Emits the read loop for one collection node and its children, building an item
 /// struct per source element and pushing it into the hub collection field.
 /// Recurses into nested collections; `frame` carries the depth (for unique loop
-/// variables), indent, and enclosing hub/source/struct context. A uniquely-read
-/// collection is consumed (`mem::take` + `into_iter`) so its elements' values
-/// can move; a twice-read one is iterated by reference and its subtree clones.
-fn read_collection_block(
-    out: &mut String,
-    ctx: &GenCtx,
-    coll: &SourceNode,
-    frame: &Frame,
-    shared: &BTreeSet<String>,
-) {
+/// variables), indent, and enclosing hub/source/struct context. The items are
+/// counted first (the iterator is a cheap copy) so the hub collection is
+/// reserved once.
+fn read_collection_block(out: &mut String, ctx: &GenCtx, coll: &SourceNode, frame: &Frame) {
     let coll_key = coll
         .canonical_key
         .as_deref()
@@ -739,8 +664,6 @@ fn read_collection_block(
     let children = ctx.plan.children_of(&coll.id);
     let nested = ctx.plan.nested_collections_of(&coll.id);
     let clones = ctx.plan.clones_of(&coll.id);
-    let owned = frame.owned && !shared.contains(&coll.source_path);
-    let child_shared = shared_read_paths(ctx, children, clones, nested);
 
     // Per-depth variable names keep nested loops from shadowing each other.
     let depth = frame.depth;
@@ -755,40 +678,23 @@ fn read_collection_block(
     let body = "    ".repeat(indent + 1);
 
     let _ = writeln!(out, "{pad}// {} -> {coll_key} (collection)", coll.id);
-    // The element count is known before the loop, so reserve the hub collection
-    // once instead of letting it regrow as items are pushed. Paths through
-    // boxed interior containers chain through the `Option`s; an absent
-    // container yields no elements without materializing anything.
+    // Count the items first, so the hub collection is reserved once instead
+    // of regrowing as items are pushed.
     let elements = format!("elements{depth}");
-    if owned {
-        let vec_expr = collection_take_expr(
-            ctx.source,
-            frame.parent_struct,
-            &coll.source_path,
-            parent_src,
-        );
-        let _ = writeln!(out, "{pad}let {elements} = {vec_expr};");
-        let _ = writeln!(out, "{pad}let {count} = {elements}.len();");
-        let _ = writeln!(out, "{pad}{parent_hub}.{hub_field}.reserve({count});");
-        let _ = writeln!(
-            out,
-            "{pad}for ({idx}, mut {elem}) in {elements}.into_iter().enumerate() {{"
-        );
-    } else {
-        let slice_expr = collection_slice_expr(
-            ctx.source,
-            frame.parent_struct,
-            &coll.source_path,
-            parent_src,
-        );
-        let _ = writeln!(out, "{pad}let {elements} = {slice_expr};");
-        let _ = writeln!(out, "{pad}let {count} = {elements}.len();");
-        let _ = writeln!(out, "{pad}{parent_hub}.{hub_field}.reserve({count});");
-        let _ = writeln!(
-            out,
-            "{pad}for ({idx}, {elem}) in {elements}.iter().enumerate() {{"
-        );
-    }
+    let items = items_expr(
+        ctx.source,
+        frame.parent_struct,
+        &coll.source_path,
+        parent_src,
+    );
+    let _ = writeln!(out, "{pad}let {elements} = {items};");
+    let _ = writeln!(out, "{pad}let {count} = {elements}.clone().count();");
+    let _ = writeln!(out, "{pad}{parent_hub}.{hub_field}.reserve({count});");
+    let _ = writeln!(out, "{pad}for ({idx}, {elem}) in {elements}.enumerate() {{");
+    let _ = writeln!(
+        out,
+        "{body}let {elem} = Index::new({elem}, {src_item_struct}::SIZE);"
+    );
     let _ = writeln!(out, "{body}let mut {item} = {hub_item}::default();");
     let child_alts = crate::alt::groups(children.iter().copied());
     let target = Target {
@@ -796,20 +702,11 @@ fn read_collection_block(
         parent_var: Some(parent_hub),
         base_var: &elem,
         index_var: Some(&idx),
-        owned,
         alts: &child_alts,
     };
     for child in children {
         out.push('\n');
-        read_scalar_block(
-            out,
-            ctx,
-            child,
-            &src_item_struct,
-            indent + 1,
-            &target,
-            &child_shared,
-        );
+        read_scalar_block(out, ctx, child, &src_item_struct, indent + 1, &target);
     }
     combine_alternatives(out, indent + 1, &target);
     for clone in clones {
@@ -822,7 +719,6 @@ fn read_collection_block(
             indent + 1,
             &target,
             Some(parent_hub),
-            &child_shared,
         );
     }
     for nested_coll in nested {
@@ -837,9 +733,8 @@ fn read_collection_block(
                 parent_hub: &item,
                 parent_src: &elem,
                 parent_struct: &src_item_struct,
-                owned,
+                owned: false,
             },
-            &child_shared,
         );
     }
     out.push('\n');
@@ -864,33 +759,22 @@ fn read_collection_block(
 }
 
 /// Builds the `Option<String>` expression that reads one source field and applies
-/// its normalize chain — moving the value out when `take`, cloning otherwise.
+/// its normalize chain.
 fn read_one_value(
     source: &SourceModelMeta,
     start_struct: &str,
     path: &str,
     normalize: &[NormalizeOp],
     target: &Target,
-    take: bool,
 ) -> String {
-    let access = if take {
-        take_expr(source, start_struct, path, target.base_var)
-    } else {
-        access_expr(source, start_struct, path, target.base_var)
-    };
-    normalize_chain(&access, normalize, take)
+    let access = access_expr(source, start_struct, path, target.base_var);
+    normalize_chain(&access, normalize, false)
 }
 
 /// The expression reading a node's raw, normalized value. A `split` codec's
 /// value is its two part elements joined (borrowed, as the parts are read
 /// together); any other node reads its one source path.
-fn node_value(
-    ctx: &GenCtx,
-    node: &SourceNode,
-    start_struct: &str,
-    target: &Target,
-    take: bool,
-) -> String {
+fn node_value(ctx: &GenCtx, node: &SourceNode, start_struct: &str, target: &Target) -> String {
     if let Some(Pattern::Split { tail, .. }) = ctx.codec_of(node).map(|c| &c.pattern) {
         let head_path = &node.source_path;
         let tail_path = match head_path.rsplit_once('.') {
@@ -911,7 +795,6 @@ fn node_value(
         &node.source_path,
         &node.normalize,
         target,
-        take,
     )
 }
 

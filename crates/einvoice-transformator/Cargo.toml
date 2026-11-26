@@ -11,4 +11,6 @@ publish.workspace = true
 # Normalize helpers thread the generated models' inline-string values.
 compact_str = { workspace = true }
 serde = { workspace = true }
+# The pull reader the generated source models read documents with.
+quick-xml = { workspace = true, features = ["serialize"] }
 thiserror = { workspace = true }

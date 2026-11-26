@@ -36,6 +36,7 @@
 
 pub mod codec;
 pub mod normalize;
+pub mod record;
 pub mod result;
 pub mod validate;
 pub mod xml;

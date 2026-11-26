@@ -9,8 +9,9 @@
 //!   item struct per canonical collection.
 //! - [`generate_spoke`] turns a spoke's [`MappingIr`](crate::ir::MappingIr) and
 //!   its [`SourceModelMeta`](crate::source_model::SourceModelMeta) into: the
-//!   typed source structs (with serde/XML binding), `from_xml`/`to_xml`, and the
-//!   `read` (source → `MainKey`) / `write` (`MainKey` → source) mappers.
+//!   source record's element functions (XML read/write over a packed record
+//!   laid out by the mapping), `from_xml`/`to_xml`, and the `read` (source →
+//!   `MainKey`) / `write` (`MainKey` → source) mappers.
 //! - [`generate_source_module`] / [`generate_mapper_module`] split the same
 //!   output in two, so a build script can emit one structs module shared by
 //!   every spoke whose synthesized source model generates identical text.
@@ -24,7 +25,7 @@
 //! # Structure
 //!
 //! The generators are split into focused submodules (see `README.md`):
-//! [`naming`] (identifier/type helpers), [`hub`], [`source`] (structs + XML I/O),
+//! [`naming`] (identifier/type helpers), [`hub`], [`source`] (record layout + XML I/O),
 //! [`read`], [`write`], [`access`] (source-path expressions), [`plan`] (IR
 //! classification), and [`diag`] (diagnostic emission).
 //!
@@ -33,9 +34,9 @@
 //! The generators are **pure and deterministic**: text in, text out, with all
 //! `BTreeMap`s iterated in sorted order so identical inputs yield byte-identical
 //! output. The one deliberate exception is the field order *inside* a generated
-//! source struct: fields follow the mapping's declaration order (attributes
-//! first), because serde serializes in declaration order and the emitted XML
-//! must follow the schema's sequence. The emitted reader, per node: reads the source field, applies
+//! source element: fields follow the mapping's declaration order (attributes
+//! first), because the writer emits in that order and the emitted XML must
+//! follow the schema's sequence. The emitted reader, per node: reads the source field, applies
 //! `normalize` ops, falls back through `fallbacks`, decodes/validates by `type`,
 //! enforces `required`, and assigns into the typed `MainKey`. Helper nodes (no `canonical_key`) are read only as
 //! fallback sources. A node with a `constant` is written from that literal
@@ -91,7 +92,6 @@ pub fn generate_spoke(
         ir.meta.doc_format, ir.meta.mapping_version
     );
     out.push('\n');
-    out.push_str("#[cfg(test)]\nuse serde::{Deserialize, Serialize};\n");
     mapper_imports(&mut out, hub_module);
     out.push('\n');
     source_section(&mut out, source);
@@ -110,8 +110,6 @@ pub fn generate_source_module(source: &SourceModelMeta) -> String {
     out.push_str("// Generated shared source model. Do not edit by hand.\n");
     let _ = writeln!(out, "// Source model: {}", source.model_id);
     out.push('\n');
-    out.push_str("use compact_str::CompactString;\n");
-    out.push_str("#[cfg(test)]\nuse serde::{Deserialize, Serialize};\n\n");
     source_section(&mut out, source);
     out
 }
@@ -169,8 +167,8 @@ pub enum SpokeModule {
 /// emission order):
 ///
 /// 1. Spokes whose synthesized source models generate identical struct text
-///    share one `shared_<n>` structs module (collapsing the serde-derive cost
-///    of `inherits` families to one expansion) and get mappers-only modules.
+///    share one `shared_<n>` structs module (compiling the XML reader/writer
+///    of `inherits` families once) and get mappers-only modules.
 /// 2. A spoke whose module body is byte-identical to an earlier spoke's (e.g.
 ///    an `inherits` child overriding nothing) gets no text of its own — just
 ///    an alias to the earlier slug.
@@ -246,15 +244,15 @@ pub fn plan_spoke_dedup(
     }
 }
 
-/// Emits the typed source structs and the root's `from_xml`/`to_xml`.
+/// Emits the source records and the root's `from_xml`/`to_xml`.
 fn source_section(out: &mut String, source: &SourceModelMeta) {
     source::generate_source_structs(out, source);
     out.push('\n');
     source::generate_xml_io(out, &source.root, &source.namespaces);
 }
 
-/// Emits the imports the `read`/`write` mappers need (the source structs and
-/// their serde imports are emitted separately).
+/// Emits the imports the `read`/`write` mappers need (the source records
+/// name what they use by full path).
 fn mapper_imports(out: &mut String, hub_module: &str) {
     out.push_str("use std::str::FromStr as _;\n");
     out.push_str("use compact_str::{CompactString, ToCompactString as _};\n");
@@ -263,6 +261,7 @@ fn mapper_imports(out: &mut String, hub_module: &str) {
         "use einvoice_transformator::result::{MappingDiagnostic, MappingResult, Severity};\n",
     );
     out.push_str("use einvoice_transformator::{codec, normalize, validate};\n");
+    out.push_str("use einvoice_transformator::record::{Draft, Index};\n");
     let _ = writeln!(out, "use {hub_module}::*;");
 }
 
@@ -285,13 +284,12 @@ fn mapper_section(out: &mut String, ir: &MappingIr, source: &SourceModelMeta, co
 #[cfg(test)]
 mod tests {
     use super::naming::snake_case;
-    use super::source::serde_attr;
     use super::{generate_hub, generate_hub_with, generate_spoke};
     use crate::codec::CodecTable;
     use crate::hub::{CanonicalModel, derive_hub};
     use crate::ir::{MappingIr, build_ir, build_ir_with};
     use crate::parse::parse_mapping;
-    use crate::source_model::{FieldMeta, FieldType, SourceModelMeta};
+    use crate::source_model::SourceModelMeta;
 
     fn no_codecs() -> CodecTable {
         CodecTable::new()
@@ -421,22 +419,22 @@ mod tests {
     fn test_generate_spoke_emits_source_structs_and_mappers() {
         let (ir, _, source) = compiled();
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
-        // typed source struct with XML rename; every leaf is Option + default
-        // so absent elements parse (required is a reader diagnostic).
-        assert!(out.contains("pub struct Invoice {"), "{out}");
+        // The root record over one packed buffer; each element read by its
+        // local name into its id (absent elements cost nothing; required is
+        // a reader diagnostic).
         assert!(
-            out.contains(
-                "#[cfg_attr(test, serde(rename = \"ID\", default, skip_serializing_if = \"Option::is_none\"))]"
-            ),
+            out.contains("pub struct Invoice(pub ::einvoice_transformator::record::Values);"),
             "{out}"
         );
-        // The optional currencyID attribute also carries `default`/skip attrs.
-        assert!(out.contains("rename = \"@currencyID\""), "{out}");
+        assert!(out.contains("\"ID\" => { if seen[0]"), "{out}");
+        assert!(out.contains("values.push(base + 1, &text);"), "{out}");
+        // The optional currencyID attribute, matched without its `@`.
+        assert!(out.contains("\"currencyID\" => {"), "{out}");
         // xml io + mappers
         assert!(out.contains("pub fn from_xml"), "{out}");
         assert!(out.contains("pub fn to_xml"), "{out}");
         assert!(
-            out.contains("pub fn read(mut source: Invoice) -> MappingResult<MainKey>"),
+            out.contains("pub fn read(source: Invoice) -> MappingResult<MainKey>"),
             "{out}"
         );
         assert!(
@@ -453,16 +451,20 @@ mod tests {
         assert!(out.contains("validate::is_currency(raw.trim())"), "{out}");
         assert!(out.contains("main.document_currency = Some(raw);"), "{out}");
         assert!(out.contains("Decimal::from_str(raw.trim())"), "{out}");
-        // The normalize chain threads the one moved-out inline string by value
-        // (no per-op re-borrow / reallocation, no clone).
+        // The normalize chain copies the value once into an inline string and
+        // threads it by value (no per-op re-borrow / reallocation).
         assert!(
-            out.contains(".take().map(normalize::trim).map(normalize::uppercase)"),
+            out.contains("source.get(2).map(CompactString::from).map(normalize::trim).map(normalize::uppercase)"),
             "{out}"
         );
         assert!(!out.contains("normalize::trim(&s)"), "{out}");
         // Collection loops use per-depth variable names (`item0`, `element0`) and
-        // reserve the hub collection up front from the known source length.
-        assert!(out.contains("let count0 = elements0.len();"), "{out}");
+        // reserve the hub collection up front from the counted items.
+        assert!(out.contains("let elements0 = source.items(7);"), "{out}");
+        assert!(
+            out.contains("let count0 = elements0.clone().count();"),
+            "{out}"
+        );
         assert!(out.contains("main.invoice_lines.reserve(count0);"), "{out}");
         assert!(out.contains("main.invoice_lines.push(item0);"), "{out}");
         assert!(out.contains("item0.quantity = Some(d)"), "{out}");
@@ -483,16 +485,20 @@ mod tests {
     fn test_generate_source_module_is_self_contained_structs_and_xml_io() {
         let (_, _, source) = compiled();
         let out = super::generate_source_module(&source);
-        // Self-contained: carries its own imports, structs, and XML I/O …
-        assert!(out.contains("use compact_str::CompactString;"), "{out}");
+        // Self-contained: records and XML I/O, naming the runtime by full path …
+        assert!(!out.contains("\nuse "), "{out}");
         assert!(
-            out.contains("use serde::{Deserialize, Serialize};"),
+            out.contains("pub struct Invoice(pub ::einvoice_transformator::record::Values);"),
             "{out}"
         );
-        assert!(out.contains("pub struct Invoice {"), "{out}");
+        assert!(out.contains("pub struct InvoiceLine;"), "{out}");
         assert!(out.contains("pub fn from_xml"), "{out}");
         assert!(out.contains("pub fn to_xml"), "{out}");
-        assert!(out.contains("pub fn write_xml(&self, tag: &str"), "{out}");
+        assert!(
+            out.contains("pub fn read_xml<'a>(r: &mut ::einvoice_transformator::xml::Reader<'a>"),
+            "{out}"
+        );
+        assert!(out.contains("pub fn write_xml(rec: &::einvoice_transformator::record::Index<'_>, base: u32, tag: &str"), "{out}");
         // … and no mappers.
         assert!(!out.contains("pub fn read("), "{out}");
         assert!(!out.contains("pub fn write("), "{out}");
@@ -510,11 +516,11 @@ mod tests {
         );
         // Structs come from the shared module, re-exported for callers.
         assert!(out.contains("pub use super::shared_0::*;"), "{out}");
-        assert!(!out.contains("pub struct Invoice {"), "{out}");
+        assert!(!out.contains("pub struct Invoice"), "{out}");
         assert!(!out.contains("pub fn from_xml"), "{out}");
         // Mappers are present.
         assert!(
-            out.contains("pub fn read(mut source: Invoice) -> MappingResult<MainKey>"),
+            out.contains("pub fn read(source: Invoice) -> MappingResult<MainKey>"),
             "{out}"
         );
         assert!(
@@ -537,14 +543,14 @@ mod tests {
             "super::hub",
             "super::shared_0",
         );
-        for needle in ["pub struct Invoice {", "pub fn from_xml", "pub fn to_xml"] {
+        for needle in ["pub struct Invoice(", "pub fn from_xml", "pub fn to_xml"] {
             assert!(
                 monolith.contains(needle) && src.contains(needle),
                 "{needle}"
             );
         }
         for needle in [
-            "pub fn read(mut source: Invoice)",
+            "pub fn read(source: Invoice)",
             "pub fn write(mut main: MainKey)",
         ] {
             assert!(
@@ -568,19 +574,21 @@ mod tests {
             out.contains("let rendered = value.to_compact_string();"),
             "{out}"
         );
-        // Values are rendered once, skipped if empty, then assigned. Interior
-        // container structs are `Option<Box<…>>` and materialize lazily on
-        // write; every leaf is Option-typed, so assignment wraps in `Some`.
+        // Values are rendered once, skipped if empty, then set under their
+        // id; an interior element is present once a value inside it is set.
+        assert!(out.contains("source.set(6, &rendered);"), "{out}");
+        assert!(out.contains("source.set(1, &rendered);"), "{out}");
+        // An item is built in a record of its own and nested when non-empty.
         assert!(
-            out.contains(
-                "source.legal_monetary_total.get_or_insert_default().payable_amount.get_or_insert_default().value = Some(rendered);"
-            ),
+            out.contains("let mut element0 = Draft::new(InvoiceLine::SIZE);"),
             "{out}"
         );
-        assert!(out.contains("source.id = Some(rendered);"), "{out}");
-        // The source collection is reserved once from the hub item count.
         assert!(
-            out.contains("source.invoice_line.reserve(hub_items0.len());"),
+            out.contains("if !InvoiceLine::is_empty(element0.rec(), 0) {"),
+            "{out}"
+        );
+        assert!(
+            out.contains("source.push_record(7, element0.rec());"),
             "{out}"
         );
         assert!(out.contains("REQUIRED_MISSING"), "{out}");
@@ -612,61 +620,57 @@ mod tests {
         );
         let _ = hub;
         let out = generate_spoke(&ir, &source, &CodecTable::new(), "super::hub");
-        // One physical field on the wire, two logical fields off it.
+        // One physical element on the wire (id 2); the writer lays the
+        // repeated logical field out under id 1 and the single one inline
+        // at 3..6.
         assert!(
-            out.contains(
-                "#[cfg_attr(test, serde(rename = \"AdditionalDocumentReference\", default, skip_serializing_if = \"Vec::is_empty\"))]\n    pub all_additional_document_reference: Vec<AdditionalDocumentReference>,"
-            ),
+            out.contains("for item in rec.items(base + 2) { AdditionalDocumentReference::write_xml(&::einvoice_transformator::record::Index::new(item, AdditionalDocumentReference::SIZE), 0, \"AdditionalDocumentReference\", out); }"),
             "{out}"
         );
+        // class: selector first, default bucket last; demux reports overflow.
         assert!(
-            out.contains("#[cfg_attr(test, serde(skip))]\n    pub additional_document_reference: Vec<AdditionalDocumentReference>,"),
-            "{out}"
-        );
-        assert!(
-            out.contains("#[cfg_attr(test, serde(skip))]\n    pub invoiced_object_reference: Option<Box<AdditionalDocumentReference>>,"),
-            "{out}"
-        );
-        // demux: selector first, default bucket last, overflow reported.
-        assert!(
-            out.contains(
-                "for item in std::mem::take(&mut self.all_additional_document_reference) {"
-            ),
-            "{out}"
-        );
-        assert!(
-            out.contains("if item.document_type_code.as_ref().and_then(|v0| Some(v0.as_str())).is_some_and(|v| v.trim() == \"130\") {"),
-            "{out}"
-        );
-        assert!(
-            out.contains("self.additional_document_reference.push(item);"),
+            out.contains("pub fn class_all_additional_document_reference(item: ::einvoice_transformator::record::Rec<'_>) -> usize {\n        if item.get(2).is_some_and(|v| v.trim() == \"130\") { return 1; }\n        0\n    }"),
             "{out}"
         );
         assert!(
             out.contains(
-                "overflow(\"Invoice.InvoicedObjectReference\", extra_invoiced_object_reference);"
+                "if counts[1] > 1 { overflow(\"Invoice.InvoicedObjectReference\", counts[1] - 1); }"
             ),
             "{out}"
         );
-        // mux: the discriminator is written from the selector.
+        // mux: logical items move into the physical element, the
+        // discriminator written from the selector.
         assert!(
-            out.contains("item.document_type_code = Some(CompactString::from(\"130\"));"),
+            out.contains("for item in rec.items(1) { out.push_record(2, item); }"),
+            "{out}"
+        );
+        assert!(
+            out.contains("let mut item = rec.extract(3, 6);\n            item.set(2, \"130\");\n            out.push_record(2, item.rec());"),
             "{out}"
         );
         // The mappers call them on the root.
-        assert!(out.contains("source.demux(&mut |node, extra| {"), "{out}");
-        assert!(out.contains("\"MATCH_MULTIPLE\""), "{out}");
-        assert!(out.contains("    source.mux();\n"), "{out}");
-        // The nodes map through the logical fields: read by moving out of the
-        // logical struct, written by materializing it.
         assert!(
-            out.contains("source.invoiced_object_reference.as_mut().and_then(|v0| v0.id.take())"),
+            out.contains("Invoice::demux(source.rec(), 0, &mut |node, extra| {"),
+            "{out}"
+        );
+        assert!(out.contains("\"MATCH_MULTIPLE\""), "{out}");
+        assert!(
+            out.contains("    let source = Invoice::mux(source.rec());\n"),
+            "{out}"
+        );
+        // The nodes map through the logical fields: read by picking the
+        // physical items, written into the writer's own layout.
+        assert!(
+            out.contains("source.items(2).find(|i| Invoice::class_all_additional_document_reference(*i) == 1).and_then(|v0| v0.get(1))"),
             "{out}"
         );
         assert!(
-            out.contains(
-                "source.invoiced_object_reference.get_or_insert_default().id = Some(rendered);"
-            ),
+            out.contains("source.items(2).filter(move |i| Invoice::class_all_additional_document_reference(*i) == 0)"),
+            "{out}"
+        );
+        assert!(out.contains("source.set(4, &rendered);"), "{out}");
+        assert!(
+            out.contains("source.push_record(1, element0.rec());"),
             "{out}"
         );
     }
@@ -703,7 +707,7 @@ mod tests {
             "clone must precede the attribute:\n{out}"
         );
         assert!(
-            out.contains("Some(&source).and_then(|v0| v0.amount.as_ref()).is_some_and(|owner| !owner.is_empty())"),
+            out.contains("if !rendered.is_empty() && !Amount::is_empty(source.rec(), "),
             "the attribute keeps its owner guard:\n{out}"
         );
     }
@@ -733,39 +737,12 @@ mod tests {
             "#,
         );
         let out = generate_spoke(&ir, &source, &CodecTable::new(), "super::hub");
-        assert!(out.contains("let mut extra_other_ref = 0usize;"), "{out}");
+        // The default bucket takes what no selector claims ...
+        assert!(out.contains("{ return 0; }\n        1\n    }"), "{out}");
+        // ... reads the first of them, and reports the rest.
         assert!(
-            out.contains("if self.other_ref.is_none() {\n                self.other_ref = Some(Box::new(item));\n            } else {\n                extra_other_ref += 1;\n            }"),
+            out.contains("if counts[1] > 1 { overflow(\"Invoice.OtherRef\", counts[1] - 1); }"),
             "{out}"
-        );
-        assert!(
-            out.contains("overflow(\"Invoice.OtherRef\", extra_other_ref);"),
-            "{out}"
-        );
-    }
-
-    #[test]
-    fn test_interior_struct_field_is_boxed_optional() {
-        // An interior container is `Option<Box<…>>`: a document that omits the
-        // whole element costs one `None` (8 bytes, no allocation) instead of a
-        // full inline `Default` struct. `default` keeps absent elements
-        // parseable; `Option::is_none` skips never-materialized subtrees on
-        // write.
-        let field = FieldMeta {
-            optional: false,
-            repeated: false,
-            ty: FieldType::Struct("Party".into()),
-            xml: Some("Party".into()),
-            prefix: String::new(),
-            always_present: false,
-            order: 0,
-            alias: None,
-        };
-        let attr = serde_attr(&field).expect("interior struct needs a serde attr");
-        assert!(attr.contains("default"), "{attr}");
-        assert!(
-            attr.contains("skip_serializing_if = \"Option::is_none\""),
-            "{attr}"
         );
     }
 
@@ -809,12 +786,12 @@ mod tests {
         let (name, text) = &plan.shared_modules[0];
         assert_eq!(name, "shared_0");
         assert!(text.contains("Shared by: alpha, beta"), "{text}");
-        assert!(text.contains("pub struct Invoice {"), "{text}");
+        assert!(text.contains("pub struct Invoice("), "{text}");
         // The first spoke imports the shared structs; the second spoke's
         // module body is byte-identical: aliased, no file.
         let first = emitted(&plan.modules[0]);
         assert!(first.contains("pub use super::shared_0::*;"), "{first}");
-        assert!(!first.contains("pub struct Invoice {"), "{first}");
+        assert!(!first.contains("pub struct Invoice("), "{first}");
         assert!(
             matches!(&plan.modules[1], super::SpokeModule::Alias(a) if a == "alpha"),
             "{:?}",
@@ -862,7 +839,7 @@ mod tests {
         assert!(plan.shared_modules.is_empty());
         for module in &plan.modules {
             let code = emitted(module);
-            assert!(code.contains("pub struct Invoice {"), "{code}");
+            assert!(code.contains("pub struct Invoice("), "{code}");
         }
     }
 
@@ -880,20 +857,20 @@ mod tests {
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
 
         assert!(out.contains("impl InvoiceLine {"), "{out}");
-        assert!(out.contains("pub fn is_empty(&self) -> bool {"), "{out}");
         assert!(
-            out.contains("skip_serializing_if = \"Vec::is_empty\""),
+            out.contains("pub fn is_empty(rec: ::einvoice_transformator::record::Rec<'_>, base: u32) -> bool {"),
             "{out}"
         );
-        // Interior containers are boxed-optional: absent subtree = `None`.
+        // The root's 8 ids: an empty value or mark is empty, an item (under
+        // the lines' id 7) is not, even an empty one.
         assert!(
-            out.contains("pub legal_monetary_total: Option<Box<LegalMonetaryTotal>>,"),
+            out.contains("local >= 8 || (payload.is_empty() && !matches!(local, 7))"),
             "{out}"
         );
+        // Interior elements are laid out inline: `LegalMonetaryTotal` at
+        // 3..7, written only when an id in that range is there.
         assert!(
-            out.contains(
-                "self.legal_monetary_total.as_ref().map_or(true, |value| value.is_empty())"
-            ),
+            out.contains("if rec.any(base + 3, base + 7) { LegalMonetaryTotal::write_xml(rec, base + 3, \"LegalMonetaryTotal\", out); }"),
             "{out}"
         );
     }
@@ -932,14 +909,14 @@ mod tests {
             "{hub_src}"
         );
 
-        // Spoke: nested read/write loops consume the inner Vec, keyed by depth.
+        // Spoke: nested read/write loops over the nested items, keyed by depth.
         let spoke = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         assert!(
-            spoke.contains("let elements1 = std::mem::take(&mut element0.allowance_charge);"),
+            spoke.contains("let elements1 = element0.items(1);"),
             "{spoke}"
         );
         assert!(
-            spoke.contains("for (idx1, mut element1) in elements1.into_iter().enumerate()"),
+            spoke.contains("for (idx1, element1) in elements1.enumerate()"),
             "{spoke}"
         );
         assert!(
@@ -955,10 +932,13 @@ mod tests {
             "{spoke}"
         );
         assert!(
-            spoke.contains("element0.allowance_charge.push(element1);"),
+            spoke.contains("element0.push_record(1, element1.rec());"),
             "{spoke}"
         );
-        assert!(spoke.contains("if !element1.is_empty()"), "{spoke}");
+        assert!(
+            spoke.contains("if !InvoiceLineAllowanceCharge::is_empty(element1.rec(), 0)"),
+            "{spoke}"
+        );
     }
 
     #[test]
@@ -974,19 +954,21 @@ mod tests {
             "#,
         );
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
-        // Source struct: repeated scalar leaf.
-        assert!(out.contains("pub note: Vec<CompactString>,"), "{out}");
-        // Reader: consume the repeated leaf, collect normalized values, join
-        // with the separator.
+        // Source record: a repeated scalar, one entry per value.
         assert!(
-            out.contains("std::mem::take(&mut source.note).into_iter().filter_map(|s| Some(s)"),
+            out.contains("for value in rec.all(base + 1) { ::einvoice_transformator::xml::element(out, \"Note\", value); }"),
+            "{out}"
+        );
+        // Reader: collect the normalized values, join with the separator.
+        assert!(
+            out.contains("source.all(1).filter_map(|s| Some(s).map(CompactString::from)"),
             "{out}"
         );
         // Slice join yields a `String`; `.into()` moves it into the inline
         // string type (O(1) for heap-sized joins).
         assert!(out.contains("Some(values.join(\"\\n\").into())"), "{out}");
         // Writer: the joined canonical value is pushed as one element.
-        assert!(out.contains("source.note.push(rendered);"), "{out}");
+        assert!(out.contains("source.push(1, &rendered);"), "{out}");
     }
 
     #[test]
@@ -1008,39 +990,35 @@ mod tests {
     }
 
     #[test]
-    fn test_reader_moves_unique_source_values() {
+    fn test_reader_borrows_the_source_record() {
         let (ir, _, source) = compiled();
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
-        // The reader consumes the source struct so uniquely-read values move
-        // into the hub instead of being cloned.
+        // The reader views the record and copies each value it reads.
         assert!(
-            out.contains("pub fn read(mut source: Invoice) -> MappingResult<MainKey>"),
-            "{out}"
-        );
-        assert!(out.contains("source.id.take()"), "{out}");
-        // A take through a boxed interior chains `as_mut` and moves the leaf.
-        assert!(
-            out.contains("source.legal_monetary_total.as_mut()"),
-            "{out}"
-        );
-        // Collections are consumed by value, element by element.
-        assert!(
-            out.contains("let elements0 = std::mem::take(&mut source.invoice_line);"),
+            out.contains("pub fn read(source: Invoice) -> MappingResult<MainKey>"),
             "{out}"
         );
         assert!(
-            out.contains("for (idx0, mut element0) in elements0.into_iter().enumerate()"),
+            out.contains("let source = Index::new(document.0.rec(), Invoice::SIZE);"),
             "{out}"
         );
-        // No path in this mapping is read twice, so nothing is cloned.
-        assert!(!out.contains(".map(|s| s.to_string())"), "{out}");
+        // A value inside an interior element is read straight by its id.
+        assert!(
+            out.contains(
+                "let value: Option<CompactString> = source.get(6).map(CompactString::from);"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("for (idx0, element0) in elements0.enumerate()"),
+            "{out}"
+        );
     }
 
     #[test]
-    fn test_reader_clones_shared_fallback_path() {
-        // Two primaries share `Invoice.UUID` as a fallback: that path is read
-        // twice, so it must stay a borrow + clone (a move would leave the
-        // second read empty). Unique paths still move.
+    fn test_reader_reads_a_shared_fallback_path_twice() {
+        // Two primaries share `Invoice.UUID` (id 3) as a fallback: a borrowed
+        // record reads it for both.
         let (ir, _, source) = compile(
             r#"
             [Invoice.ID]
@@ -1058,10 +1036,15 @@ mod tests {
             "#,
         );
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
-        assert!(!out.contains("source.uuid.take()"), "{out}");
-        assert!(out.contains("source.uuid.as_ref()"), "{out}");
-        assert!(out.contains("source.id.take()"), "{out}");
-        assert!(out.contains("source.alt.take()"), "{out}");
+        assert_eq!(out.matches("value = source.get(3)").count(), 2, "{out}");
+        assert!(
+            out.contains("source.get(1).map(CompactString::from)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("source.get(2).map(CompactString::from)"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -1083,9 +1066,10 @@ mod tests {
 
     #[test]
     fn test_wrapped_collection_crosses_boxed_interior() {
-        // A collection under an interior container (the Factur-X shape) must
-        // read through the boxed wrapper without materializing it, and write
-        // through `get_or_insert_default` only when there are items to push.
+        // A collection under an interior container (the Factur-X shape): its
+        // items nest under the interior's ids; the writer marks the wrapper
+        // present only when there are items to push (as the typed writer
+        // materialized it to reserve the items).
         let (ir, _, source) = compile(
             r#"
             [Invoice.ID]
@@ -1102,21 +1086,15 @@ mod tests {
             "#,
         );
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
-        // Reader: absent wrapper yields an empty Vec, no insertion.
+        // Reader: the items under `Wrap`'s `Line` id (wrapper at 2..4).
+        assert!(out.contains("let elements0 = source.items(3);"), "{out}");
+        // Writer: the wrapper is marked only when items exist.
         assert!(
-            out.contains(
-                "let elements0 = source.wrap.as_mut().and_then(|v0| Some(std::mem::take(&mut v0.line))).unwrap_or_default();"
-            ),
-            "{out}"
-        );
-        // Writer: the wrapper materializes only when items exist.
-        assert!(out.contains("if !hub_items0.is_empty() {"), "{out}");
-        assert!(
-            out.contains("source.wrap.get_or_insert_default().line.reserve(hub_items0.len());"),
+            out.contains("if !hub_items0.is_empty() {\n        source.mark(2);\n    }"),
             "{out}"
         );
         assert!(
-            out.contains("source.wrap.get_or_insert_default().line.push(element0);"),
+            out.contains("source.push_record(3, element0.rec());"),
             "{out}"
         );
     }
@@ -1136,13 +1114,9 @@ mod tests {
         );
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // Writer pins the literal at the source path.
-        assert!(
-            out.contains("source.ubl_version_id = Some(CompactString::from(\"2.1\"));"),
-            "{out}"
-        );
-        // Reader never touches the field: write-only node.
-        assert!(!out.contains("source.ubl_version_id.take()"), "{out}");
-        assert!(!out.contains("source.ubl_version_id.as_ref()"), "{out}");
+        assert!(out.contains("source.set(2, \"2.1\");"), "{out}");
+        // Reader never touches the field (id 2): write-only node.
+        assert!(!out.contains("source.get(2)"), "{out}");
     }
 
     #[test]
@@ -1157,13 +1131,14 @@ mod tests {
         );
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // Reader fills the hub from the document as usual.
-        assert!(out.contains("source.customization_id.take()"), "{out}");
+        assert!(
+            out.contains("source.get(1).map(CompactString::from)"),
+            "{out}"
+        );
         assert!(out.contains("main.specification_id = Some(raw);"), "{out}");
         // Writer emits the constant and never consults the hub value.
         assert!(
-            out.contains(
-                "source.customization_id = Some(CompactString::from(\"urn:cen.eu:en16931:2017\"));"
-            ),
+            out.contains("source.set(1, \"urn:cen.eu:en16931:2017\");"),
             "{out}"
         );
         assert!(!out.contains("main.specification_id.take()"), "{out}");
@@ -1190,13 +1165,13 @@ mod tests {
         // The constant assignment sits inside the non-empty guard, before the
         // push: it never resurrects an otherwise-empty item.
         let guard = out
-            .find("if !element0.is_empty() {")
+            .find("if !InvoiceLine::is_empty(element0.rec(), 0) {")
             .expect("non-empty guard exists");
         let assign = out
-            .find("element0.type_code = Some(CompactString::from(\"380\"));")
+            .find("element0.set(2, \"380\");")
             .expect("constant assigned on the element");
         let push = out
-            .find("source.invoice_line.push(element0);")
+            .find("source.push_record(1, element0.rec());")
             .expect("element pushed");
         assert!(guard < assign && assign < push, "{out}");
     }
@@ -1224,11 +1199,8 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("main.invoice_number.take()"), "{out}");
-        assert!(out.contains("source.id = Some(rendered);"), "{out}");
-        assert!(
-            out.contains("source.buyer_reference = Some(rendered);"),
-            "{out}"
-        );
+        assert!(out.contains("source.set(1, &rendered);"), "{out}");
+        assert!(out.contains("source.set(2, &rendered);"), "{out}");
     }
 
     #[test]
@@ -1282,17 +1254,14 @@ mod tests {
             2,
             "{out}"
         );
-        assert!(
-            out.contains("element0.document_reference = Some(rendered);"),
-            "{out}"
-        );
+        assert!(out.contains("element0.set(2, &rendered);"), "{out}");
         // Reader: per-item mismatch check.
         assert!(out.contains("CLONE_MISMATCH"), "{out}");
     }
 
-    /// Byte offset of `needle` inside the generated `pub struct {name} {` block.
+    /// Byte offset of `needle` inside the generated `impl {name} {` block.
     fn offset_in_struct(out: &str, name: &str, needle: &str) -> usize {
-        let header = format!("pub struct {name} {{");
+        let header = format!("impl {name} {{");
         let start = out
             .find(&header)
             .unwrap_or_else(|| panic!("{header} in:\n{out}"));
@@ -1306,15 +1275,23 @@ mod tests {
     #[test]
     fn test_source_struct_fields_follow_declaration_order() {
         // UBL declares ID, DocumentCurrencyCode, LegalMonetaryTotal, InvoiceLine
-        // in that order; the struct (and so the emitted XML) must too, not
+        // in that order; the layout and the emitted XML must too, not
         // alphabetically (`document_currency_code` < `id` < `invoice_line` <
         // `legal_monetary_total`).
         let (ir, _, source) = compiled();
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
-        let id = offset_in_struct(&out, "Invoice", "pub id:");
-        let currency = offset_in_struct(&out, "Invoice", "pub document_currency_code:");
-        let totals = offset_in_struct(&out, "Invoice", "pub legal_monetary_total:");
-        let lines = offset_in_struct(&out, "Invoice", "pub invoice_line:");
+        let id = offset_in_struct(
+            &out,
+            "Invoice",
+            "rec.get(base + 1) { ::einvoice_transformator::xml::element(out, \"ID\"",
+        );
+        let currency = offset_in_struct(
+            &out,
+            "Invoice",
+            "rec.get(base + 2) { ::einvoice_transformator::xml::element(out, \"DocumentCurrencyCode\"",
+        );
+        let totals = offset_in_struct(&out, "Invoice", "rec.any(base + 3, base + 7)");
+        let lines = offset_in_struct(&out, "Invoice", "rec.items(base + 7)");
         assert!(
             id < currency && currency < totals && totals < lines,
             "{out}"
@@ -1325,8 +1302,16 @@ mod tests {
     fn test_source_struct_emits_attributes_before_element_text() {
         let (ir, _, source) = compiled();
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
-        let attr = offset_in_struct(&out, "LegalMonetaryTotalPayableAmount", "pub currency_id:");
-        let text = offset_in_struct(&out, "LegalMonetaryTotalPayableAmount", "pub value:");
+        let attr = offset_in_struct(
+            &out,
+            "LegalMonetaryTotalPayableAmount",
+            "\" currencyID=\\\"\"",
+        );
+        let text = offset_in_struct(
+            &out,
+            "LegalMonetaryTotalPayableAmount",
+            "::xml::text(out, value)",
+        );
         assert!(attr < text, "{out}");
     }
 
@@ -1374,56 +1359,41 @@ mod tests {
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // Written prefixed, read by local name.
         assert!(
-            out.contains("#[cfg_attr(test, serde(rename(serialize = \"cbc:ID\", deserialize = \"ID\"), default, skip_serializing_if = \"Option::is_none\"))]"),
+            out.contains("::einvoice_transformator::xml::element(out, \"cbc:ID\", value);"),
             "{out}"
         );
+        assert!(out.contains("\"ID\" => {"), "{out}");
+        assert!(out.contains("\"cac:LegalMonetaryTotal\", out);"), "{out}");
+        assert!(out.contains("\"LegalMonetaryTotal\" => {"), "{out}");
+        assert!(out.contains("\"cbc:PayableAmount\", out);"), "{out}");
+        assert!(out.contains("\"PayableAmount\" => {"), "{out}");
+        // Attributes and text are never prefixed.
+        assert!(out.contains("\"currencyID\" => {"), "{out}");
+        assert!(out.contains("out.push_str(\" currencyID=\\\"\");"), "{out}");
         assert!(
-            out.contains("rename(serialize = \"cac:LegalMonetaryTotal\", deserialize = \"LegalMonetaryTotal\")"),
+            out.contains("::einvoice_transformator::xml::text(out, value);"),
             "{out}"
         );
-        assert!(
-            out.contains(
-                "rename(serialize = \"cbc:PayableAmount\", deserialize = \"PayableAmount\")"
-            ),
-            "{out}"
-        );
-        // Attributes and text are never prefixed: plain renames as before.
-        assert!(out.contains("rename = \"@currencyID\""), "{out}");
-        assert!(out.contains("rename = \"$text\""), "{out}");
     }
 
     #[test]
     fn test_namespaced_root_carries_xmlns_markers_and_prefixed_root_tag() {
         let (ir, source) = compiled_namespaced();
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
-        // One marker type per declared namespace, serializing as its URI.
-        assert!(out.contains("pub struct XmlnsDefault;"), "{out}");
-        assert!(out.contains("pub struct XmlnsCbc;"), "{out}");
-        assert!(out.contains("pub struct XmlnsCac;"), "{out}");
+        // The root writes one declaration per namespace, before any element.
+        let xmlns = offset_in_struct(&out, "Invoice", "out.push_str(\" xmlns=\\\"\");");
+        let cbc = offset_in_struct(&out, "Invoice", "out.push_str(\" xmlns:cbc=\\\"\");");
+        let id = offset_in_struct(&out, "Invoice", "\"cbc:ID\"");
+        assert!(xmlns < id && cbc < id, "{out}");
         assert!(
-            out.contains("s.serialize_str(\"urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2\")"),
+            out.contains("::einvoice_transformator::xml::attr(out, \"urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2\");"),
             "{out}"
         );
-        // The root struct declares them as attribute fields, before any element.
-        let xmlns = offset_in_struct(
-            &out,
-            "Invoice",
-            "#[cfg_attr(test, serde(rename = \"@xmlns\", default))]\n    pub xmlns: XmlnsDefault,",
-        );
-        let cbc = offset_in_struct(
-            &out,
-            "Invoice",
-            "#[cfg_attr(test, serde(rename = \"@xmlns:cbc\", default))]\n    pub xmlns_cbc: XmlnsCbc,",
-        );
-        let id = offset_in_struct(&out, "Invoice", "pub id:");
-        assert!(xmlns < id && cbc < id, "{out}");
         // Non-root structs carry none.
         assert!(
-            !out[out.find("pub struct LegalMonetaryTotal {").unwrap()..].contains("xmlns_cbc"),
+            !out[out.find("impl LegalMonetaryTotal {").unwrap()..].contains("xmlns"),
             "{out}"
         );
-        // The emptiness predicate ignores the markers.
-        assert!(!out.contains("self.xmlns"), "{out}");
         // Declaration + qualified root (the default namespace leaves it bare).
         assert!(
             out.contains("String::with_capacity(capacity);")
@@ -1433,7 +1403,7 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains("quick_xml::se::to_writer_with_root(&mut out, \"Invoice\", source)?;"),
+            out.contains("Invoice::write_xml(&::einvoice_transformator::record::Index::new(source.0.rec(), Invoice::SIZE), 0, \"Invoice\", &mut out);"),
             "{out}"
         );
     }
@@ -1446,11 +1416,10 @@ mod tests {
         source.namespaces.root_prefix = "rsm".into();
         let out = super::generate_source_module(&source);
         assert!(
-            out.contains("to_writer_with_root(&mut out, \"rsm:Invoice\", source)?;"),
+            out.contains("::SIZE), 0, \"rsm:Invoice\", &mut out);"),
             "{out}"
         );
-        assert!(!out.contains("namespace declarations"), "{out}");
-        assert!(!out.contains("Xmlns"), "{out}");
+        assert!(!out.contains("xmlns"), "{out}");
     }
 
     #[test]
@@ -1463,11 +1432,8 @@ mod tests {
 
         // Source model: the dated element is a valued container with the wire
         // attribute as an attribute field.
-        assert!(
-            out.contains("pub struct IssueDateTimeDateTimeString {"),
-            "{out}"
-        );
-        assert!(out.contains("rename = \"@format\""), "{out}");
+        assert!(out.contains("impl IssueDateTimeDateTimeString {"), "{out}");
+        assert!(out.contains("\"format\" => {"), "{out}");
 
         // Reader: decode through the codec into the canonical ISO form, with a
         // CODEC_INVALID diagnostic on mismatch; warn when the document's wire
@@ -1489,12 +1455,7 @@ mod tests {
             out.contains("match codec::encode_date(value.as_str(), \"YYYYMMDD\") {"),
             "{out}"
         );
-        assert!(
-            out.contains(
-                "source.issue_date_time.get_or_insert_default().date_time_string.get_or_insert_default().format = Some(CompactString::from(\"102\"));"
-            ),
-            "{out}"
-        );
+        assert!(out.contains("source.set(3, \"102\");"), "{out}");
         assert!(
             out.contains("let rendered = codec::encode_bool(value.clone(), \"1\", \"0\");"),
             "{out}"
@@ -1533,7 +1494,7 @@ mod tests {
             "root primary + the per-line clone: {out}"
         );
         assert!(
-            out.contains("element0.line_extension_amount.get_or_insert_default().currency_id = Some(rendered);"),
+            out.contains("if !rendered.is_empty() && !InvoiceLineLineExtensionAmount::is_empty(element0.rec(), 1) {\n                element0.set(2, &rendered);"),
             "{out}"
         );
         // Reader: the per-line copy is compared against the root value.
@@ -1551,7 +1512,7 @@ mod tests {
         // PayableAmountCurrency is written only when PayableAmount has its value;
         // the amount itself has no such guard.
         assert!(
-            out.contains("if !rendered.is_empty() && Some(&source).and_then(|v0| v0.legal_monetary_total.as_ref()).and_then(|v1| v1.payable_amount.as_ref()).is_some_and(|owner| !owner.is_empty()) {"),
+            out.contains("if !rendered.is_empty() && !LegalMonetaryTotalPayableAmount::is_empty(source.rec(), 4) {\n            source.set(5, &rendered);"),
             "{out}"
         );
         let amount = out
@@ -1565,7 +1526,7 @@ mod tests {
             "the value is written before its attribute: {out}"
         );
         // Not a valued element: plain non-empty guard.
-        assert!(out.contains("let rendered = value;\n        if !rendered.is_empty() {\n            source.id = Some(rendered);"), "{out}");
+        assert!(out.contains("let rendered = value;\n        if !rendered.is_empty() {\n            source.set(1, &rendered);"), "{out}");
     }
 
     #[test]
@@ -1599,7 +1560,7 @@ mod tests {
             out.contains("if let Some(value) = &hub_item0.line_id {"),
             "{out}"
         );
-        assert!(out.contains("element1.line_ref = Some(rendered);"), "{out}");
+        assert!(out.contains("element1.set(2, &rendered);"), "{out}");
         assert!(
             out.contains("if item0.line_id.as_ref() != Some(&found) {"),
             "{out}"
@@ -1629,23 +1590,24 @@ mod tests {
         );
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // Owner = PartyTaxScheme (shared with CompanyID), not TaxScheme.
-        let guard = "if Some(&source).and_then(|v0| v0.party.as_ref()).and_then(|v1| v1.party_tax_scheme.as_ref()).is_some_and(|owner| !owner.is_empty()) {";
+        let guard = "if !PartyPartyTaxScheme::is_empty(source.rec(), 3) {";
         assert!(out.contains(guard), "{out}");
         let guard_at = out.find(guard).unwrap();
         let assign_at = out
-            .find("source.party.get_or_insert_default().party_tax_scheme.get_or_insert_default().tax_scheme.get_or_insert_default().id = Some(CompactString::from(\"VAT\"));")
+            .find("source.set(6, \"VAT\");")
             .expect("constant assigned");
-        let company_at = out.find("source.party.get_or_insert_default().party_tax_scheme.get_or_insert_default().company_id = Some(rendered);").expect("content written");
+        let company_at = out
+            .find("source.set(4, &rendered);")
+            .expect("content written");
         assert!(
             company_at < guard_at && guard_at < assign_at,
             "constants come last: {out}"
         );
         // A root-level constant with no owner stays unconditional.
         assert!(
-            out.contains("source.ubl_version_id = Some(CompactString::from(\"2.1\"));"),
+            out.contains("// constant -> ubl_version_id\n    source.set(7, \"2.1\");"),
             "{out}"
         );
-        assert!(!out.contains("ubl_version_id.is_some_and"), "{out}");
     }
 
     #[test]
@@ -1666,11 +1628,12 @@ mod tests {
         );
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         assert!(
-            out.contains("let _ = source.transaction.get_or_insert_default().delivery.get_or_insert_default();"),
+            out.contains("// always present -> transaction.delivery\n    source.mark(3);"),
             "{out}"
         );
-        assert!(
-            !out.contains("let _ = source.transaction.get_or_insert_default();\n"),
+        assert_eq!(
+            out.matches(".mark(").count(),
+            1,
             "only the flagged element: {out}"
         );
     }
@@ -1883,10 +1846,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle}: {out}"))
         };
         assert!(
-            at("rename = \"IdPaese\"") < at("rename = \"IdCodice\""),
+            at("element(out, \"IdPaese\", value)") < at("element(out, \"IdCodice\", value)"),
             "head before tail"
         );
-        assert!(out.contains("rename = \"IdFiscaleIVA\""), "{out}");
+        assert!(out.contains("\"IdFiscaleIVA\" => {"), "{out}");
     }
 
     #[test]
@@ -1906,7 +1869,7 @@ mod tests {
         // The split value is read as its two parts joined.
         assert!(read.contains("codec::join_parts("), "{read}");
         assert!(
-            read.contains("id_paese") && read.contains("id_codice"),
+            read.contains("codec::join_parts(source.get(6), source.get(7))"),
             "{read}"
         );
     }
@@ -2256,8 +2219,8 @@ mod tests {
         // A slot value outside the list (`999`) would not demux back in.
         assert!(
             out.contains(
-                "if !slot.as_deref().is_some_and(|v| matches!(v.trim(), \"50\" | \"130\")) \
-                 { *slot = Some(CompactString::from(\"50\")); }"
+                "if !item.get(1).is_some_and(|v| matches!(v.trim(), \"50\" | \"130\")) \
+                 { item.set(1, \"50\"); }"
             ),
             "{out}"
         );

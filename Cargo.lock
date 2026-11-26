@@ -372,6 +372,7 @@ name = "einvoice-transformator"
 version = "1.0.0"
 dependencies = [
  "compact_str",
+ "quick-xml",
  "serde",
  "thiserror",
 ]

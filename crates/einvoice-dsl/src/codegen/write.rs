@@ -1,8 +1,8 @@
 //! Writer generation: `write(mut main: MainKey) -> MappingResult<Root>`.
 //!
-//! The inverse of the reader. Constructs a `Default` source `Root` and assigns
-//! each canonical field back to its primary `source_path`, rendering the typed
-//! value to its source `String` form. Fallbacks and helper nodes are skipped.
+//! The inverse of the reader. Starts an empty source record and sets each
+//! canonical field at its primary `source_path`'s id, rendering the typed
+//! value to its source text form. Fallbacks and helper nodes are skipped.
 //!
 //! A node with a `constant` is written from that literal instead of the hub,
 //! but only where the schema would otherwise see a hole: its *owner* — the
@@ -41,9 +41,9 @@
 //! (`<DateTimeString format="102">20260718</DateTimeString>`).
 //!
 //! When the mapping aliases physical elements (`match` selectors), every node
-//! writes into its logical field, and the finished source is `mux`ed last:
-//! each logical field's items move into the physical element in declaration
-//! order, with the selector values written as discriminators.
+//! writes into its logical field's ids, and the finished record is `mux`ed
+//! last: each logical field's items move into the physical element's id in
+//! declaration order, with the selector values written as discriminators.
 //!
 //! Alternatives (nodes sharing a `canonical_key`, chosen by `when`) are
 //! decided at the start of their scope, before any write moves a hub value
@@ -53,9 +53,9 @@
 //! `when_<position>` holds. A `placeholder` is written, with the constants,
 //! where its node wrote nothing.
 //!
-//! The writer **consumes** the hub: canonical fields written exactly once move
-//! their values into the target struct (`take`); a key written from more than
-//! one node (a primary plus its clones) stays a borrow + clone.
+//! The writer **consumes** the hub: canonical fields written exactly once are
+//! taken out of it (`take`), so the hub shrinks while the record grows; a key
+//! written from more than one node (a primary plus its clones) stays a borrow.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -67,7 +67,7 @@ use crate::source_model::{FieldType, SourceModelMeta, xml_field_name};
 use crate::types::MappingType;
 
 use super::access::{
-    access_expr, assign_target_expr, collection_item_struct, struct_ref_expr, walk_segments,
+    collection_item_struct, owner_nonempty_expr, slot, walk_segments, write_access_expr,
 };
 use super::diag::DiagSpec;
 use super::naming::snake_case;
@@ -128,18 +128,18 @@ struct HubVars<'a> {
 }
 
 /// Emits the `write(mut main: MainKey) -> MappingResult<Root>` function into
-/// `out`: the inverse of the reader. It constructs a `Default` source `Root` and
-/// assigns each canonical field back to its primary `source_path`. Fallbacks and
-/// helper nodes are skipped.
+/// `out`: the inverse of the reader. It sets each canonical field at its
+/// primary `source_path`'s id in a fresh source record. Fallbacks and helper
+/// nodes are skipped.
 pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
-    out.push_str("/// Writes the canonical hub back into a typed source document, consuming\n");
-    out.push_str("/// the hub so uniquely-written values move instead of clone.\n");
+    out.push_str("/// Writes the canonical hub back into a source record, consuming the hub\n");
+    out.push_str("/// so each uniquely-written value is freed once it is copied in.\n");
     let _ = writeln!(
         out,
         "pub fn write(mut main: MainKey) -> MappingResult<{root}> {{"
     );
     out.push_str("    let mut diagnostics: Vec<MappingDiagnostic> = Vec::new();\n");
-    let _ = writeln!(out, "    let mut source = {root}::default();");
+    let _ = writeln!(out, "    let mut source = Draft::new({root}::SIZE);");
 
     let shared = shared_hub_keys(
         &ctx.plan.root_scalars,
@@ -239,11 +239,17 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
         out.push('\n');
         let (refs, refs_arg) = super::source::match_refs_binding(ctx.source, "source");
         out.push_str(&refs);
-        let _ = writeln!(out, "    source.mux({refs_arg});");
+        let args = if refs_arg.is_empty() { "" } else { ", &refs" };
+        let _ = writeln!(out, "    let source = {root}::mux(source.rec(){args});");
+    } else {
+        out.push_str("    let source = source.into_values();\n");
     }
 
     out.push('\n');
-    out.push_str("    MappingResult::new(Some(source), diagnostics)\n");
+    let _ = writeln!(
+        out,
+        "    MappingResult::new(Some({root}(source)), diagnostics)"
+    );
     out.push_str("}\n");
 }
 
@@ -279,8 +285,8 @@ fn write_always_present(
         let _ = writeln!(out, "{pad}// always present -> {path}");
         let _ = writeln!(
             out,
-            "{pad}let _ = {}.get_or_insert_default();",
-            assign_target_expr(source, start_struct, &path, src_var)
+            "{pad}{src_var}.mark({});",
+            id_of(source, start_struct, &path)
         );
     }
 }
@@ -380,14 +386,10 @@ fn write_collection_block(
     // the source collection once up front rather than regrowing it per item.
     // When the path crosses a boxed interior container, the reserve is guarded
     // so an empty hub collection never materializes the subtree.
-    let target = assign_target_expr(
-        ctx.source,
-        frame.parent_struct,
-        &coll.source_path,
-        parent_src,
-    );
-    let crosses_boxed = walk_segments(ctx.source, frame.parent_struct, &coll.source_path)
-        .is_ok_and(|segs| segs.iter().any(|s| s.optional));
+    let (target, inline) = match slot(ctx.source, frame.parent_struct, &coll.source_path) {
+        Ok(slot) => (slot.id.to_string(), slot.inline),
+        Err(e) => (e, None),
+    };
     if owned {
         let hub_items = format!("hub_items{depth}");
         let _ = writeln!(
@@ -401,12 +403,10 @@ fn write_collection_block(
                 "{pad}let {hub_items} = if {hub_items}.is_empty() && ({carry}) {{ vec![{hub_item_struct}::default()] }} else {{ {hub_items} }};"
             );
         }
-        if crosses_boxed {
+        if let Some(inline) = inline {
             let _ = writeln!(out, "{pad}if !{hub_items}.is_empty() {{");
-            let _ = writeln!(out, "{pad}    {target}.reserve({hub_items}.len());");
+            let _ = writeln!(out, "{pad}    {parent_src}.mark({inline});");
             let _ = writeln!(out, "{pad}}}");
-        } else {
-            let _ = writeln!(out, "{pad}{target}.reserve({hub_items}.len());");
         }
         let _ = writeln!(
             out,
@@ -429,19 +429,20 @@ fn write_collection_block(
             None => format!("{parent_hub}.{}", snake_case(coll_key)),
         };
         let hub_len = format!("{hub_slice}.len()");
-        if crosses_boxed {
+        if let Some(inline) = inline {
             let _ = writeln!(out, "{pad}if {hub_len} > 0 {{");
-            let _ = writeln!(out, "{pad}    {target}.reserve({hub_len});");
+            let _ = writeln!(out, "{pad}    {parent_src}.mark({inline});");
             let _ = writeln!(out, "{pad}}}");
-        } else {
-            let _ = writeln!(out, "{pad}{target}.reserve({hub_len});");
         }
         let _ = writeln!(
             out,
             "{pad}for ({idx}, {hub_item}) in {hub_slice}.iter().enumerate() {{"
         );
     }
-    let _ = writeln!(out, "{body}let mut {elem} = {src_item_struct}::default();");
+    let _ = writeln!(
+        out,
+        "{body}let mut {elem} = Draft::new({src_item_struct}::SIZE);"
+    );
     let child_alts = crate::alt::groups(children.iter().copied());
     let constants = ctx.plan.constants_of(&coll.id);
     write_choices(
@@ -494,7 +495,10 @@ fn write_collection_block(
             &child_shared,
         );
     }
-    let _ = writeln!(out, "{body}if !{elem}.is_empty() {{");
+    let _ = writeln!(
+        out,
+        "{body}if !{src_item_struct}::is_empty({elem}.rec(), 0) {{"
+    );
     let content = scope_content_paths(children, clones, nested);
     for constant in constants {
         let guarded = open_when(out, constant, indent + 2);
@@ -519,7 +523,10 @@ fn write_collection_block(
         &content,
     );
     write_always_present(out, ctx.source, &src_item_struct, &elem, indent + 2);
-    let _ = writeln!(out, "{body}    {target}.push({elem});");
+    let _ = writeln!(
+        out,
+        "{body}    {parent_src}.push_record({target}, {elem}.rec());"
+    );
     let _ = writeln!(out, "{body}    {count} += 1;");
     let _ = writeln!(out, "{body}}}");
     let _ = writeln!(out, "{pad}}}");
@@ -561,17 +568,10 @@ fn write_constant_block(
 ) {
     let lit = node.constant.as_deref().expect("constant node");
     let path = &node.source_path;
-    let target = assign_target_expr(source, start_struct, path, src_var);
-    let optional = walk_segments(source, start_struct, path)
-        .unwrap_or_default()
-        .last()
-        .is_some_and(|s| s.optional);
-    let value = format!("CompactString::from({lit:?})");
-    let assign = if optional {
-        format!("{target} = Some({value});")
-    } else {
-        format!("{target} = {value};")
-    };
+    let assign = format!(
+        "{src_var}.set({}, {lit:?});",
+        id_of(source, start_struct, path)
+    );
 
     let pad = "    ".repeat(indent);
     let _ = writeln!(out, "{pad}// constant -> {path}");
@@ -581,10 +581,10 @@ fn write_constant_block(
         .filter(|owner| !always_present_paths(source, start_struct, "").contains(owner));
     match owner {
         Some(owner) => {
-            let owner_ref = struct_ref_expr(source, start_struct, &owner, src_var);
             let _ = writeln!(
                 out,
-                "{pad}if {owner_ref}.is_some_and(|owner| !owner.is_empty()) {{"
+                "{pad}if {} {{",
+                owner_nonempty_expr(source, start_struct, &owner, src_var)
             );
             let _ = writeln!(out, "{pad}    {assign}");
             let _ = writeln!(out, "{pad}}}");
@@ -635,8 +635,8 @@ fn valued_element_parent<'p>(
     has_value.then_some(parent_path)
 }
 
-/// For an attribute leaf of a valued element, the `Option<&Struct>` expression
-/// reaching that element (see [`valued_element_parent`]).
+/// For an attribute leaf of a valued element, the expression testing that the
+/// element holds content (see [`valued_element_parent`]).
 fn valued_element_guard(
     source: &SourceModelMeta,
     start_struct: &str,
@@ -644,7 +644,7 @@ fn valued_element_guard(
     src_var: &str,
 ) -> Option<String> {
     valued_element_parent(source, start_struct, path)
-        .map(|parent_path| struct_ref_expr(source, start_struct, parent_path, src_var))
+        .map(|parent_path| owner_nonempty_expr(source, start_struct, parent_path, src_var))
 }
 
 /// The `bool` expression testing a `when` against the hub variable `hub`
@@ -802,7 +802,7 @@ fn write_placeholders(
             .copied()
             .filter(|p| *p != node.source_path)
             .collect();
-        let access = access_expr(source, start_struct, &node.source_path, src_var);
+        let access = write_access_expr(source, start_struct, &node.source_path, src_var);
         let _ = writeln!(out, "{pad}if {access}.is_none() {{");
         let pinned = SourceNode {
             constant: Some(placeholder.clone()),
@@ -870,17 +870,14 @@ fn write_scalar_block(
     let path = &node.source_path;
     let field = snake_case(key);
     let segs = walk_segments(source, start_struct, path).unwrap_or_default();
-    // Only the leaf's own optionality picks the assignment form; interior
-    // containers are boxed-optional and materialized by the target chain.
-    let optional = segs.last().is_some_and(|s| s.optional);
-    // A `multiple` node's source field is `Vec<String>`: the writer pushes the
-    // single canonical value as one element (a joined value stays joined).
+    // A `multiple` node's source field repeats: the writer pushes the single
+    // canonical value as one value (a joined value stays joined).
     let repeated_leaf = segs
         .last()
         .is_some_and(|s| s.repeated && s.struct_name.is_none());
-    // The mutable place to assign into: boxed interiors materialize on demand,
-    // and only inside the non-empty guard below, so no empty subtree is built.
-    let target = assign_target_expr(source, start_struct, path, src_var);
+    // The id to set, inside the non-empty guard below, so no element is
+    // made present for nothing.
+    let target = id_of(source, start_struct, path);
     // An attribute of a valued element follows the element: it is written only
     // when the element's own text value is present (the element struct is
     // non-empty before the attribute is added — attributes are written after
@@ -912,14 +909,14 @@ fn write_scalar_block(
             Some((element, _)) => format!("{element}.{}", xml_field_name(tail)),
             None => xml_field_name(tail),
         };
-        let tail_target = assign_target_expr(source, start_struct, &tail_path, src_var);
+        let tail_target = id_of(source, start_struct, &tail_path);
         let _ = writeln!(
             out,
             "{pad}    match codec::split_at(value.as_str(), {at}) {{"
         );
         let _ = writeln!(out, "{pad}        Some((head, tail)) => {{");
-        let _ = writeln!(out, "{pad}            {target} = Some(head);");
-        let _ = writeln!(out, "{pad}            {tail_target} = Some(tail);");
+        let _ = writeln!(out, "{pad}            {src_var}.set({target}, &head);");
+        let _ = writeln!(out, "{pad}            {src_var}.set({tail_target}, &tail);");
         let _ = writeln!(out, "{pad}        }}");
         let _ = writeln!(out, "{pad}        None => {{");
         let msg = format!(
@@ -976,36 +973,27 @@ fn write_scalar_block(
     }
     match &element_guard {
         Some(guard) => {
-            let _ = writeln!(
-                out,
-                "{pad}    if !rendered.is_empty() && {guard}.is_some_and(|owner| !owner.is_empty()) {{"
-            );
+            let _ = writeln!(out, "{pad}    if !rendered.is_empty() && {guard} {{");
         }
         None => {
             let _ = writeln!(out, "{pad}    if !rendered.is_empty() {{");
         }
     }
     if repeated_leaf {
-        let _ = writeln!(out, "{pad}        {target}.push(rendered);");
-    } else if optional {
-        let _ = writeln!(out, "{pad}        {target} = Some(rendered);");
+        let _ = writeln!(out, "{pad}        {src_var}.push({target}, &rendered);");
     } else {
-        let _ = writeln!(out, "{pad}        {target} = rendered;");
+        let _ = writeln!(out, "{pad}        {src_var}.set({target}, &rendered);");
     }
     // The codec's wire attributes sit on the element the value was just
     // written into, so they are set inside the same non-empty guard.
     if let (Some(codec), Some(element_path)) = (codec, path.strip_suffix(".value")) {
         for (attr, value) in &codec.wire {
-            let attr_target = assign_target_expr(
+            let attr_target = id_of(
                 source,
                 start_struct,
                 &format!("{element_path}.{}", snake_case(attr)),
-                src_var,
             );
-            let _ = writeln!(
-                out,
-                "{pad}        {attr_target} = Some(CompactString::from({value:?}));"
-            );
+            let _ = writeln!(out, "{pad}        {src_var}.set({attr_target}, {value:?});");
         }
     }
     if node.required {
@@ -1182,4 +1170,13 @@ fn emit_required_missing(
     .path(path)
     .index(index_var)
     .emit(out, pad);
+}
+
+/// The id the writer sets the value at `path` under, or the
+/// `compile_error!` expression for a path codegen cannot resolve.
+fn id_of(source: &SourceModelMeta, start_struct: &str, path: &str) -> String {
+    match slot(source, start_struct, path) {
+        Ok(slot) => slot.id.to_string(),
+        Err(e) => e,
+    }
 }

@@ -50,7 +50,6 @@ pub mod identity;
 pub mod keys;
 pub mod server;
 mod table;
-mod xmlread;
 
 /// The generated canonical hub, spoke mappers, and registry, emitted by
 /// `build.rs` into `OUT_DIR`. Generated code is allowed to trip style/unused
@@ -795,118 +794,99 @@ mod tests {
         assert!(err.to_string().contains("unsupported version"), "{err}");
     }
 
-    /// The generated XML writers write what quick-xml's serde serializer
-    /// wrote, byte for byte: every sample read, written as every target, as
-    /// read and with markup characters in its free-text fields.
+    /// Markup characters in free-text values survive the generated writers
+    /// and readers: every sample read, its free-text fields spiced, written
+    /// as every target and read back as that target.
     #[test]
-    fn test_generated_writers_match_quick_xml_on_every_sample_and_target() {
+    fn test_markup_round_trips_through_every_writer_and_reader() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let engine = Engine::new();
+        let raw = "a & b < c > d \"e\" 'f'\r\n\tü";
         let mut pairs = 0;
         for &reader in Spoke::ALL {
             for &file in reader.samples() {
                 let bytes = std::fs::read(root.join(file)).expect(file);
-                let hub = generated::read(reader, &bytes)
+                let mut hub = generated::read(reader, &bytes)
                     .expect(file)
                     .value
                     .expect(file);
-                let mut spiced = hub.clone();
-                let raw = "a & b < c > d \"e\" 'f'\r\n\tü";
-                spiced.invoice_note = Some(raw.into());
-                spiced.seller_name = Some(raw.into());
-                spiced.buyer_name = Some(raw.into());
-                spiced.payment_terms = Some(raw.into());
-                if let Some(line) = spiced.invoice_lines.first_mut() {
+                hub.invoice_note = Some(raw.into());
+                hub.seller_name = Some(raw.into());
+                hub.buyer_name = Some(raw.into());
+                if let Some(line) = hub.invoice_lines.first_mut() {
                     line.item_name = Some(raw.into());
                 }
                 for &target in Spoke::ALL {
-                    for hub in [&hub, &spiced] {
-                        let ours = generated::write(target, hub.clone(), 0).expect(file).value;
-                        let reference = generated::write_serde(target, hub.clone());
-                        assert!(
-                            ours == reference,
-                            "{file} as {}: generated writer differs from quick-xml",
-                            target.name()
-                        );
-                        pairs += 1;
+                    let xml = generated::write(target, hub.clone(), 0)
+                        .expect(file)
+                        .value
+                        .expect(file);
+                    let back = engine
+                        .to_hub(target, xml.as_bytes())
+                        .unwrap_or_else(|e| panic!("{file} as {}: {e}", target.name()))
+                        .value
+                        .expect(file);
+                    let line = back.invoice_lines.first().and_then(|l| l.item_name.clone());
+                    for value in [back.seller_name, back.buyer_name, line] {
+                        assert_eq!(value.as_deref(), Some(raw), "{file} as {}", target.name());
                     }
+                    pairs += 1;
                 }
             }
         }
         assert!(pairs > 0);
     }
 
-    /// The generated XML readers read what quick-xml's serde deserializer
-    /// reads: every sample, every document under `KRAB_CORPUS_DIR`, and edge
-    /// cases (references, CDATA, comments, `xsi:nil`, duplicates, unknown
-    /// elements, broken documents), each read as every spoke.
+    /// The generated reader on edge cases of XML, each a UBL document
+    /// changed in one place. The outcomes are quick-xml's serde
+    /// deserializer's, recorded when it was replaced.
     #[test]
-    fn test_generated_readers_match_quick_xml_on_samples_corpus_and_edge_cases() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut docs: Vec<(String, Vec<u8>)> = Vec::new();
-        for &spoke in Spoke::ALL {
-            for &file in spoke.samples() {
-                docs.push((
-                    file.to_string(),
-                    std::fs::read(root.join(file)).expect(file),
-                ));
-            }
-        }
-        if let Some(dir) = std::env::var_os("KRAB_CORPUS_DIR") {
-            let mut dirs = vec![root.join(dir)];
-            while let Some(dir) = dirs.pop() {
-                for entry in std::fs::read_dir(&dir).expect("KRAB_CORPUS_DIR") {
-                    let path = entry.expect("KRAB_CORPUS_DIR").path();
-                    if path.is_dir() {
-                        dirs.push(path);
-                    } else if path.extension().is_some_and(|x| x == "xml") {
-                        let bytes = std::fs::read(&path).expect("corpus document");
-                        docs.push((path.display().to_string(), bytes));
-                    }
-                }
-            }
-        }
+    fn test_reader_edge_cases_read_as_serde_read_them() {
         let ubl = std::str::from_utf8(UBL).expect("utf-8");
         let id = "<ID>INV-42</ID>";
         let amount = r#"<TaxAmount currencyID="EUR">19.00</TaxAmount><TaxSubtotal>"#;
         let xsi = r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance""#;
-        let edge: Vec<(&str, String)> = vec![
-            ("references", ubl.replace(id, "<ID>A&amp;B &#x41;&#65; &lt;x&gt;</ID>")),
-            ("CDATA", ubl.replace(id, "<ID>INV<![CDATA[<42>]]> x</ID>")),
-            ("comment and PI in text", ubl.replace(id, "<ID>INV<!-- c -->-4<?pi x?>2</ID>")),
-            ("whitespace in text", ubl.replace(id, "<ID>\r\n  INV-42 \t</ID>")),
-            ("empty element", ubl.replace(id, "<ID/>")),
-            ("empty pair", ubl.replace(id, "<ID></ID>")),
-            ("nil", ubl.replace(id, &format!(r#"<ID {xsi} xsi:nil="true">x</ID>"#))),
-            ("nil optional", ubl.replace(id, &format!(r#"{id}<Note {xsi} xsi:nil="true"/>"#))),
-            ("duplicate element", ubl.replace(id, "<ID>A</ID><ID>B</ID>")),
-            ("repeat after another element", ubl.replace("<InvoiceLine><ID>2</ID>", "<Note>x</Note><InvoiceLine><ID>2</ID>")),
-            ("unknown elements", ubl.replace(id, &format!(r#"<Unknown a="1"><Deep>{id}</Deep></Unknown><Other/>{id}"#))),
-            ("other prefix", ubl.replace(id, r#"<x:ID xmlns:x="urn:x">INV-42</x:ID>"#)),
-            ("attribute references", ubl.replacen(amount, r#"<TaxAmount currencyID="E&amp;U&#x52;">19.00</TaxAmount><TaxSubtotal>"#, 1)),
-            ("prefixed attribute twice", ubl.replacen(amount, r#"<TaxAmount currencyID="EUR" x:currencyID="USD" xmlns:x="urn:x">19.00</TaxAmount><TaxSubtotal>"#, 1)),
-            ("prolog", format!("<?xml version=\"1.0\"?>\n<!DOCTYPE Invoice>\n<!-- c -->\n{ubl}")),
-            ("BOM", format!("\u{feff}{ubl}")),
-            ("CRLF", ubl.replace('\n', "\r\n")),
-            ("empty root", "<Invoice/>".to_string()),
-            ("element in text", ubl.replace(id, "<ID>INV<b>42</b></ID>")),
-            ("unknown entity", ubl.replace(id, "<ID>&foo;</ID>")),
-            ("truncated", ubl[..ubl.len() / 2].to_string()),
+        let ok = r#"Some("INV-42") None []"#;
+        let missing = r#"None None ["REQUIRED_MISSING"]"#;
+        let empty_root = format!("None None {:?}", ["REQUIRED_MISSING"; 14]);
+        let cases: Vec<(&str, String, &str)> = vec![
+            ("references", ubl.replace(id, "<ID>A&amp;B &#x41;&#65; &lt;x&gt;</ID>"), r#"Some("A&B AA <x>") None []"#),
+            ("CDATA", ubl.replace(id, "<ID>INV<![CDATA[<42>]]> x</ID>"), r#"Some("INV<42> x") None []"#),
+            ("comment and PI in text", ubl.replace(id, "<ID>INV<!-- c -->-4<?pi x?>2</ID>"), ok),
+            ("whitespace in text", ubl.replace(id, "<ID>\r\n  INV-42 \t</ID>"), ok),
+            ("empty element", ubl.replace(id, "<ID/>"), missing),
+            ("empty pair", ubl.replace(id, "<ID></ID>"), missing),
+            ("nil", ubl.replace(id, &format!(r#"<ID {xsi} xsi:nil="true">x</ID>"#)), missing),
+            ("nil optional", ubl.replace(id, &format!(r#"{id}<Note {xsi} xsi:nil="true"/>"#)), ok),
+            ("duplicate element", ubl.replace(id, "<ID>A</ID><ID>B</ID>"), "duplicate field `ID`"),
+            ("repeat after another element", ubl.replace("<InvoiceLine><ID>2</ID>", "<Note>x</Note><InvoiceLine><ID>2</ID>"), "duplicate field `InvoiceLine`"),
+            ("unknown elements", ubl.replace(id, &format!(r#"<Unknown a="1"><Deep>{id}</Deep></Unknown><Other/>{id}"#)), ok),
+            ("other prefix", ubl.replace(id, r#"<x:ID xmlns:x="urn:x">INV-42</x:ID>"#), ok),
+            ("attribute references", ubl.replacen(amount, r#"<TaxAmount currencyID="E&amp;U&#x52;">19.00</TaxAmount><TaxSubtotal>"#, 1), r#"Some("INV-42") None ["TYPE_INVALID"]"#),
+            ("prefixed attribute twice", ubl.replacen(amount, r#"<TaxAmount currencyID="EUR" x:currencyID="USD" xmlns:x="urn:x">19.00</TaxAmount><TaxSubtotal>"#, 1), "duplicate field `@currencyID`"),
+            ("prolog", format!("<?xml version=\"1.0\"?>\n<!DOCTYPE Invoice>\n<!-- c -->\n{ubl}"), ok),
+            ("BOM", format!("\u{feff}{ubl}"), ok),
+            ("CRLF", ubl.replace('\n', "\r\n"), ok),
+            ("empty root", "<Invoice/>".to_string(), &empty_root),
+            ("element in text", ubl.replace(id, "<ID>INV<b>42</b></ID>"), "cannot deserialize primitive type from mixed content, found unexpected tag <b>"),
+            ("unknown entity", ubl.replace(id, "<ID>&foo;</ID>"), "at 0..3: unrecognized entity `foo`"),
+            ("truncated", ubl[..ubl.len() / 2].to_string(), "ill-formed document: start tag not closed: `</Invoice>` not found before end of input"),
         ];
-        for (name, doc) in edge {
-            assert!(
-                doc != ubl || name == "CRLF",
-                "edge case `{name}` changed nothing"
-            );
-            docs.push((format!("edge case `{name}`"), doc.into_bytes()));
-        }
-        let mut failures = Vec::new();
-        for (name, bytes) in &docs {
-            for &spoke in Spoke::ALL {
-                if let Err(e) = generated::read_serde_check(spoke, bytes) {
-                    failures.push(format!("{name} as {}: {e}", spoke.name()));
+        for (name, doc, want) in cases {
+            assert!(doc != ubl, "edge case `{name}` changed nothing");
+            let got = match generated::read(Spoke::UblInvoice, doc.as_bytes()) {
+                Ok(read) => {
+                    let hub = read.value.expect("reader always yields a hub");
+                    let codes: Vec<_> = read
+                        .diagnostics
+                        .iter()
+                        .map(|d| d.code.to_string())
+                        .collect();
+                    format!("{:?} {:?} {codes:?}", hub.invoice_number, hub.invoice_note)
                 }
-            }
+                Err(e) => e.to_string(),
+            };
+            assert_eq!(got, want, "edge case `{name}`");
         }
-        assert!(failures.is_empty(), "{}", failures.join("\n\n"));
     }
 }

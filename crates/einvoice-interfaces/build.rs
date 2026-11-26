@@ -486,46 +486,6 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
     out.push_str("    }\n");
     out.push_str("}\n\n");
 
-    // The same through quick-xml's serde serializer: the reference the
-    // generated XML writers are tested against.
-    out.push_str("/// [`write`] through quick-xml's serde serializer, the reference the\n");
-    out.push_str("/// generated XML writers must equal.\n");
-    out.push_str("#[cfg(test)]\n");
-    out.push_str("pub fn write_serde(spoke: Spoke, hub: MainKey) -> Option<String> {\n");
-    out.push_str("    match spoke {\n");
-    for spoke in spokes {
-        let _ = writeln!(
-            out,
-            "        Spoke::{v} => {s}::write(hub).value.map(|source| {s}::to_xml_serde(&source).expect(\"serializable\")),",
-            v = spoke.variant,
-            s = spoke.slug
-        );
-    }
-    out.push_str("    }\n");
-    out.push_str("}\n\n");
-
-    // And the reading side: the generated XML readers against quick-xml's
-    // serde deserializer.
-    out.push_str(
-        "/// Reads `bytes` as `spoke` with the generated XML reader and with quick-xml's\n",
-    );
-    out.push_str(
-        "/// serde deserializer, the reference it must equal; `Err` says how they differ.\n",
-    );
-    out.push_str("#[cfg(test)]\n");
-    out.push_str("pub fn read_serde_check(spoke: Spoke, bytes: &[u8]) -> Result<(), String> {\n");
-    out.push_str("    match spoke {\n");
-    for spoke in spokes {
-        let _ = writeln!(
-            out,
-            "        Spoke::{v} => crate::xmlread::same_as_serde({s}::from_xml(bytes), {s}::from_xml_serde(bytes)),",
-            v = spoke.variant,
-            s = spoke.slug
-        );
-    }
-    out.push_str("    }\n");
-    out.push_str("}\n");
-
     out
 }
 

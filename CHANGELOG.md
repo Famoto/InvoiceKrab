@@ -79,15 +79,22 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   (was 9).
 - Every source format's XML is read by a generated reader too: each source
   struct gets a `read_xml`, a pull reader over quick-xml's events, in place
-  of quick-xml's serde deserializer, and the serde derives on the source
-  structs are compiled in tests only, as the reference. It reads the same
-  structs (tested against the deserializer on every sample, the corpus and
-  edge cases) about twice as fast: a document round trip takes 28–39% fewer
-  instructions. A mapping edit rebuilds the binaries in about a fifth less
-  time (perf profile), and each binary is 2.5 MB smaller. Refusals of malformed
-  XML word some errors differently (a truncated document, an element inside
-  a text field, an unknown entity); the duplicate-element refusal is
-  unchanged.
+  of quick-xml's serde deserializer. It reads what the deserializer read
+  (tested against it on every sample, the corpus and edge cases) about
+  twice as fast: a document round trip takes 28–39% fewer instructions. A
+  mapping edit rebuilds the binaries in about a fifth less time (perf
+  profile), and each binary is 2.5 MB smaller.
+- The XML of a source format is read into, and written from, a compact
+  record instead of one struct per element: the values side by side in one
+  buffer, each tagged with a number the generated code gives the node from
+  the mapping (`einvoice_transformator::record`). Absent elements, empty
+  containers and the struct and `Vec` headers no longer take memory. For a
+  UBL invoice of 10,000 lines the source record is 2.2 MB instead of
+  10.7 MB, the target record 4.3 MB instead of 9.8 MB, and a conversion
+  makes 18 allocations per line instead of 44. The serde derives are gone
+  from the generated code (quick-xml stays for parsing); refusals of
+  malformed XML are worded as quick-xml's deserializer worded them, which
+  a test records on 21 edge cases.
 - The bundled mappings read repeated payment means: UBL `PaymentMeans`, CII
   `SpecifiedTradeSettlementPaymentMeans` and FatturaPA `DettaglioPagamento`
   are the new hub collection `CreditTransfers` (BG-17, one item per
