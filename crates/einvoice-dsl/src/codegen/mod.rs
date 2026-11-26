@@ -91,7 +91,7 @@ pub fn generate_spoke(
         ir.meta.doc_format, ir.meta.mapping_version
     );
     out.push('\n');
-    out.push_str("use serde::{Deserialize, Serialize};\n");
+    out.push_str("#[cfg(test)]\nuse serde::{Deserialize, Serialize};\n");
     mapper_imports(&mut out, hub_module);
     out.push('\n');
     source_section(&mut out, source);
@@ -111,7 +111,7 @@ pub fn generate_source_module(source: &SourceModelMeta) -> String {
     let _ = writeln!(out, "// Source model: {}", source.model_id);
     out.push('\n');
     out.push_str("use compact_str::CompactString;\n");
-    out.push_str("use serde::{Deserialize, Serialize};\n\n");
+    out.push_str("#[cfg(test)]\nuse serde::{Deserialize, Serialize};\n\n");
     source_section(&mut out, source);
     out
 }
@@ -426,7 +426,7 @@ mod tests {
         assert!(out.contains("pub struct Invoice {"), "{out}");
         assert!(
             out.contains(
-                "#[serde(rename = \"ID\", default, skip_serializing_if = \"Option::is_none\")]"
+                "#[cfg_attr(test, serde(rename = \"ID\", default, skip_serializing_if = \"Option::is_none\"))]"
             ),
             "{out}"
         );
@@ -615,16 +615,16 @@ mod tests {
         // One physical field on the wire, two logical fields off it.
         assert!(
             out.contains(
-                "#[serde(rename = \"AdditionalDocumentReference\", default, skip_serializing_if = \"Vec::is_empty\")]\n    pub all_additional_document_reference: Vec<AdditionalDocumentReference>,"
+                "#[cfg_attr(test, serde(rename = \"AdditionalDocumentReference\", default, skip_serializing_if = \"Vec::is_empty\"))]\n    pub all_additional_document_reference: Vec<AdditionalDocumentReference>,"
             ),
             "{out}"
         );
         assert!(
-            out.contains("#[serde(skip)]\n    pub additional_document_reference: Vec<AdditionalDocumentReference>,"),
+            out.contains("#[cfg_attr(test, serde(skip))]\n    pub additional_document_reference: Vec<AdditionalDocumentReference>,"),
             "{out}"
         );
         assert!(
-            out.contains("#[serde(skip)]\n    pub invoiced_object_reference: Option<Box<AdditionalDocumentReference>>,"),
+            out.contains("#[cfg_attr(test, serde(skip))]\n    pub invoiced_object_reference: Option<Box<AdditionalDocumentReference>>,"),
             "{out}"
         );
         // demux: selector first, default bucket last, overflow reported.
@@ -1374,7 +1374,7 @@ mod tests {
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // Written prefixed, read by local name.
         assert!(
-            out.contains("#[serde(rename(serialize = \"cbc:ID\", deserialize = \"ID\"), default, skip_serializing_if = \"Option::is_none\")]"),
+            out.contains("#[cfg_attr(test, serde(rename(serialize = \"cbc:ID\", deserialize = \"ID\"), default, skip_serializing_if = \"Option::is_none\"))]"),
             "{out}"
         );
         assert!(
@@ -1408,12 +1408,12 @@ mod tests {
         let xmlns = offset_in_struct(
             &out,
             "Invoice",
-            "#[serde(rename = \"@xmlns\", default)]\n    pub xmlns: XmlnsDefault,",
+            "#[cfg_attr(test, serde(rename = \"@xmlns\", default))]\n    pub xmlns: XmlnsDefault,",
         );
         let cbc = offset_in_struct(
             &out,
             "Invoice",
-            "#[serde(rename = \"@xmlns:cbc\", default)]\n    pub xmlns_cbc: XmlnsCbc,",
+            "#[cfg_attr(test, serde(rename = \"@xmlns:cbc\", default))]\n    pub xmlns_cbc: XmlnsCbc,",
         );
         let id = offset_in_struct(&out, "Invoice", "pub id:");
         assert!(xmlns < id && cbc < id, "{out}");

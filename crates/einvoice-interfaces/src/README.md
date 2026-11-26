@@ -40,6 +40,9 @@ No format is named in hand-written code.
   emitted-validity (up to `known_gaps`) and round-trip checks, validating with
   `xmllint`.
 - `table.rs` — shared aligned-table rendering used by `analysis` and `keys`.
+- `xmlread.rs` — the pull-reader helpers the generated `read_xml` methods call
+  (events with text runs joined, local names, attribute values, `xsi:nil`),
+  and the test-only comparison against quick-xml's serde deserializer.
 - `cli/` — the `krab-cli` CLI: argument parsing, format resolution, source
   auto-detection, IO wiring, and diagnostic rendering (see its `mod.rs` docs).
 - `server/` — the `krab-server` HTTP surface: env/hardware configuration, the

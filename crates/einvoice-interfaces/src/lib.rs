@@ -50,6 +50,7 @@ pub mod identity;
 pub mod keys;
 pub mod server;
 mod table;
+mod xmlread;
 
 /// The generated canonical hub, spoke mappers, and registry, emitted by
 /// `build.rs` into `OUT_DIR`. Generated code is allowed to trip style/unused
@@ -832,5 +833,80 @@ mod tests {
             }
         }
         assert!(pairs > 0);
+    }
+
+    /// The generated XML readers read what quick-xml's serde deserializer
+    /// reads: every sample, every document under `KRAB_CORPUS_DIR`, and edge
+    /// cases (references, CDATA, comments, `xsi:nil`, duplicates, unknown
+    /// elements, broken documents), each read as every spoke.
+    #[test]
+    fn test_generated_readers_match_quick_xml_on_samples_corpus_and_edge_cases() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut docs: Vec<(String, Vec<u8>)> = Vec::new();
+        for &spoke in Spoke::ALL {
+            for &file in spoke.samples() {
+                docs.push((
+                    file.to_string(),
+                    std::fs::read(root.join(file)).expect(file),
+                ));
+            }
+        }
+        if let Some(dir) = std::env::var_os("KRAB_CORPUS_DIR") {
+            let mut dirs = vec![root.join(dir)];
+            while let Some(dir) = dirs.pop() {
+                for entry in std::fs::read_dir(&dir).expect("KRAB_CORPUS_DIR") {
+                    let path = entry.expect("KRAB_CORPUS_DIR").path();
+                    if path.is_dir() {
+                        dirs.push(path);
+                    } else if path.extension().is_some_and(|x| x == "xml") {
+                        let bytes = std::fs::read(&path).expect("corpus document");
+                        docs.push((path.display().to_string(), bytes));
+                    }
+                }
+            }
+        }
+        let ubl = std::str::from_utf8(UBL).expect("utf-8");
+        let id = "<ID>INV-42</ID>";
+        let amount = r#"<TaxAmount currencyID="EUR">19.00</TaxAmount><TaxSubtotal>"#;
+        let xsi = r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance""#;
+        let edge: Vec<(&str, String)> = vec![
+            ("references", ubl.replace(id, "<ID>A&amp;B &#x41;&#65; &lt;x&gt;</ID>")),
+            ("CDATA", ubl.replace(id, "<ID>INV<![CDATA[<42>]]> x</ID>")),
+            ("comment and PI in text", ubl.replace(id, "<ID>INV<!-- c -->-4<?pi x?>2</ID>")),
+            ("whitespace in text", ubl.replace(id, "<ID>\r\n  INV-42 \t</ID>")),
+            ("empty element", ubl.replace(id, "<ID/>")),
+            ("empty pair", ubl.replace(id, "<ID></ID>")),
+            ("nil", ubl.replace(id, &format!(r#"<ID {xsi} xsi:nil="true">x</ID>"#))),
+            ("nil optional", ubl.replace(id, &format!(r#"{id}<Note {xsi} xsi:nil="true"/>"#))),
+            ("duplicate element", ubl.replace(id, "<ID>A</ID><ID>B</ID>")),
+            ("repeat after another element", ubl.replace("<InvoiceLine><ID>2</ID>", "<Note>x</Note><InvoiceLine><ID>2</ID>")),
+            ("unknown elements", ubl.replace(id, &format!(r#"<Unknown a="1"><Deep>{id}</Deep></Unknown><Other/>{id}"#))),
+            ("other prefix", ubl.replace(id, r#"<x:ID xmlns:x="urn:x">INV-42</x:ID>"#)),
+            ("attribute references", ubl.replacen(amount, r#"<TaxAmount currencyID="E&amp;U&#x52;">19.00</TaxAmount><TaxSubtotal>"#, 1)),
+            ("prefixed attribute twice", ubl.replacen(amount, r#"<TaxAmount currencyID="EUR" x:currencyID="USD" xmlns:x="urn:x">19.00</TaxAmount><TaxSubtotal>"#, 1)),
+            ("prolog", format!("<?xml version=\"1.0\"?>\n<!DOCTYPE Invoice>\n<!-- c -->\n{ubl}")),
+            ("BOM", format!("\u{feff}{ubl}")),
+            ("CRLF", ubl.replace('\n', "\r\n")),
+            ("empty root", "<Invoice/>".to_string()),
+            ("element in text", ubl.replace(id, "<ID>INV<b>42</b></ID>")),
+            ("unknown entity", ubl.replace(id, "<ID>&foo;</ID>")),
+            ("truncated", ubl[..ubl.len() / 2].to_string()),
+        ];
+        for (name, doc) in edge {
+            assert!(
+                doc != ubl || name == "CRLF",
+                "edge case `{name}` changed nothing"
+            );
+            docs.push((format!("edge case `{name}`"), doc.into_bytes()));
+        }
+        let mut failures = Vec::new();
+        for (name, bytes) in &docs {
+            for &spoke in Spoke::ALL {
+                if let Err(e) = generated::read_serde_check(spoke, bytes) {
+                    failures.push(format!("{name} as {}: {e}", spoke.name()));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n\n"));
     }
 }

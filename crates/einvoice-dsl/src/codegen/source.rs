@@ -1,8 +1,8 @@
 //! Typed source-struct generation and XML I/O.
 //!
-//! Emits one `#[derive(...)]` struct per struct in the source model (with
-//! serde/XML binding and a `write_xml` method) and the `from_xml` / `to_xml`
-//! functions for the root.
+//! Emits one struct per struct in the source model (with generated `read_xml`
+//! and `write_xml` methods, and a serde/XML binding derived in tests only) and
+//! the `from_xml` / `to_xml` functions for the root.
 //!
 //! Struct fields are declared in the model's **emission order**
 //! ([`StructMeta::ordered_fields`]: attributes, then element text, then child
@@ -14,20 +14,31 @@
 //! quick-xml's serde serializer, which buffered every element's children in a
 //! string of their own and copied it into the parent: the whole document once
 //! per nesting level, up to 5x the output in memory. The output is byte for
-//! byte the serializer's, which stays derived as the reference: `to_xml_serde`
-//! (tests only) writes through it, and the interfaces crate compares the two
-//! on every sample and target.
+//! byte the serializer's, which stays derived in tests as the reference:
+//! `to_xml_serde` (tests only) writes through it, and the interfaces crate
+//! compares the two on every sample and target.
 //!
-//! Namespaces: reading is namespace-agnostic (quick-xml's deserializer matches
-//! local names), so every element field is renamed with a *split* rename —
+//! Reading: `from_xml` calls the root's generated `read_xml`, a pull reader
+//! over quick-xml's events (helpers in the interfaces crate's `xmlread`): it
+//! matches attributes and child elements by local name, joins text, CDATA and
+//! references untrimmed, skips unknown elements, comments and processing
+//! instructions, reads `xsi:nil` as `None`, and refuses a single element read
+//! twice, or a repeated one that comes back after another element, with
+//! serde's ``duplicate field `X` ``. That is what quick-xml's serde
+//! deserializer reads, about twice as fast and without the serde code. The
+//! deserializer stays derived in tests as the reference: `from_xml_serde`
+//! (tests only), compared on every sample, the corpus and edge cases.
+//!
+//! Namespaces: reading is namespace-agnostic (the generated reader, like
+//! quick-xml's deserializer, matches local names), so every element field is renamed with a *split* rename —
 //! `rename(serialize = "cbc:ID", deserialize = "ID")` — that writes the
 //! prefixed name and still reads the bare one. The declarations themselves are
 //! zero-size **marker types** (`XmlnsCbc` serializes as its URI) that the root
 //! struct carries as `@xmlns[:prefix]` attribute fields, and `to_xml` writes the
 //! XML declaration plus the prefixed root tag.
 //!
-//! Aliased elements: a *logical* field ([`FieldMeta::is_logical`]) is
-//! `#[serde(skip)]`; its items live in the struct's *physical* repeated field
+//! Aliased elements: a *logical* field ([`FieldMeta::is_logical`]) is never
+//! read or written (`serde(skip)` in tests); its items live in the struct's *physical* repeated field
 //! on the wire. Every struct that holds such an element, directly or beneath
 //! it, gets a `demux` method (physical → logical, by `match` selector; the
 //! reader calls it on the root before mapping) and a `mux` method (logical →
@@ -54,6 +65,7 @@ pub(super) fn generate_source_structs(out: &mut String, source: &SourceModelMeta
         let root_ns = (name == &source.root).then_some(&source.namespaces);
         generate_one_struct(out, name, meta, root_ns);
         generate_write_xml_impl(out, name, meta, root_ns);
+        generate_read_xml_impl(out, name, meta);
         if io.get(name).copied().unwrap_or(false) {
             generate_alias_io_impl(out, source, name, meta, &io);
         }
@@ -442,13 +454,13 @@ fn generate_one_struct(
     meta: &StructMeta,
     root_ns: Option<&NamespaceMeta>,
 ) {
-    out.push_str("#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]\n");
+    out.push_str("#[derive(Default)]\n#[cfg_attr(test, derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize))]\n");
     let _ = writeln!(out, "pub struct {name} {{");
     if let Some(ns) = root_ns {
         for prefix in ns.declared.keys() {
             let _ = writeln!(
                 out,
-                "    #[serde(rename = {:?}, default)]",
+                "    #[cfg_attr(test, serde(rename = {:?}, default))]",
                 xmlns_attribute(prefix)
             );
             let _ = writeln!(
@@ -535,6 +547,111 @@ fn generate_write_xml_impl(
     out.push_str("    }\n}\n");
 }
 
+/// Emits `impl Name { pub fn read_xml(r, start, empty) }`: the struct read
+/// from the element whose start tag is `start` with a pull parser, matching
+/// what quick-xml's serde deserializer reads into it.
+fn generate_read_xml_impl(out: &mut String, name: &str, meta: &StructMeta) {
+    const X: &str = "crate::xmlread";
+    let fields: Vec<_> = meta
+        .ordered_fields()
+        .into_iter()
+        .filter(|(_, field)| !field.is_logical())
+        .collect();
+    let read_name = |fname: &str, field: &FieldMeta| -> String {
+        field.xml.clone().unwrap_or_else(|| fname.to_string())
+    };
+    let _ = writeln!(out, "impl {name} {{");
+    out.push_str("    /// Reads the element whose start tag is `start` (`empty`: `<tag/>`).\n");
+    let _ = writeln!(
+        out,
+        "    pub fn read_xml(r: &mut {X}::XmlIn<'_>, start: &quick_xml::events::BytesStart<'_>, empty: bool) -> Result<Self, quick_xml::DeError> {{"
+    );
+    out.push_str("        let mut this = Self::default();\n");
+    let attrs: Vec<_> = fields.iter().filter(|(_, f)| f.is_attribute()).collect();
+    if attrs.is_empty() {
+        out.push_str("        let _ = start;\n");
+    } else {
+        let _ = writeln!(out, "        let mut seen_attr = [false; {}];", attrs.len());
+        out.push_str("        for attr in start.attributes() {\n");
+        out.push_str("            let attr = attr.map_err(|e| quick_xml::DeError::Custom(e.to_string()))?;\n");
+        let _ = writeln!(out, "            match {X}::attr_key(&attr) {{");
+        for (j, (fname, field)) in attrs.iter().enumerate() {
+            let key = read_name(fname, field);
+            let dup = format!(
+                "if seen_attr[{j}] {{ return Err({X}::duplicate({key:?})); }} seen_attr[{j}] = true; "
+            );
+            let key = key.trim_start_matches('@');
+            let set = if field.optional {
+                format!("this.{fname} = Some({X}::attr_value(&attr)?);")
+            } else {
+                format!("this.{fname} = {X}::attr_value(&attr)?;")
+            };
+            let _ = writeln!(out, "                b{key:?} => {{ {dup}{set} }}");
+        }
+        out.push_str("                _ => {}\n            }\n        }\n");
+    }
+    out.push_str("        if empty {\n            return Ok(this);\n        }\n");
+    let elements: Vec<_> = fields.iter().filter(|(_, f)| !f.is_attribute()).collect();
+    let _ = writeln!(
+        out,
+        "        let mut seen = [false; {}];",
+        elements.len().max(1)
+    );
+    out.push_str("        let mut last = usize::MAX;\n");
+    out.push_str("        loop {\n            let (e, empty) = match r.next()? {\n");
+    let _ = writeln!(out, "                {X}::Ev::Start(e) => (e, false),");
+    let _ = writeln!(out, "                {X}::Ev::Empty(e) => (e, true),");
+    let _ = writeln!(out, "                {X}::Ev::End => break,");
+    match elements.iter().position(|(_, f)| f.is_text()) {
+        Some(i) => {
+            let (fname, field) = elements[i];
+            let set = if field.optional { "Some(text)" } else { "text" };
+            let _ = writeln!(
+                out,
+                "                {X}::Ev::Text(text) => {{ if seen[{i}] {{ return Err({X}::duplicate(\"$text\")); }} seen[{i}] = true; last = {i}; this.{fname} = {set}; continue; }}"
+            );
+        }
+        None => {
+            let _ = writeln!(out, "                {X}::Ev::Text(_) => continue,");
+        }
+    }
+    out.push_str("            };\n");
+    let _ = writeln!(out, "            match {X}::local(&e) {{");
+    for (i, (fname, field)) in elements.iter().enumerate() {
+        if field.is_text() {
+            continue;
+        }
+        let key = read_name(fname, field);
+        let check = if field.repeated {
+            format!("if seen[{i}] && last != {i} {{ return Err({X}::duplicate({key:?})); }}")
+        } else {
+            format!("if seen[{i}] {{ return Err({X}::duplicate({key:?})); }}")
+        };
+        let value = match &field.ty {
+            FieldType::Scalar => "r.text(empty)?".to_string(),
+            FieldType::Struct(inner) => format!("{inner}::read_xml(r, &e, empty)?"),
+        };
+        let nil =
+            format!("if {X}::is_nil(&e) {{ r.skip(&e, empty)?; this.{fname} = None; }} else ");
+        let set = match (&field.ty, field.repeated, field.optional) {
+            (_, true, _) => format!("this.{fname}.push({value});"),
+            (FieldType::Struct(_), false, _) => {
+                format!("{nil}{{ this.{fname} = Some(Box::new({value})); }}")
+            }
+            (FieldType::Scalar, false, true) => format!("{nil}{{ this.{fname} = Some({value}); }}"),
+            (FieldType::Scalar, false, false) => format!("this.{fname} = {value};"),
+        };
+        let _ = writeln!(
+            out,
+            "                b{key:?} => {{ {check} seen[{i}] = true; last = {i}; {set} }}"
+        );
+    }
+    out.push_str("                _ => {\n                    last = usize::MAX - 1;\n                    r.skip(&e, empty)?;\n                }\n");
+    out.push_str(
+        "            }\n        }\n        let _ = (seen, last);\n        Ok(this)\n    }\n}\n",
+    );
+}
+
 /// The name a field is written under: its serde name, which is the Rust field
 /// name when the field has no XML binding.
 fn written_name(fname: &str, field: &FieldMeta) -> String {
@@ -559,13 +676,13 @@ fn generate_namespace_markers(out: &mut String, ns: &NamespaceMeta) {
         );
         out.push_str("#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]\n");
         let _ = writeln!(out, "pub struct {ty};");
-        let _ = writeln!(out, "impl Serialize for {ty} {{");
+        let _ = writeln!(out, "#[cfg(test)]\nimpl Serialize for {ty} {{");
         out.push_str(
             "    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {\n",
         );
         let _ = writeln!(out, "        s.serialize_str({uri:?})");
         out.push_str("    }\n}\n");
-        let _ = writeln!(out, "impl<'de> Deserialize<'de> for {ty} {{");
+        let _ = writeln!(out, "#[cfg(test)]\nimpl<'de> Deserialize<'de> for {ty} {{");
         out.push_str(
             "    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {\n",
         );
@@ -698,7 +815,7 @@ pub(super) fn serde_attr(field: &FieldMeta) -> Option<String> {
     // A logical field is never on the wire: its items travel in the physical
     // field, moved across by `demux`/`mux`.
     if field.is_logical() {
-        return Some("#[serde(skip)]".to_string());
+        return Some("#[cfg_attr(test, serde(skip))]".to_string());
     }
     let mut parts: Vec<String> = Vec::new();
     if let (Some(xml), Some(written)) = (&field.xml, field.serialized_name()) {
@@ -725,7 +842,7 @@ pub(super) fn serde_attr(field: &FieldMeta) -> Option<String> {
     if parts.is_empty() {
         None
     } else {
-        Some(format!("#[serde({})]", parts.join(", ")))
+        Some(format!("#[cfg_attr(test, serde({}))]", parts.join(", ")))
     }
 }
 
@@ -741,6 +858,21 @@ pub(super) fn generate_xml_io(out: &mut String, root: &str, ns: &NamespaceMeta) 
     let _ = writeln!(
         out,
         "pub fn from_xml(bytes: &[u8]) -> Result<{root}, quick_xml::DeError> {{"
+    );
+    out.push_str("    let s = std::str::from_utf8(bytes)\n");
+    out.push_str(
+        "        .map_err(|e| quick_xml::DeError::Custom(format!(\"invalid utf-8: {e}\")))?;\n",
+    );
+    out.push_str("    let mut r = crate::xmlread::XmlIn::new(s);\n");
+    out.push_str("    let (start, empty) = r.root()?;\n");
+    let _ = writeln!(out, "    {root}::read_xml(&mut r, &start, empty)");
+    out.push_str("}\n\n");
+    let _ = writeln!(
+        out,
+        "/// `from_xml` through quick-xml's serde deserializer: the reference the\n\
+         /// generated reader is compared against.\n\
+         #[cfg(test)]\n\
+         pub fn from_xml_serde(bytes: &[u8]) -> Result<{root}, quick_xml::DeError> {{"
     );
     out.push_str("    let s = std::str::from_utf8(bytes)\n");
     out.push_str(

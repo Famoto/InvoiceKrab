@@ -77,6 +77,17 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   route could exceed the default 12× reservation before; it now stays
   inside it. A FatturaPA-free deployment can now set `KRAB_MEM_BLOWUP=6`
   (was 9).
+- Every source format's XML is read by a generated reader too: each source
+  struct gets a `read_xml`, a pull reader over quick-xml's events, in place
+  of quick-xml's serde deserializer, and the serde derives on the source
+  structs are compiled in tests only, as the reference. It reads the same
+  structs (tested against the deserializer on every sample, the corpus and
+  edge cases) about twice as fast: a document round trip takes 28–39% fewer
+  instructions. A mapping edit rebuilds the binaries in about a fifth less
+  time (perf profile), and each binary is 2.5 MB smaller. Refusals of malformed
+  XML word some errors differently (a truncated document, an element inside
+  a text field, an unknown entity); the duplicate-element refusal is
+  unchanged.
 - The bundled mappings read repeated payment means: UBL `PaymentMeans`, CII
   `SpecifiedTradeSettlementPaymentMeans` and FatturaPA `DettaglioPagamento`
   are the new hub collection `CreditTransfers` (BG-17, one item per

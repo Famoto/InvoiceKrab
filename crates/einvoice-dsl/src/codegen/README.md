@@ -21,10 +21,10 @@ text.
   elsewhere in the crate (canonical keys are PascalCase, no acronym handling).
 - `hub.rs` — `generate_hub`: the `MainKey` struct + one item struct per
   canonical collection.
-- `source.rs` — typed source structs (serde binding for reading, a generated
-  `write_xml` for writing) and `from_xml` / `to_xml`. The serde serializer
-  stays derived as the reference the writer is tested against
-  (`to_xml_serde`).
+- `source.rs` — typed source structs with a generated `read_xml` and
+  `write_xml`, and `from_xml` / `to_xml`. The serde binding is derived in
+  tests only, as the reference the reader and writer are tested against
+  (`from_xml_serde`, `to_xml_serde`).
 - `read.rs` — the reader: source → `MainKey`.
 - `write.rs` — the writer: `MainKey` → source (inverse of the reader).
 - `access.rs` — source-path access expressions shared by reader and writer
@@ -52,6 +52,18 @@ serializer buffered every element's children and copied them into the parent,
 the document once per nesting level (up to 5x the output in memory, and 5-10x
 slower). The output is byte-for-byte the serializer's, which the interfaces
 crate checks on every sample and target.
+
+`read_xml` reads the same way, as a pull reader over quick-xml's events (the
+interfaces crate's `xmlread.rs` holds the helpers): each struct matches its
+attributes and child elements by local name with a `match` on bytes, so the
+names come from the mapping and nothing in the reader is format-specific. It
+reads what quick-xml's serde deserializer reads (text runs joined untrimmed,
+unknown elements skipped, `xsi:nil` as `None`, serde's ``duplicate field `X` ``
+for an element read twice), about twice as fast; the interfaces crate compares
+the two on every sample, the corpus and a set of edge cases. Error texts
+differ from serde's for a truncated document, an element inside a text field
+and an unknown entity, and `xsi:nil` is recognised by its local name under any
+prefix.
 
 Namespaces are a write-side concern. Every element field gets a split rename —
 `rename(serialize = "cbc:ID", deserialize = "ID")` — so the writer emits the
