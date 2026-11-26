@@ -21,6 +21,8 @@
 //! - [`result`] — [`MappingResult`] and [`MappingDiagnostic`], the structured
 //!   mapper output and runtime diagnostic model.
 //! - [`xml`] — the escapes the generated XML writers call.
+//! - [`record`] — packed records: a source document's values in one buffer,
+//!   and the hub's collections kept packed ([`record::Packed`]).
 //!
 //! # Behavior
 //!

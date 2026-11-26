@@ -135,6 +135,14 @@ impl<'a> Rec<'a> {
             .map(|(_, _, payload)| text(payload))
     }
 
+    /// The first value under `id` as the [`Field`] type `F` (a packed
+    /// struct's field, read without unpacking the struct).
+    pub fn field<F: Field>(self, id: u32) -> Option<F> {
+        self.raw_entries()
+            .find(|(i, _, _)| *i == id)
+            .map(|(_, _, payload)| F::read(payload))
+    }
+
     /// Every value under `id` (a repeated scalar), in order.
     pub fn all(self, id: u32) -> impl Iterator<Item = &'a str> + Clone + 'a {
         self.entries()
@@ -485,6 +493,270 @@ impl Values {
     }
 }
 
+/// A scalar a packed struct holds: how it is written as a payload and read
+/// back. Text is its UTF-8 bytes, a boolean one byte, a decimal one byte of
+/// scale and sign followed by its magnitude as a varint.
+pub trait Field: Sized {
+    /// Appends the value under `id`.
+    fn put(&self, id: u32, out: &mut Values);
+    /// The value a payload [`Field::put`] wrote holds.
+    fn read(payload: &[u8]) -> Self;
+}
+
+impl Field for compact_str::CompactString {
+    fn put(&self, id: u32, out: &mut Values) {
+        out.push(id, self);
+    }
+
+    fn read(payload: &[u8]) -> Self {
+        text(payload).into()
+    }
+}
+
+impl Field for bool {
+    fn put(&self, id: u32, out: &mut Values) {
+        out.push_raw(id, &[u8::from(*self)]);
+    }
+
+    fn read(payload: &[u8]) -> Self {
+        payload == [1]
+    }
+}
+
+impl Field for rust_decimal::Decimal {
+    fn put(&self, id: u32, out: &mut Values) {
+        // A 96-bit magnitude takes at most 14 varint bytes.
+        let mut buf = [0u8; 15];
+        buf[0] = self.scale() as u8 | (u8::from(self.is_sign_negative()) << 7);
+        let mut magnitude = self.mantissa().unsigned_abs();
+        let mut n = 1;
+        while magnitude >= 0x80 {
+            buf[n] = (magnitude as u8) | 0x80;
+            magnitude >>= 7;
+            n += 1;
+        }
+        buf[n] = magnitude as u8;
+        out.push_raw(id, &buf[..=n]);
+    }
+
+    fn read(payload: &[u8]) -> Self {
+        let mut magnitude = 0u128;
+        for (i, byte) in payload[1..].iter().enumerate() {
+            magnitude |= u128::from(byte & 0x7f) << (7 * i);
+        }
+        let mut value = rust_decimal::Decimal::from_i128_with_scale(
+            magnitude as i128,
+            u32::from(payload[0] & 0x7f),
+        );
+        // A negative zero stays one.
+        value.set_sign_negative(payload[0] & 0x80 != 0);
+        value
+    }
+}
+
+/// A struct kept as a record: the generated hub item structs, whose fields
+/// take the ids `0..` in key order.
+pub trait Pack {
+    /// Appends the struct's fields to `out`.
+    fn pack(&self, out: &mut Values);
+    /// The struct [`Pack::pack`] wrote as `rec`.
+    fn unpack(rec: Rec<'_>) -> Self;
+}
+
+/// A field of a [`Pack`] struct: an optional scalar or a list of nested
+/// structs, written under its id and read back entry by entry.
+pub trait Slot {
+    /// Appends the field's entries under `id` (none when it is empty).
+    fn put(&self, id: u32, out: &mut Values);
+    /// Reads one entry of the field in.
+    fn read(&mut self, payload: &[u8]);
+}
+
+impl<F: Field> Slot for Option<F> {
+    fn put(&self, id: u32, out: &mut Values) {
+        if let Some(value) = self {
+            value.put(id, out);
+        }
+    }
+
+    fn read(&mut self, payload: &[u8]) {
+        *self = Some(F::read(payload));
+    }
+}
+
+impl<T: Pack> Slot for Vec<T> {
+    fn put(&self, id: u32, out: &mut Values) {
+        for item in self {
+            let at = out.begin(id);
+            item.pack(out);
+            out.end(at);
+        }
+    }
+
+    fn read(&mut self, payload: &[u8]) {
+        self.push(T::unpack(Rec(payload)));
+    }
+}
+
+/// A list of [`Pack`] structs kept as one record, each item nested under id
+/// 0: the hub's collections, which a struct per item would hold at many
+/// times the size of their values. Items are decoded when they are read and
+/// encoded when they are pushed; [`Packed::update`] changes them in place.
+pub struct Packed<T> {
+    values: Values,
+    len: usize,
+    item: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T> Default for Packed<T> {
+    fn default() -> Self {
+        Packed {
+            values: Values::default(),
+            len: 0,
+            item: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T: Pack> Packed<T> {
+    /// Appends `item`.
+    pub fn push(&mut self, item: T) {
+        let at = self.values.begin(0);
+        item.pack(&mut self.values);
+        self.values.end(at);
+        self.len += 1;
+    }
+
+    /// Accepts the item count a reader knows in advance, as `Vec::reserve`.
+    // ponytail: the bytes an item takes are not known ahead; a large buffer
+    // grows by doubling, and pages it does not touch are never resident.
+    pub fn reserve(&mut self, _additional: usize) {}
+
+    /// The number of items.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether there is no item.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The items, decoded one by one.
+    pub fn iter(&self) -> Iter<'_, T> {
+        Iter {
+            entries: self.values.rec().raw_entries(),
+            item: std::marker::PhantomData,
+        }
+    }
+
+    /// The items as records, to read a field or two without decoding them
+    /// ([`Rec::field`], [`Rec::get`]).
+    pub fn records(&self) -> impl Iterator<Item = Rec<'_>> + '_ {
+        self.values.rec().items(0)
+    }
+
+    /// Runs `f` on every item whose record `wanted` accepts; an item `f`
+    /// changes is written back. `wanted` must accept every item `f` would
+    /// change: the others are not decoded. The buffer is rewritten from the
+    /// first changed item on, and not at all when nothing changes.
+    pub fn update(&mut self, mut wanted: impl FnMut(Rec<'_>) -> bool, mut f: impl FnMut(&mut T)) {
+        let mut changed: Option<Values> = None;
+        let mut scratch = Values::default();
+        for (_, (start, _), payload) in self.values.rec().raw_entries() {
+            let entry: &[u8] = if wanted(Rec(payload)) {
+                let mut item = T::unpack(Rec(payload));
+                f(&mut item);
+                scratch.0.clear();
+                item.pack(&mut scratch);
+                &scratch.0
+            } else {
+                payload
+            };
+            if changed.is_none() {
+                // An item encodes one way only, so equal bytes are no change.
+                if entry == payload {
+                    continue;
+                }
+                changed = Some(Values(self.values.0[..start].to_vec()));
+            }
+            if let Some(out) = &mut changed {
+                out.push_raw(0, entry);
+            }
+        }
+        if let Some(out) = changed {
+            self.values = out;
+        }
+    }
+}
+
+impl<T: Pack> FromIterator<T> for Packed<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(items: I) -> Self {
+        let mut packed = Packed::default();
+        for item in items {
+            packed.push(item);
+        }
+        packed
+    }
+}
+
+impl<T: Pack + fmt::Debug> fmt::Debug for Packed<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+/// The items of a [`Packed`] list, decoded one by one.
+pub struct Iter<'a, T> {
+    entries: Entries<'a>,
+    item: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T: Pack> Iterator for Iter<'_, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.entries
+            .next()
+            .map(|(_, _, payload)| T::unpack(Rec(payload)))
+    }
+}
+
+/// The items of a [`Packed`] list taken by value, decoded one by one.
+pub struct IntoIter<T> {
+    values: Values,
+    at: usize,
+    item: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T: Pack> Iterator for IntoIter<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        let mut entries = Entries {
+            bytes: &self.values.0,
+            at: self.at,
+        };
+        let (_, _, payload) = entries.next()?;
+        let item = T::unpack(Rec(payload));
+        self.at = entries.at;
+        Some(item)
+    }
+}
+
+impl<T: Pack> IntoIterator for Packed<T> {
+    type Item = T;
+    type IntoIter = IntoIter<T>;
+
+    fn into_iter(self) -> IntoIter<T> {
+        IntoIter {
+            values: self.values,
+            at: 0,
+            item: std::marker::PhantomData,
+        }
+    }
+}
+
 impl fmt::Debug for Rec<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut list = f.debug_list();
@@ -625,5 +897,89 @@ mod tests {
             assert!(d.items(id).eq(v.rec().items(id)), "items({id})");
         }
         assert_eq!(d.into_values(), v);
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq)]
+    struct Line {
+        id: Option<compact_str::CompactString>,
+        amount: Option<rust_decimal::Decimal>,
+        flag: Option<bool>,
+        subs: Vec<Line>,
+    }
+
+    impl Pack for Line {
+        fn pack(&self, out: &mut Values) {
+            self.id.put(0, out);
+            self.amount.put(1, out);
+            self.flag.put(2, out);
+            self.subs.put(3, out);
+        }
+
+        fn unpack(rec: Rec<'_>) -> Self {
+            let mut line = Line::default();
+            for (id, payload) in rec.entries() {
+                match id {
+                    0 => line.id.read(payload),
+                    1 => line.amount.read(payload),
+                    2 => line.flag.read(payload),
+                    3 => line.subs.read(payload),
+                    _ => {}
+                }
+            }
+            line
+        }
+    }
+
+    #[test]
+    fn test_packed_round_trips_and_updates() {
+        use std::str::FromStr as _;
+        let dec = |s| rust_decimal::Decimal::from_str(s).unwrap();
+        let line = |id: &str, amount| Line {
+            id: Some(id.into()),
+            amount,
+            ..Line::default()
+        };
+        let mut neg_zero = dec("0.00");
+        neg_zero.set_sign_negative(true);
+        let amounts = [
+            dec("100.00"),
+            dec("-12.5"),
+            neg_zero,
+            rust_decimal::Decimal::MAX,
+            rust_decimal::Decimal::MIN,
+            dec("0.0000000000000000000000000001"),
+        ];
+        let mut lines: Vec<Line> = amounts.iter().map(|a| line("x", Some(*a))).collect();
+        lines.push(Line {
+            id: Some("".into()),
+            flag: Some(false),
+            subs: vec![line("sub", None), Line::default()],
+            ..Line::default()
+        });
+        lines.push(Line::default());
+        let mut packed: Packed<Line> = lines.iter().cloned().collect();
+        assert_eq!(packed.len(), lines.len());
+        let back: Vec<Line> = packed.iter().collect();
+        assert_eq!(back, lines);
+        for (a, b) in back.iter().zip(&lines) {
+            assert_eq!(
+                format!("{:?}", a.amount),
+                format!("{:?}", b.amount),
+                "scale and sign kept"
+            );
+        }
+        let before = packed.values.clone();
+        packed.update(|_| true, |_| {});
+        assert_eq!(packed.values, before, "no change, no rewrite");
+        let flagged = |r: Rec<'_>| r.field::<bool>(2) == Some(false);
+        assert_eq!(packed.records().filter(|r| flagged(*r)).count(), 1);
+        packed.update(flagged, |l| l.subs[0].flag = Some(true));
+        lines[6].subs[0].flag = Some(true);
+        packed.update(|r| r.get(0) == Some("x"), |l| l.amount = None);
+        for line in &mut lines[..6] {
+            line.amount = None;
+        }
+        assert!(packed.iter().eq(lines.iter().cloned()));
+        assert_eq!(packed.into_iter().collect::<Vec<_>>(), lines);
     }
 }

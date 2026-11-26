@@ -19,7 +19,10 @@
 //!   its embedded [`contract::TransformationContract`], [`Spoke::schema`] and
 //!   [`Spoke::samples`] its schema-conformance declarations, which
 //!   [`conformance::check`] turns into checks.
-//! - [`MainKey`] — the generated typed canonical hub.
+//! - [`MainKey`] — the generated typed canonical hub. A transform keeps it
+//!   packed in between (the generated `CompactHub`: the root collections'
+//!   items as records), and builds a [`MainKey`] only for
+//!   [`Engine::to_hub`] and from [`Engine::from_hub`]'s argument.
 //! - [`EngineError`] — XML (de)serialization failures at the crate boundary.
 //!
 //! Mapping-level outcomes (missing required fields, type errors, fallbacks taken)
@@ -69,6 +72,7 @@ mod generated {
 }
 
 pub use generated::Spoke;
+use generated::hub::CompactHub;
 pub use generated::hub::MainKey;
 
 /// A failure at the crate boundary: the bytes are not a document of the source
@@ -147,7 +151,7 @@ impl Engine {
         spoke: Spoke,
         bytes: &[u8],
     ) -> Result<MappingResult<MainKey>, EngineError> {
-        self.read(spoke, encoding::to_utf8(bytes)?)
+        Ok(into_main(self.read(spoke, encoding::to_utf8(bytes)?)?))
     }
 
     /// [`Engine::to_hub`] taking the document by value: its bytes are freed
@@ -162,6 +166,15 @@ impl Engine {
         spoke: Spoke,
         bytes: Vec<u8>,
     ) -> Result<MappingResult<MainKey>, EngineError> {
+        Ok(into_main(self.read_owned(spoke, bytes)?))
+    }
+
+    /// [`Engine::to_hub_owned`] into the packed hub.
+    fn read_owned(
+        &self,
+        spoke: Spoke,
+        bytes: Vec<u8>,
+    ) -> Result<MappingResult<CompactHub>, EngineError> {
         let utf8 = match encoding::to_utf8(&bytes)? {
             Cow::Owned(transcoded) => {
                 drop(bytes);
@@ -172,11 +185,12 @@ impl Engine {
         self.read(spoke, Cow::Owned(utf8))
     }
 
+    /// [`Engine::to_hub`] into the packed hub.
     fn read(
         &self,
         spoke: Spoke,
         bytes: Cow<'_, [u8]>,
-    ) -> Result<MappingResult<MainKey>, EngineError> {
+    ) -> Result<MappingResult<CompactHub>, EngineError> {
         spoke
             .identity()
             .check(&bytes)
@@ -221,7 +235,17 @@ impl Engine {
     pub fn from_hub_with_capacity(
         &self,
         spoke: Spoke,
-        mut hub: MainKey,
+        hub: MainKey,
+        capacity: usize,
+    ) -> Result<MappingResult<String>, EngineError> {
+        self.write(spoke, hub.into(), capacity)
+    }
+
+    /// [`Engine::from_hub_with_capacity`] from the packed hub.
+    fn write(
+        &self,
+        spoke: Spoke,
+        mut hub: CompactHub,
         capacity: usize,
     ) -> Result<MappingResult<String>, EngineError> {
         // EN 16931 totals the hub lacks are computed by their calculation
@@ -289,7 +313,7 @@ impl Engine {
         bytes: &[u8],
     ) -> Result<MappingResult<String>, EngineError> {
         let hint = output_hint(bytes.len());
-        self.write_read(to, self.to_hub(from, bytes)?, hint)
+        self.write_read(to, self.read(from, encoding::to_utf8(bytes)?)?, hint)
     }
 
     /// [`Engine::transform`] taking the document by value, freed once parsed
@@ -305,7 +329,7 @@ impl Engine {
         bytes: Vec<u8>,
     ) -> Result<MappingResult<String>, EngineError> {
         let hint = output_hint(bytes.len());
-        self.write_read(to, self.to_hub_owned(from, bytes)?, hint)
+        self.write_read(to, self.read_owned(from, bytes)?, hint)
     }
 
     /// The write half of a transform: writes the hub `read` produced as `to`,
@@ -313,17 +337,22 @@ impl Engine {
     fn write_read(
         &self,
         to: Spoke,
-        read: MappingResult<MainKey>,
+        read: MappingResult<CompactHub>,
         hint: usize,
     ) -> Result<MappingResult<String>, EngineError> {
         let Some(hub) = read.value else {
             return Ok(MappingResult::new(None, read.diagnostics));
         };
-        let written = self.from_hub_with_capacity(to, hub, hint)?;
+        let written = self.write(to, hub, hint)?;
         let mut diagnostics = read.diagnostics;
         diagnostics.extend(written.diagnostics);
         Ok(MappingResult::new(written.value, diagnostics))
     }
+}
+
+/// A read into the packed hub as the public [`MainKey`].
+fn into_main(read: MappingResult<CompactHub>) -> MappingResult<MainKey> {
+    MappingResult::new(read.value.map(MainKey::from), read.diagnostics)
 }
 
 /// The output buffer to reserve for a document read from `input_len` bytes:
@@ -872,7 +901,8 @@ mod tests {
         for &reader in Spoke::ALL {
             for &file in reader.samples() {
                 let bytes = std::fs::read(root.join(file)).expect(file);
-                let mut hub = generated::read(reader, bytes.as_slice().into())
+                let mut hub = engine
+                    .to_hub(reader, &bytes)
                     .expect(file)
                     .value
                     .expect(file);
@@ -883,7 +913,7 @@ mod tests {
                     line.item_name = Some(raw.into());
                 }
                 for &target in Spoke::ALL {
-                    let xml = generated::write(target, hub.clone(), 0)
+                    let xml = generated::write(target, hub.clone().into(), 0)
                         .expect(file)
                         .value
                         .expect(file);

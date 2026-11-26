@@ -503,7 +503,7 @@ memory. A queued request is shed with `503` after `KRAB_QUEUE_TIMEOUT_SECS`,
 and an admitted one must deliver its whole body within
 `KRAB_REQUEST_TIMEOUT_SECS`, so a slow or stalled client cannot hold the
 budget indefinitely. The default blowup of 12 covers the worst measured peak (a
-FatturaPA source written as Factur-X, 6.7x); `KRAB_MEM_BLOWUP=4` is safe when
+FatturaPA source written as Factur-X, 4.9x); `KRAB_MEM_BLOWUP=4` is safe when
 FatturaPA is never an input. A request larger than budget / blowup is
 refused with `413` — with the defaults, about 1/24 of the memory limit (e.g.
 ~85 MB for a 2 GB container). See

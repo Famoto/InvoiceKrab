@@ -388,6 +388,25 @@ mod tests {
         );
         assert!(out.contains("pub struct InvoiceLinesItem {"), "{out}");
         assert!(out.contains("pub quantity: Option<Decimal>,"), "{out}");
+        // The packed hub the mappers run on: the same fields, the root
+        // collections packed, each item under its fields' positions.
+        let compact = &out[out.find("pub struct CompactHub {").expect("CompactHub")..];
+        assert!(
+            compact.contains("pub invoice_lines: Packed<InvoiceLinesItem>,"),
+            "{compact}"
+        );
+        assert!(
+            compact.contains("pub invoice_number: Option<CompactString>,"),
+            "{compact}"
+        );
+        assert!(
+            out.contains("invoice_lines: hub.invoice_lines.into_iter().collect(),"),
+            "{out}"
+        );
+        let pack = &out[out.find("impl Pack for InvoiceLinesItem {").expect("Pack")..];
+        assert!(pack.contains("self.quantity.put("), "{pack}");
+        assert!(pack.contains("=> item.quantity.read(payload),"), "{pack}");
+        syn::parse_file(&out).expect("valid Rust");
     }
 
     #[test]
@@ -434,11 +453,11 @@ mod tests {
         assert!(out.contains("pub fn from_xml"), "{out}");
         assert!(out.contains("pub fn to_xml"), "{out}");
         assert!(
-            out.contains("pub fn read(source: Invoice) -> MappingResult<MainKey>"),
+            out.contains("pub fn read(source: Invoice) -> MappingResult<CompactHub>"),
             "{out}"
         );
         assert!(
-            out.contains("pub fn write(mut main: MainKey) -> MappingResult<Invoice>"),
+            out.contains("pub fn write(mut main: CompactHub) -> MappingResult<Invoice>"),
             "{out}"
         );
     }
@@ -520,11 +539,11 @@ mod tests {
         assert!(!out.contains("pub fn from_xml"), "{out}");
         // Mappers are present.
         assert!(
-            out.contains("pub fn read(source: Invoice) -> MappingResult<MainKey>"),
+            out.contains("pub fn read(source: Invoice) -> MappingResult<CompactHub>"),
             "{out}"
         );
         assert!(
-            out.contains("pub fn write(mut main: MainKey) -> MappingResult<Invoice>"),
+            out.contains("pub fn write(mut main: CompactHub) -> MappingResult<Invoice>"),
             "{out}"
         );
     }
@@ -551,7 +570,7 @@ mod tests {
         }
         for needle in [
             "pub fn read(source: Invoice)",
-            "pub fn write(mut main: MainKey)",
+            "pub fn write(mut main: CompactHub)",
         ] {
             assert!(
                 monolith.contains(needle) && map.contains(needle),
@@ -995,7 +1014,7 @@ mod tests {
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // The reader views the record and copies each value it reads.
         assert!(
-            out.contains("pub fn read(source: Invoice) -> MappingResult<MainKey>"),
+            out.contains("pub fn read(source: Invoice) -> MappingResult<CompactHub>"),
             "{out}"
         );
         assert!(
@@ -1053,7 +1072,7 @@ mod tests {
         let out = generate_spoke(&ir, &source, &no_codecs(), "super::hub");
         // The writer consumes the hub so values move into the target struct.
         assert!(
-            out.contains("pub fn write(mut main: MainKey) -> MappingResult<Invoice>"),
+            out.contains("pub fn write(mut main: CompactHub) -> MappingResult<Invoice>"),
             "{out}"
         );
         assert!(out.contains("main.invoice_number.take()"), "{out}");
@@ -1975,7 +1994,11 @@ mod tests {
                 .all(|d| d.code != "E110" && d.code != "E114")
         );
         let out = generate_hub_with(&hub, &rules);
-        assert!(out.contains("for i0 in &mut self.invoice_lines {"), "{out}");
+        assert!(
+            out.contains("self.invoice_lines.update(|r0| r0.get(")
+                && out.contains(".is_none(), |i0| {"),
+            "only the lines lacking the value are decoded: {out}"
+        );
         assert!(out.contains("if i0.quantity.is_none() {"), "{out}");
         assert!(
             out.contains("i0.quantity = Some(<Decimal as std::str::FromStr>::from_str(\"1\")"),
@@ -2067,14 +2090,27 @@ mod tests {
             ),
             "a zero stays unsigned (no `-0.00`): {out}"
         );
-        // Number: after the largest whole number of either collection.
-        assert!(out.contains("for i0 in &self.lines {"), "{out}");
+        // Copy: only the items lacking the target and holding the source are
+        // decoded (`Amount` 0, `Number` 2, `Signed` 3 in the packed item).
         assert!(
-            out.contains("i0.line_id.as_deref().and_then(|v| v.trim().parse::<u64>().ok())"),
+            out.contains(
+                "self.charges.update(|r0| r0.get(3).is_none() && r0.get(0).is_some(), |i0| {"
+            ),
+            "{out}"
+        );
+        // Number: after the largest whole number of either collection, read
+        // from the packed items without decoding them.
+        assert!(out.contains("for r0 in self.lines.records() {"), "{out}");
+        assert!(
+            out.contains("r0.get(0).and_then(|v| v.trim().parse::<u64>().ok())"),
             "{out}"
         );
         assert!(
-            out.contains("i0.number.as_deref().and_then(|v| v.trim().parse::<u64>().ok())"),
+            out.contains("r0.get(2).and_then(|v| v.trim().parse::<u64>().ok())"),
+            "{out}"
+        );
+        assert!(
+            out.contains("self.charges.update(|r0| r0.get(2).is_none(), |i0| {"),
             "{out}"
         );
         assert!(
@@ -2159,10 +2195,16 @@ mod tests {
         assert!(diags.is_empty(), "{diags:?}");
         let out = generate_hub_with(&hub, &rules);
 
-        // The `where` filter compares a boolean natively and a string by `as_deref`.
-        assert!(out.contains("if item.is_charge != Some(false) {"), "{out}");
+        // The `where` filter reads the packed item: a boolean as one, a
+        // string as text (`Amount` 0, `IsCharge` 1, `Kind` 2).
+        assert!(out.contains("for item in self.lines.records() {"), "{out}");
         assert!(
-            out.contains(r#"if item.kind.as_deref() != Some("net") {"#),
+            out.contains("if item.field::<bool>(1) != Some(false) {"),
+            "{out}"
+        );
+        assert!(out.contains(r#"if item.get(2) != Some("net") {"#), "{out}");
+        assert!(
+            out.contains("if let Some(value) = item.field::<Decimal>(0) {"),
             "{out}"
         );
         // Summation is checked: an overflow stops the loop and derives nothing.

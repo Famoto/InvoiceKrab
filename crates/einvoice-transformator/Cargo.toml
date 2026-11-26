@@ -10,6 +10,8 @@ publish.workspace = true
 [dependencies]
 # Normalize helpers thread the generated models' inline-string values.
 compact_str = { workspace = true }
+# The canonical decimal type a packed hub item holds.
+rust_decimal = { workspace = true }
 serde = { workspace = true }
 # The pull reader the generated source models read documents with.
 quick-xml = { workspace = true, features = ["serialize"] }

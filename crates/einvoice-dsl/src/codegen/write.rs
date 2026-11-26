@@ -127,7 +127,7 @@ struct HubVars<'a> {
     parent: Option<&'a str>,
 }
 
-/// Emits the `write(mut main: MainKey) -> MappingResult<Root>` function into
+/// Emits the `write(mut main: CompactHub) -> MappingResult<Root>` function into
 /// `out`: the inverse of the reader. It sets each canonical field at its
 /// primary `source_path`'s id in a fresh source record. Fallbacks and helper
 /// nodes are skipped.
@@ -136,7 +136,7 @@ pub(super) fn generate_write(out: &mut String, ctx: &GenCtx, root: &str) {
     out.push_str("/// so each uniquely-written value is freed once it is copied in.\n");
     let _ = writeln!(
         out,
-        "pub fn write(mut main: MainKey) -> MappingResult<{root}> {{"
+        "pub fn write(mut main: CompactHub) -> MappingResult<{root}> {{"
     );
     out.push_str("    let mut diagnostics: Vec<MappingDiagnostic> = Vec::new();\n");
     let _ = writeln!(out, "    let mut source = Draft::new({root}::SIZE);");
@@ -400,7 +400,7 @@ fn write_collection_block(
         if let Some(carry) = &carry {
             let _ = writeln!(
                 out,
-                "{pad}let {hub_items} = if {hub_items}.is_empty() && ({carry}) {{ vec![{hub_item_struct}::default()] }} else {{ {hub_items} }};"
+                "{pad}let {hub_items} = if {hub_items}.is_empty() && ({carry}) {{ std::iter::once({hub_item_struct}::default()).collect() }} else {{ {hub_items} }};"
             );
         }
         if let Some(inline) = inline {
@@ -416,13 +416,19 @@ fn write_collection_block(
         let hub_slice = match &carry {
             Some(carry) => {
                 let field = snake_case(coll_key);
+                // A root collection is packed (`CompactHub`), a nested one a `Vec`.
+                let items = if depth == 0 {
+                    "einvoice_transformator::record::Packed"
+                } else {
+                    "Vec"
+                };
                 let _ = writeln!(
                     out,
-                    "{pad}let carrier{depth} = [{hub_item_struct}::default()];"
+                    "{pad}let carrier{depth}: {items}<{hub_item_struct}> = std::iter::once({hub_item_struct}::default()).collect();"
                 );
                 let _ = writeln!(
                     out,
-                    "{pad}let hub_slice{depth}: &[{hub_item_struct}] = if {parent_hub}.{field}.is_empty() && ({carry}) {{ &carrier{depth} }} else {{ &{parent_hub}.{field} }};"
+                    "{pad}let hub_slice{depth}: &{items}<{hub_item_struct}> = if {parent_hub}.{field}.is_empty() && ({carry}) {{ &carrier{depth} }} else {{ &{parent_hub}.{field} }};"
                 );
                 format!("hub_slice{depth}")
             }

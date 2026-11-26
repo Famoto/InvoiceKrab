@@ -74,6 +74,7 @@ pub(crate) const RESERVED_TYPE_NAMES: &[&str] = &[
     "MappingResult",
     "Severity",
     "MainKey",
+    "CompactHub",
 ];
 
 /// Whether `s` is a Rust keyword.

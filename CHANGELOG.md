@@ -108,6 +108,26 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   `KRAB_MEM_BLOWUP=12` is unchanged; a FatturaPA-free deployment can now
   set `KRAB_MEM_BLOWUP=4` (was 6). docs/PERFORMANCE.md, its charts and the
   blowup guidance are updated.
+- A conversion keeps the canonical hub's repeated items (invoice lines, VAT
+  breakdown, allowances and charges, …) packed between the reader and the
+  writer, as the source records keep a document's values: one buffer per
+  collection instead of a struct per item (`einvoice_transformator::record::Packed`).
+  The hub of a UBL invoice of 10,000 lines takes 2.0 MB instead of 9.4 MB,
+  of a FatturaPA one 0.8 MB instead of 7.7 MB. `MainKey` is unchanged, its
+  keys included: `Engine::to_hub` returns it and `Engine::from_hub` takes it,
+  converting to and from the packed form; `Engine::transform`,
+  `Engine::transform_owned` and the server (which now calls
+  `transform_owned`) never build it. The derivation rules read the packed
+  items and decode only those they fill. Peak memory per request (fresh
+  server, idle excluded), 10,000 lines: glibc 18–28% lower on every route
+  but those into FatturaPA (UBL → UBL 24.8 → 19.2 MB, FatturaPA → UBL 16.7
+  → 12.1 MB); musl (Docker image) unchanged except FatturaPA → FatturaPA,
+  8.9 → 5.1 MB. From 1 MB the worst route peaks at 4.9× the upload (glibc,
+  was 6.7×); four 15 MB invoices at once take 73 MB instead of 81 MB. The
+  server's CPU per request rises 4–9% for UBL and up to 15% for a 1 MB
+  FatturaPA invoice whose lines the rules fill. Outputs and diagnostics are
+  byte-identical to the build before on every sample, the corpus and the
+  edge cases, for every target.
 - The bundled mappings read repeated payment means: UBL `PaymentMeans`, CII
   `SpecifiedTradeSettlementPaymentMeans` and FatturaPA `DettaglioPagamento`
   are the new hub collection `CreditTransfers` (BG-17, one item per

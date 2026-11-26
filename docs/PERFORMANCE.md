@@ -15,8 +15,8 @@ measured; the test setup is described [at the end](#how-this-was-measured).
 - **Large invoices.** There is no fixed size limit; the only bound is
   available memory ([details](#overload-behavior)). Invoices with 100,000 lines
   (89 MB) were converted in about 2 seconds.
-- **Predictable memory.** An invoice needs roughly **1–3.5× its file size** in
-  memory while it is converted, and up to about **7×** for the very compact
+- **Predictable memory.** An invoice needs roughly **1–3× its file size** in
+  memory while it is converted, and up to about **5×** for the very compact
   FatturaPA format (4× in the Docker image). The service is 3 MB at idle.
 - **Safe under overload.** The service never runs out of memory because of
   traffic. When memory is fully booked, new invoices wait their turn instead
@@ -125,24 +125,25 @@ file size before and 9.3× after it.
 | Invoice | File size | Peak memory |
 |---|---:|---:|
 | Up to 100 lines | ≤ 95 KB | 4 MB |
-| 1,000 lines | 0.9 MB | 5–6 MB |
-| 10,000 lines | 8.9 MB | 15–25 MB |
-| 100,000 lines | 89 MB | 105–165 MB |
+| 1,000 lines | 0.9 MB | 4.5–5.5 MB |
+| 10,000 lines | 8.9 MB | 13–20 MB |
+| 100,000 lines | 89 MB | 105–150 MB |
 
 The upload is held in memory until it is parsed, and the converted
 invoice until it is sent. In between, the invoice's values are kept in a
 compact record (since November 2026: the values side by side, numbered by
-the format's mapping, instead of one object per XML element), and the
-upload is freed as soon as it is parsed. How much memory a conversion takes
+the format's mapping, instead of one object per XML element), the
+canonical hub keeps its invoice lines and other repeated items packed the
+same way, and the upload is freed as soon as it is parsed. How much memory a conversion takes
 per byte depends mostly on the **input format**:
 
 ![Memory needed depends on the input format](perf/format-memory.svg)
 
 | Input format | Peak memory per request (Docker image) | Linux build |
 |---|---:|---:|
-| FatturaPA | up to 3.9× file size | up to 6.7× |
-| UBL, XRechnung, Peppol | up to 2.2× | up to 3.4× |
-| Factur-X | up to 1.4× | up to 2.3× |
+| FatturaPA | up to 4.2× file size | up to 4.9× |
+| UBL, XRechnung, Peppol | up to 2.5× | up to 3.0× |
+| Factur-X | up to 1.6× | up to 1.9× |
 
 Worst output format for each input, invoices of 1 MB and up, single request,
 idle memory excluded. FatturaPA stores the same invoice in far fewer bytes
@@ -153,14 +154,14 @@ the worst route. The Docker image
 whose allocator keeps more of the memory a conversion frees. Invoices under
 1 MB show higher multiples, but only by a few MB in absolute terms. For an
 invoice of 10,000 lines (12–18 MB) the Docker image needs 1.1–1.7× the file
-size, and 2.4–3.7× for the same invoice as FatturaPA (3.7 MB).
+size, and 1.4–3.7× for the same invoice as FatturaPA (3.7 MB).
 
 ![Memory stays bounded under load](perf/concurrency-memory.svg)
 
 The service converts as many invoices at the same time as it has workers
 (one per CPU core by default). Additional invoices wait in line, so memory
 grows only slowly once every worker is busy: eight large invoices sent at
-once used 92 MB, against 58 MB for four.
+once used 81 MB, against 45 MB for four.
 
 ### Overload behavior
 
@@ -241,7 +242,7 @@ time-sensitive small ones, route the large ones to a separate instance.
 | | |
 |---|---|
 | Hardware | 4 vCPU, 15 GB RAM, Linux container |
-| Build | optimized release build; memory per format also measured on the musl build used by the Docker image. The faster XML output was compared against the build before it in November 2026, alternating rounds. Memory was re-measured with the compact records in November 2026: per format, the peak RSS of one request on a fresh server, idle excluded |
+| Build | optimized release build; memory per format also measured on the musl build used by the Docker image. The faster XML output was compared against the build before it in November 2026, alternating rounds. Memory was re-measured with the compact records and the packed hub in November 2026: per format, the peak RSS of one request on a fresh server, idle excluded |
 | Service settings | defaults (4 workers, memory budget half of RAM) unless stated |
 | Test tool | [`oha`](https://github.com/hatoo/oha) HTTP load generator, 8–32 parallel connections, on the same machine (results are conservative) |
 | Invoices | the OASIS UBL 2.1 example invoice (bundled as `testfiles/UBL-Invoice-2.1.xml` until it was removed for licensing reasons; it is in the git history) and copies with 100 to 100,000 invoice lines; the XRechnung sample gave the same picture. For memory per format, copies of the EN 16931 example (`testfiles/en16931-full-ubl.xml`) with 1,000 and 10,000 lines (2,800 for FatturaPA, to reach 1 MB) were converted into every supported format and each was sent through every route |

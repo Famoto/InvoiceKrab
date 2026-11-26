@@ -62,16 +62,16 @@ struct Target<'a> {
     alts: &'a [Vec<&'a SourceNode>],
 }
 
-/// Emits the `read(source: Root) -> MappingResult<MainKey>` function into
+/// Emits the `read(source: Root) -> MappingResult<CompactHub>` function into
 /// `out`. The record is indexed once and read in place; nothing is moved out.
 pub(super) fn generate_read(out: &mut String, ctx: &GenCtx, root: &str) {
     out.push_str("/// Reads the source document's record into the canonical hub.\n");
     let _ = writeln!(
         out,
-        "pub fn read(source: {root}) -> MappingResult<MainKey> {{"
+        "pub fn read(source: {root}) -> MappingResult<CompactHub> {{"
     );
     out.push_str("    let mut diagnostics: Vec<MappingDiagnostic> = Vec::new();\n");
-    out.push_str("    let mut main = MainKey::default();\n");
+    out.push_str("    let mut main = CompactHub::default();\n");
     let _ = writeln!(
         out,
         "    let document = source;\n    let source = Index::new(document.0.rec(), {root}::SIZE);"

@@ -41,20 +41,20 @@
 <text class="tick" x="720.0" y="310" text-anchor="middle">14×</text>
 <text class="axlab" x="485.0" y="332" text-anchor="middle">Peak memory per request ÷ invoice file size</text>
 <text class="lab" x="238" y="143" text-anchor="end">FatturaPA input</text>
-<path d="M250.0,120.0 H470.9 Q474.9,120.0 474.9,124.0 V134.0 Q474.9,138.0 470.9,138.0 H250.0 Z" fill="var(--s1)"><title>FatturaPA input, glibc (Linux build): 6.7×</title></path>
-<text class="val" x="480.9" y="133" stroke="var(--surface)" stroke-width="4" paint-order="stroke">6.7×</text>
-<path d="M250.0,140.0 H376.9 Q380.9,140.0 380.9,144.0 V154.0 Q380.9,158.0 376.9,158.0 H250.0 Z" fill="var(--s2)"><title>FatturaPA input, musl (Docker image): 3.9×</title></path>
-<text class="val" x="386.9" y="153" stroke="var(--surface)" stroke-width="4" paint-order="stroke">3.9×</text>
+<path d="M250.0,120.0 H410.5 Q414.5,120.0 414.5,124.0 V134.0 Q414.5,138.0 410.5,138.0 H250.0 Z" fill="var(--s1)"><title>FatturaPA input, glibc (Linux build): 4.9×</title></path>
+<text class="val" x="420.5" y="133" stroke="var(--surface)" stroke-width="4" paint-order="stroke">4.9×</text>
+<path d="M250.0,140.0 H387.0 Q391.0,140.0 391.0,144.0 V154.0 Q391.0,158.0 387.0,158.0 H250.0 Z" fill="var(--s2)"><title>FatturaPA input, musl (Docker image): 4.2×</title></path>
+<text class="val" x="397.0" y="153" stroke="var(--surface)" stroke-width="4" paint-order="stroke">4.2×</text>
 <text class="lab" x="238" y="201" text-anchor="end">UBL, XRechnung, Peppol input</text>
-<path d="M250.0,178.0 H360.1 Q364.1,178.0 364.1,182.0 V192.0 Q364.1,196.0 360.1,196.0 H250.0 Z" fill="var(--s1)"><title>UBL, XRechnung, Peppol input, glibc (Linux build): 3.4×</title></path>
-<text class="val" x="370.1" y="191" stroke="var(--surface)" stroke-width="4" paint-order="stroke">3.4×</text>
-<path d="M250.0,198.0 H319.9 Q323.9,198.0 323.9,202.0 V212.0 Q323.9,216.0 319.9,216.0 H250.0 Z" fill="var(--s2)"><title>UBL, XRechnung, Peppol input, musl (Docker image): 2.2×</title></path>
-<text class="val" x="329.9" y="211" stroke="var(--surface)" stroke-width="4" paint-order="stroke">2.2×</text>
+<path d="M250.0,178.0 H346.7 Q350.7,178.0 350.7,182.0 V192.0 Q350.7,196.0 346.7,196.0 H250.0 Z" fill="var(--s1)"><title>UBL, XRechnung, Peppol input, glibc (Linux build): 3×</title></path>
+<text class="val" x="356.7" y="191" stroke="var(--surface)" stroke-width="4" paint-order="stroke">3×</text>
+<path d="M250.0,198.0 H329.9 Q333.9,198.0 333.9,202.0 V212.0 Q333.9,216.0 329.9,216.0 H250.0 Z" fill="var(--s2)"><title>UBL, XRechnung, Peppol input, musl (Docker image): 2.5×</title></path>
+<text class="val" x="339.9" y="211" stroke="var(--surface)" stroke-width="4" paint-order="stroke">2.5×</text>
 <text class="lab" x="238" y="259" text-anchor="end">Factur-X input</text>
-<path d="M250.0,236.0 H323.2 Q327.2,236.0 327.2,240.0 V250.0 Q327.2,254.0 323.2,254.0 H250.0 Z" fill="var(--s1)"><title>Factur-X input, glibc (Linux build): 2.3×</title></path>
-<text class="val" x="333.2" y="249" stroke="var(--surface)" stroke-width="4" paint-order="stroke">2.3×</text>
-<path d="M250.0,256.0 H293.0 Q297.0,256.0 297.0,260.0 V270.0 Q297.0,274.0 293.0,274.0 H250.0 Z" fill="var(--s2)"><title>Factur-X input, musl (Docker image): 1.4×</title></path>
-<text class="val" x="303.0" y="269" stroke="var(--surface)" stroke-width="4" paint-order="stroke">1.4×</text>
+<path d="M250.0,236.0 H309.8 Q313.8,236.0 313.8,240.0 V250.0 Q313.8,254.0 309.8,254.0 H250.0 Z" fill="var(--s1)"><title>Factur-X input, glibc (Linux build): 1.9×</title></path>
+<text class="val" x="319.8" y="249" stroke="var(--surface)" stroke-width="4" paint-order="stroke">1.9×</text>
+<path d="M250.0,256.0 H299.7 Q303.7,256.0 303.7,260.0 V270.0 Q303.7,274.0 299.7,274.0 H250.0 Z" fill="var(--s2)"><title>Factur-X input, musl (Docker image): 1.6×</title></path>
+<text class="val" x="309.7" y="269" stroke="var(--surface)" stroke-width="4" paint-order="stroke">1.6×</text>
 <line class="ref" x1="652.9" x2="652.9" y1="110" y2="294"/>
 <text class="val" x="652.9" y="104" text-anchor="middle">default booking 12×</text>
 <line class="base" x1="250.0" x2="250.0" y1="110" y2="294"/>

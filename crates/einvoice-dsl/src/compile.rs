@@ -121,7 +121,7 @@ pub fn compile(spokes: &[SpokeInput], codecs: &CodecTable) -> CompileOutput {
 }
 
 /// `E012` for a synthesized source struct named like a type of the generated
-/// hub (`MainKey`, or a collection's `<Key>Item`). Spoke modules glob-import the
+/// hub (`MainKey`, `CompactHub`, or a collection's `<Key>Item`). Spoke modules glob-import the
 /// hub, so such a struct would shadow the hub type its mappers name. Synthesis
 /// cannot rename it away — the hub is derived from every spoke afterwards — so
 /// it is reported, naming the element to rename.
@@ -129,7 +129,9 @@ fn check_hub_type_shadowing(
     hub: &CanonicalModel,
     sources: &BTreeMap<String, SourceModelMeta>,
 ) -> Vec<Diagnostic> {
-    let hub_types: BTreeSet<String> = std::iter::once("MainKey".to_string())
+    let hub_types: BTreeSet<String> = ["MainKey", "CompactHub"]
+        .into_iter()
+        .map(str::to_string)
         .chain(
             hub.fields
                 .values()

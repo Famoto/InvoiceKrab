@@ -2,10 +2,10 @@
 //!
 //! [`handle`] owns everything between "the body has been read" and "the
 //! response is known": query-parameter parsing, format resolution (reusing
-//! the [`cli`](crate::cli) helpers), driving the engine's read and write
-//! halves ([`Engine::to_hub_owned`](crate::Engine::to_hub_owned), which frees
-//! the body once it is parsed, then [`Engine::from_hub`](crate::Engine::from_hub)),
-//! and mapping outcomes to HTTP status codes. It knows nothing of
+//! the [`cli`](crate::cli) helpers), driving the engine
+//! ([`Engine::transform_owned`](crate::Engine::transform_owned), which frees
+//! the body once it is parsed and keeps the hub packed), and mapping
+//! outcomes to HTTP status codes. It knows nothing of
 //! sockets or the HTTP stack, so the whole decision table is unit-testable
 //! with plain bytes.
 //!
@@ -40,7 +40,6 @@ use std::sync::LazyLock;
 
 use crate::cli::{detect_source, render_diagnostics, resolve_spoke};
 use crate::{Engine, EngineError, Spoke};
-use einvoice_transformator::result::MappingResult;
 
 /// The computed response: status code, body, and any warning text destined
 /// for a response header (never the body — the body is XML on success).
@@ -96,24 +95,11 @@ fn transform(query: &str, body: Vec<u8>) -> Result<Reply, (u16, String)> {
         EngineError::Serialize(e) => (500, format!("target serialization failed: {e}")),
     };
 
-    // The read and write halves are driven separately (instead of one
-    // `Engine::transform` call) so the errors of each map to their own
-    // status. The body is moved in and freed the moment it is parsed.
-    let engine = Engine::new();
-    let hint = crate::output_hint(body.len());
-    let read = engine.to_hub_owned(from, body).map_err(status_of)?;
-    let mut diagnostics = read.diagnostics;
-    let value = match read.value {
-        Some(hub) => {
-            let written = engine
-                .from_hub_with_capacity(to, hub, hint)
-                .map_err(status_of)?;
-            diagnostics.extend(written.diagnostics);
-            written.value
-        }
-        None => None,
-    };
-    let result = MappingResult::new(value, diagnostics);
+    // The body is moved in and freed the moment it is parsed; the hub stays
+    // packed from the reader to the writer (no `MainKey` is built).
+    let result = Engine::new()
+        .transform_owned(from, to, body)
+        .map_err(status_of)?;
 
     match result.value {
         Some(xml) if !result.has_errors() => Ok(Reply {

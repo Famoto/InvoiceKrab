@@ -43,33 +43,33 @@
 <text class="axlab" transform="translate(18 228.0) rotate(-90)" text-anchor="middle">Peak memory (log scale)</text>
 <polyline class="ref" points="326.7,360.0 560.0,168.5"/>
 <text class="val" x="446.1" y="280.5">file size (1×)</text>
-<polyline points="107.7,306.1 217.2,305.2 321.6,293.5 428.5,243.5 535.8,176.1" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"/>
-<circle cx="107.7" cy="306.1" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 4.1 MB</title></circle>
-<circle cx="217.2" cy="305.2" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 4.2 MB</title></circle>
-<circle cx="321.6" cy="293.5" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 5.7 MB</title></circle>
-<circle cx="428.5" cy="243.5" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 21 MB</title></circle>
-<circle cx="535.8" cy="176.1" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 123 MB</title></circle>
-<polyline points="107.7,307.0 217.2,304.3 321.6,292.2 428.5,236.7 535.8,165.0" fill="none" stroke="var(--s2)" stroke-width="2" stroke-linejoin="round"/>
-<circle cx="107.7" cy="307.0" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 4 MB</title></circle>
+<polyline points="107.7,304.3 217.2,303.4 321.6,295.5 428.5,252.4 535.8,180.6" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"/>
+<circle cx="107.7" cy="304.3" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 4.3 MB</title></circle>
+<circle cx="217.2" cy="303.4" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 4.4 MB</title></circle>
+<circle cx="321.6" cy="295.5" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 5.4 MB</title></circle>
+<circle cx="428.5" cy="252.4" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 17 MB</title></circle>
+<circle cx="535.8" cy="180.6" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL, : 109 MB</title></circle>
+<polyline points="107.7,306.1 217.2,304.3 321.6,294.2 428.5,245.3 535.8,168.8" fill="none" stroke="var(--s2)" stroke-width="2" stroke-linejoin="round"/>
+<circle cx="107.7" cy="306.1" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 4.1 MB</title></circle>
 <circle cx="217.2" cy="304.3" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 4.3 MB</title></circle>
-<circle cx="321.6" cy="292.2" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 5.9 MB</title></circle>
-<circle cx="428.5" cy="236.7" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 25 MB</title></circle>
-<circle cx="535.8" cy="165.0" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 164 MB</title></circle>
-<polyline points="107.7,306.1 217.2,304.3 321.6,297.0 428.5,256.5 535.8,182.9" fill="none" stroke="var(--s3)" stroke-width="2" stroke-linejoin="round"/>
-<circle cx="107.7" cy="306.1" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 4.1 MB</title></circle>
-<circle cx="217.2" cy="304.3" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 4.3 MB</title></circle>
-<circle cx="321.6" cy="297.0" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 5.2 MB</title></circle>
-<circle cx="428.5" cy="256.5" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 15 MB</title></circle>
-<circle cx="535.8" cy="182.9" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 103 MB</title></circle>
-<rect x="572" y="153.0" width="10" height="10" rx="2" fill="var(--s2)"/>
-<text class="lab" x="588" y="162.0">To Factur-X</text>
-<text class="val" x="588" y="176.0">164 MB</text>
-<rect x="572" y="183.0" width="10" height="10" rx="2" fill="var(--s1)"/>
-<text class="lab" x="588" y="192.0">To UBL</text>
-<text class="val" x="588" y="206.0">123 MB</text>
-<rect x="572" y="213.0" width="10" height="10" rx="2" fill="var(--s3)"/>
-<text class="lab" x="588" y="222.0">To FatturaPA</text>
-<text class="val" x="588" y="236.0">103 MB</text>
+<circle cx="321.6" cy="294.2" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 5.6 MB</title></circle>
+<circle cx="428.5" cy="245.3" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 20 MB</title></circle>
+<circle cx="535.8" cy="168.8" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 149 MB</title></circle>
+<polyline points="107.7,305.2 217.2,305.2 321.6,303.4 428.5,261.1 535.8,182.8" fill="none" stroke="var(--s3)" stroke-width="2" stroke-linejoin="round"/>
+<circle cx="107.7" cy="305.2" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 4.2 MB</title></circle>
+<circle cx="217.2" cy="305.2" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 4.2 MB</title></circle>
+<circle cx="321.6" cy="303.4" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 4.4 MB</title></circle>
+<circle cx="428.5" cy="261.1" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 13 MB</title></circle>
+<circle cx="535.8" cy="182.8" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 103 MB</title></circle>
+<rect x="572" y="156.8" width="10" height="10" rx="2" fill="var(--s2)"/>
+<text class="lab" x="588" y="165.8">To Factur-X</text>
+<text class="val" x="588" y="179.8">149 MB</text>
+<rect x="572" y="186.8" width="10" height="10" rx="2" fill="var(--s1)"/>
+<text class="lab" x="588" y="195.8">To UBL</text>
+<text class="val" x="588" y="209.8">109 MB</text>
+<rect x="572" y="216.8" width="10" height="10" rx="2" fill="var(--s3)"/>
+<text class="lab" x="588" y="225.8">To FatturaPA</text>
+<text class="val" x="588" y="239.8">103 MB</text>
 <rect x="24" y="69" width="10" height="10" rx="2" fill="var(--s1)"/>
 <text class="lab" x="40" y="78">To UBL</text>
 <rect x="107.2" y="69" width="10" height="10" rx="2" fill="var(--s2)"/>
