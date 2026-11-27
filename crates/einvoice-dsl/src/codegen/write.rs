@@ -890,12 +890,12 @@ fn write_scalar_block(
     // their element's value, in id order).
     let element_guard = valued_element_guard(source, start_struct, path, src_var);
     // Render the typed value to a source string. Decimals/booleans render
-    // fresh (inline, no heap for short renderings); strings move when taken,
-    // clone when the hub value is shared.
+    // fresh (inline, no heap for short renderings); strings move when taken
+    // and are borrowed when the hub value is shared (the draft copies them).
     let rendered = match node.source_type {
         MappingType::Decimal | MappingType::Boolean => "value.to_compact_string()",
         _ if take => "value",
-        _ => "value.clone()",
+        _ => "value.as_str()",
     };
 
     let pad = "    ".repeat(indent);
@@ -972,7 +972,7 @@ fn write_scalar_block(
             .path(path)
             .index(index_var)
             .emit(out, &format!("{pad}        "));
-        let _ = writeln!(out, "{pad}        CompactString::new(\"\")");
+        let _ = writeln!(out, "{pad}        Default::default()");
         let _ = writeln!(out, "{pad}    }} else {{");
         let _ = writeln!(out, "{pad}        rendered");
         let _ = writeln!(out, "{pad}    }};");

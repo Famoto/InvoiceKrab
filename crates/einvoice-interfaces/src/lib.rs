@@ -967,6 +967,11 @@ mod tests {
             ("element in text", ubl.replace(id, "<ID>INV<b>42</b></ID>"), "cannot deserialize primitive type from mixed content, found unexpected tag <b>"),
             ("unknown entity", ubl.replace(id, "<ID>&foo;</ID>"), "at 0..3: unrecognized entity `foo`"),
             ("truncated", ubl[..ubl.len() / 2].to_string(), "ill-formed document: start tag not closed: `</Invoice>` not found before end of input"),
+            ("text before the root", format!("garbage{ubl}"), r#"invalid type: string "garbage", expected struct Invoice"#),
+            ("blank before the root", format!("\n \t{ubl}"), ok),
+            ("repeat under one prefix", ubl.replace(id, &format!(r#"{id}<x:Note xmlns:x="urn:x">a</x:Note><x:Note xmlns:x="urn:x">b</x:Note>"#)), r#"Some("INV-42") Some("a\nb") []"#),
+            ("repeat under another prefix", ubl.replace(id, &format!(r#"{id}<Note>a</Note><x:Note xmlns:x="urn:x">b</x:Note>"#)), "duplicate field `Note`"),
+            ("unknown entity in an ignored attribute", ubl.replacen(amount, r#"<TaxAmount currencyID="EUR" x="&foo;">19.00</TaxAmount><TaxSubtotal>"#, 1), ok),
         ];
         for (name, doc, want) in cases {
             assert!(doc != ubl, "edge case `{name}` changed nothing");

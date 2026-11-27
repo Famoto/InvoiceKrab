@@ -348,6 +348,9 @@ fn test_shipped_config_is_clean_and_generates_well_formed_code() {
 #[case::element_named_like_main_key(
     "[Doc.MainKey.ID]\ntype=\"string\"\ncanonical_key=\"Shadow\"\n"
 )]
+#[case::element_named_like_record_type(
+    "[Doc.Index.ID]\ntype=\"string\"\ncanonical_key=\"IdxId\"\n[Doc.Draft.ID]\ntype=\"string\"\ncanonical_key=\"DraftId\"\n"
+)]
 #[case::element_named_like_root("[Doc.Doc.ID]\ntype=\"string\"\ncanonical_key=\"InnerId\"\n")]
 // `A.BC` and `AB.C` both camel-case to `ABC`: two structs, not one merged one.
 #[case::struct_name_collision(

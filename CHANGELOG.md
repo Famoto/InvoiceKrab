@@ -94,7 +94,7 @@ Changes to the mapping DSL are listed under **DSL** in each release.
   makes 18 allocations per line instead of 44. The serde derives are gone
   from the generated code (quick-xml stays for parsing); refusals of
   malformed XML are worded as quick-xml's deserializer worded them, which
-  a test records on 21 edge cases.
+  a test records on 26 edge cases.
 - The server and the CLI free the uploaded document as soon as it is
   parsed, before the hub is built (`Engine::to_hub_owned`,
   `Engine::transform_owned`), so the raw upload and the hub are never in

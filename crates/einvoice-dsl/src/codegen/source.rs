@@ -123,18 +123,12 @@ pub(super) fn match_refs_binding(
         .values()
         .map(|path| {
             format!(
-                "{}.map(|v| v.trim().to_string())",
+                "{}.map(str::trim)",
                 access_expr(source, &source.root, path, base_var)
             )
         })
         .collect();
-    (
-        format!(
-            "    let match_refs = [{}];\n    let refs = match_refs.each_ref().map(|r| r.as_deref());\n",
-            reads.join(", ")
-        ),
-        "&refs",
-    )
+    (format!("    let refs = [{}];\n", reads.join(", ")), "&refs")
 }
 
 /// The index of `reference` in the `refs` slice the selectors read.
@@ -162,7 +156,8 @@ fn read_name(fname: &str, field: &FieldMeta) -> String {
 ///
 /// Attributes and child elements match by local name; a single-valued one
 /// seen twice is serde's ``duplicate field `X` ``, as is a repeated element
-/// whose run was interrupted (by another element or by text). An interior
+/// whose run was interrupted (by another element or by text) or changed
+/// prefix. An attribute's value is decoded only when mapped. An interior
 /// element is read inline (an empty one marks its own id); a repeated
 /// element's item is nested in place. `xsi:nil` makes an optional value or
 /// an interior element absent. A required value never seen is ``missing
@@ -189,19 +184,30 @@ fn generate_read_xml(out: &mut String, source: &SourceModelMeta, meta: &StructMe
         .collect();
     if !attrs.is_empty() {
         out.push_str("        for attr in elem.attributes() {\n");
-        out.push_str("            let (name, value) = attr?;\n");
+        out.push_str("            let (name, attr) = attr?;\n");
         out.push_str("            match name {\n");
         for (k, (fname, field, id)) in &attrs {
             let key = read_name(fname, field);
             let _ = writeln!(
                 out,
-                "                {:?} => {{ if seen[{k}] {{ return Err({X}::duplicate({key:?})); }} seen[{k}] = true; values.push(base + {id}, &value); }}",
+                "                {:?} => {{ if seen[{k}] {{ return Err({X}::duplicate({key:?})); }} seen[{k}] = true; values.push(base + {id}, &attr.value()?); }}",
                 key.trim_start_matches('@')
             );
         }
         out.push_str("                _ => {}\n            }\n        }\n");
     }
     out.push_str("        let mut run = usize::MAX;\n");
+    // A run continues only under the prefix it started with: the
+    // deserializer matched a field by local name but a sequence's items by
+    // qualified name. A prefix is short, so it stays inline.
+    let runs = laid
+        .iter()
+        .any(|(_, f, _)| f.repeated && !f.is_attribute() && !f.is_text());
+    if runs {
+        out.push_str(
+            "        let mut run_prefix = ::compact_str::CompactString::const_new(\"\");\n",
+        );
+    }
     out.push_str("        loop {\n");
     let _ = writeln!(out, "            match r.next(&elem)? {{");
     let _ = writeln!(
@@ -215,7 +221,7 @@ fn generate_read_xml(out: &mut String, source: &SourceModelMeta, meta: &StructMe
         let key = read_name(fname, field);
         let check = if field.repeated {
             format!(
-                "if seen[{k}] && run != {k} {{ return Err({X}::duplicate({key:?})); }} seen[{k}] = true; run = {k};"
+                "if seen[{k}] && (run != {k} || run_prefix != child.prefix()) {{ return Err({X}::duplicate({key:?})); }} if run != {k} {{ run_prefix = child.prefix().into(); }} seen[{k}] = true; run = {k};"
             )
         } else {
             format!(
@@ -792,7 +798,7 @@ pub(super) fn generate_xml_io(out: &mut String, root: &str, ns: &NamespaceMeta) 
         "        .map_err(|e| quick_xml::DeError::Custom(format!(\"invalid utf-8: {e}\")))?;\n",
     );
     let _ = writeln!(out, "    let mut reader = {X}::Reader::new(s);");
-    out.push_str("    let elem = reader.root()?;\n");
+    let _ = writeln!(out, "    let elem = reader.root({root:?})?;");
     let _ = writeln!(out, "    let mut values = {R}::Values::default();");
     let _ = writeln!(
         out,
