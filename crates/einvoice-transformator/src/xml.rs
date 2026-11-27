@@ -13,7 +13,7 @@
 //! - Reading: [`Reader`], a pull reader over quick-xml that hands the
 //!   generated code each child element ([`Elem`]) or text segment
 //!   ([`Node`]) of the element it is reading, and each element's attributes
-//!   by local name.
+//!   by local name ([`Attr`], its value decoded on demand).
 //!
 //! # Behavior
 //!
@@ -32,11 +32,14 @@
 //! own text (`$text`) is its first text segment that is not blank, and a
 //! second one is an error; text and CDATA separated only by comments and
 //! processing instructions are one segment; an attribute value is
-//! normalized. An element with `xsi:nil="true"` reads as absent. A repeated
-//! element must come in one run (blank text and comments may sit between
-//! its items); a single element that repeats, or a run that is
-//! interrupted, is the deserializer's `duplicate field` error. Unknown
-//! elements are skipped whole, unknown attributes ignored.
+//! normalized, and only a mapped attribute's value is decoded. An element
+//! with `xsi:nil="true"` reads as absent. A repeated element must come in
+//! one run under one qualified name (blank text and comments may sit
+//! between its items); a single element that repeats, or a run that is
+//! interrupted or changes prefix, is the deserializer's `duplicate field`
+//! error. Unknown elements are skipped whole, unknown attributes ignored.
+//! Text before the root element that is not blank is refused, as the
+//! deserializer refused it.
 //!
 //! # Testing
 //!
@@ -46,6 +49,7 @@
 
 use std::borrow::Cow;
 
+use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::name::{NamespaceResolver, QName};
 use quick_xml::{DeError, XmlVersion};
@@ -112,6 +116,24 @@ pub enum Node<'a> {
     End,
 }
 
+/// An attribute of an [`Elem`]; its value is decoded only when read, so an
+/// attribute the mapping ignores is never decoded.
+pub struct Attr<'e> {
+    attr: Attribute<'e>,
+    version: XmlVersion,
+}
+
+impl Attr<'_> {
+    /// The value, normalized.
+    ///
+    /// # Errors
+    ///
+    /// An unknown entity or a malformed reference.
+    pub fn value(&self) -> Result<Cow<'_, str>, DeError> {
+        Ok(self.attr.normalized_value(self.version)?)
+    }
+}
+
 /// The deserializer's error for an element the document never closes.
 fn missed_end(start: &BytesStart<'_>) -> DeError {
     let name = start.name().into_inner().to_string();
@@ -136,14 +158,19 @@ impl<'a> Elem<'a> {
         self.start.local_name().into_inner()
     }
 
+    /// The element's prefix as written: `""` when it has none.
+    pub fn prefix(&self) -> &str {
+        self.start.name().prefix().map_or("", |p| p.into_inner())
+    }
+
     /// Whether the element carries `xsi:nil="true"` (it reads as absent).
     pub fn is_nil(&self) -> bool {
         self.nil
     }
 
-    /// The element's attributes as `(local name, normalized value)`, the
-    /// namespace declarations and `xml:` attributes left out.
-    pub fn attributes(&self) -> impl Iterator<Item = Result<(&str, Cow<'_, str>), DeError>> {
+    /// The element's attributes as `(local name, attribute)`, the namespace
+    /// declarations and `xml:` attributes left out.
+    pub fn attributes(&self) -> impl Iterator<Item = Result<(&str, Attr<'_>), DeError>> {
         let version = self.version;
         self.start.attributes().filter_map(move |attr| {
             let attr = match attr {
@@ -156,12 +183,7 @@ impl<'a> Elem<'a> {
             {
                 return None;
             }
-            let local = key.local_name().into_inner();
-            Some(
-                attr.normalized_value(version)
-                    .map(|value| (local, value))
-                    .map_err(DeError::from),
-            )
+            Some(Ok((key.local_name().into_inner(), Attr { attr, version })))
         })
     }
 }
@@ -233,14 +255,27 @@ impl<'a> Reader<'a> {
         self.depth -= 1;
     }
 
-    /// The root element.
+    /// The root element, read as the struct `name`.
     ///
     /// # Errors
     ///
-    /// Malformed XML, or a document without an element.
-    pub fn root(&mut self) -> Result<Elem<'a>, DeError> {
+    /// Malformed XML, a document without an element, or text before the
+    /// root that is not blank (serde's ``invalid type: string "…", expected
+    /// struct `name` ``, as the deserializer refused it).
+    pub fn root(&mut self, name: &str) -> Result<Elem<'a>, DeError> {
+        let mut text: Cow<'a, str> = Cow::Borrowed("");
         loop {
-            match self.event()? {
+            let event = self.event()?;
+            if self.append_text(&event, &mut text)? {
+                continue;
+            }
+            if !is_blank(&text) {
+                return Err(DeError::Custom(format!(
+                    "invalid type: string {text:?}, expected struct {name}"
+                )));
+            }
+            text = Cow::Borrowed("");
+            match event {
                 Event::Start(start) => return self.elem(start, false),
                 Event::Empty(start) => return self.elem(start, true),
                 Event::Eof => return Err(DeError::UnexpectedEof),
@@ -297,10 +332,7 @@ impl<'a> Reader<'a> {
             if self.append_text(&event, &mut text)? {
                 continue;
             }
-            if !text
-                .bytes()
-                .all(|b| matches!(b, b' ' | b'\r' | b'\n' | b'\t'))
-            {
+            if !is_blank(&text) {
                 // The segment ends at `event`, returned by the next call.
                 self.pending = Some(event);
                 return Ok(Node::Text(text));
@@ -365,6 +397,12 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Whether `text` is XML whitespace only.
+fn is_blank(text: &str) -> bool {
+    text.bytes()
+        .all(|b| matches!(b, b' ' | b'\r' | b'\n' | b'\t'))
+}
+
 /// Appends `value`, replacing each byte `special` picks by its reference.
 /// The picked bytes are all ASCII, so every slice boundary is a char boundary.
 fn escape(out: &mut String, value: &str, special: impl Fn(u8) -> bool) {
@@ -398,7 +436,7 @@ mod tests {
     /// own text segments joined by `|`.
     fn children(doc: &str) -> Result<Vec<(String, String)>, DeError> {
         let mut r = Reader::new(doc);
-        let root = r.root()?;
+        let root = r.root("R")?;
         let mut out = Vec::new();
         loop {
             match r.next(&root)? {
@@ -455,20 +493,18 @@ mod tests {
 
     #[test]
     fn test_reader_attributes_by_local_name_normalized() {
-        let doc = "<r xmlns:x=\"urn:x\" xml:lang=\"de\" x:currencyID=\"E\tU&#x52;\" a=''/>";
+        let doc =
+            "<r xmlns:x=\"urn:x\" xml:lang=\"de\" x:currencyID=\"E\tU&#x52;\" a='' b='&nope;'/>";
         let mut r = Reader::new(doc);
-        let root = r.root().unwrap();
-        let attrs: Vec<_> = root
-            .attributes()
-            .map(|a| a.map(|(k, v)| (k.to_string(), v.into_owned())))
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            attrs,
-            [
-                ("currencyID".into(), "E UR".into()),
-                ("a".into(), String::new())
-            ]
+        let root = r.root("R").unwrap();
+        let attrs: Vec<_> = root.attributes().map(|a| a.unwrap()).collect();
+        let names: Vec<_> = attrs.iter().map(|(k, _)| *k).collect();
+        assert_eq!(names, ["currencyID", "a", "b"]);
+        assert_eq!(attrs[0].1.value().unwrap(), "E UR");
+        assert_eq!(attrs[1].1.value().unwrap(), "");
+        assert!(
+            attrs[2].1.value().is_err(),
+            "an unknown entity fails only when the value is read"
         );
         assert!(matches!(r.next(&root), Ok(Node::End)));
     }
@@ -491,7 +527,7 @@ mod tests {
             "ill-formed document: start tag not closed: `</r>` not found before end of input"
         );
         assert!(children("<r><A>x").is_err(), "an unclosed scalar");
-        assert!(Reader::new("<!-- only -->").root().is_err());
+        assert!(Reader::new("<!-- only -->").root("R").is_err());
     }
 
     #[test]
@@ -503,7 +539,7 @@ mod tests {
              <D xmlns:j=\"{xsi}\"><E j:nil=\"true\"><x/></E></D><F j:nil=\"true\">f</F></r>"
         );
         let mut r = Reader::new(&doc);
-        let root = r.root().unwrap();
+        let root = r.root("R").unwrap();
         let mut seen = Vec::new();
         while let Node::Child(c) = r.next(&root).unwrap() {
             seen.push((c.local_name().to_string(), c.is_nil()));
@@ -530,6 +566,42 @@ mod tests {
         assert!(
             children("<r><A xmlns:xml=\"urn:x\">a</A></r>").is_err(),
             "a malformed declaration is refused"
+        );
+    }
+
+    #[test]
+    fn test_reader_refuses_text_before_the_root() {
+        let blank = "\n <!-- c --> <?pi?>\t<r a='1'><A>x</A></r>";
+        assert_eq!(children(blank).unwrap(), [("A".into(), "x".into())]);
+        for (doc, text) in [
+            ("garbage<r><A>x</A></r>", "garbage"),
+            (" &amp; <r/>", " & "),
+            ("<![CDATA[c]]><r/>", "c"),
+        ] {
+            assert_eq!(
+                Reader::new(doc).root("R").err().map(|e| e.to_string()),
+                Some(format!("invalid type: string {text:?}, expected struct R")),
+                "{doc}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_reader_prefix_as_written() {
+        let mut r = Reader::new("<a:r xmlns:a='urn:a'><a:N/><b:N xmlns:b='urn:a'/><N/></a:r>");
+        let root = r.root("R").unwrap();
+        let mut names = Vec::new();
+        while let Node::Child(c) = r.next(&root).unwrap() {
+            names.push((c.local_name().to_string(), c.prefix().to_string()));
+            r.skip(c).unwrap();
+        }
+        assert_eq!(
+            names,
+            [
+                ("N".into(), "a".into()),
+                ("N".into(), "b".into()),
+                ("N".into(), String::new())
+            ]
         );
     }
 

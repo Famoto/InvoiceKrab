@@ -477,14 +477,17 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("normalize::trim(&s)"), "{out}");
-        // Collection loops use per-depth variable names (`item0`, `element0`) and
-        // reserve the hub collection up front from the counted items.
+        // Collection loops use per-depth variable names (`item0`, `element0`).
+        // A root collection is packed: nothing is reserved, and the required
+        // one only looks for a first item.
         assert!(out.contains("let elements0 = source.items(7);"), "{out}");
         assert!(
-            out.contains("let count0 = elements0.clone().count();"),
+            out.contains("let count0 = usize::from(elements0.clone().next().is_some());"),
             "{out}"
         );
-        assert!(out.contains("main.invoice_lines.reserve(count0);"), "{out}");
+        assert!(out.contains("if count0 == 0 {"), "{out}");
+        assert!(!out.contains(".count();"), "{out}");
+        assert!(!out.contains(".reserve("), "{out}");
         assert!(out.contains("main.invoice_lines.push(item0);"), "{out}");
         assert!(out.contains("item0.quantity = Some(d)"), "{out}");
     }
@@ -942,6 +945,17 @@ mod tests {
             spoke.contains("item0.line_allowances.push(item1);"),
             "{spoke}"
         );
+        // The nested `Vec` is reserved from the counted items; the optional
+        // packed root collection is not counted at all.
+        assert!(
+            spoke.contains("let count1 = elements1.clone().count();"),
+            "{spoke}"
+        );
+        assert!(
+            spoke.contains("item0.line_allowances.reserve(count1);"),
+            "{spoke}"
+        );
+        assert!(!spoke.contains("let count0"), "{spoke}");
         assert!(
             spoke.contains("let hub_items1 = std::mem::take(&mut hub_item0.line_allowances);"),
             "{spoke}"

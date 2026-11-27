@@ -649,9 +649,9 @@ fn fallback_chain_literal(node: &SourceNode) -> String {
 /// Emits the read loop for one collection node and its children, building an item
 /// struct per source element and pushing it into the hub collection field.
 /// Recurses into nested collections; `frame` carries the depth (for unique loop
-/// variables), indent, and enclosing hub/source/struct context. The items are
-/// counted first (the iterator is a cheap copy) so the hub collection is
-/// reserved once.
+/// variables), indent, and enclosing hub/source/struct context. A nested
+/// collection's items are counted first (the iterator is a cheap copy) so its
+/// `Vec` is reserved once; a root collection is packed and is not counted.
 fn read_collection_block(out: &mut String, ctx: &GenCtx, coll: &SourceNode, frame: &Frame) {
     let coll_key = coll
         .canonical_key
@@ -678,8 +678,6 @@ fn read_collection_block(out: &mut String, ctx: &GenCtx, coll: &SourceNode, fram
     let body = "    ".repeat(indent + 1);
 
     let _ = writeln!(out, "{pad}// {} -> {coll_key} (collection)", coll.id);
-    // Count the items first, so the hub collection is reserved once instead
-    // of regrowing as items are pushed.
     let elements = format!("elements{depth}");
     let items = items_expr(
         ctx.source,
@@ -688,8 +686,18 @@ fn read_collection_block(out: &mut String, ctx: &GenCtx, coll: &SourceNode, fram
         parent_src,
     );
     let _ = writeln!(out, "{pad}let {elements} = {items};");
-    let _ = writeln!(out, "{pad}let {count} = {elements}.clone().count();");
-    let _ = writeln!(out, "{pad}{parent_hub}.{hub_field}.reserve({count});");
+    // A root collection is packed: there is nothing to reserve, and a
+    // required one only needs to know whether it has an item.
+    let packed = depth == 0;
+    if !packed {
+        let _ = writeln!(out, "{pad}let {count} = {elements}.clone().count();");
+        let _ = writeln!(out, "{pad}{parent_hub}.{hub_field}.reserve({count});");
+    } else if coll.required {
+        let _ = writeln!(
+            out,
+            "{pad}let {count} = usize::from({elements}.clone().next().is_some());"
+        );
+    }
     let _ = writeln!(out, "{pad}for ({idx}, {elem}) in {elements}.enumerate() {{");
     let _ = writeln!(
         out,
