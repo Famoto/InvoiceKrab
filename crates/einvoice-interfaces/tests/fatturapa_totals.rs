@@ -103,3 +103,45 @@ fn test_fatturapa_writes_document_allowances_and_charges_as_numbered_lines() {
         "{ubl}"
     );
 }
+
+#[test]
+fn test_fatturapa_reads_an_allowance_or_charge_line_by_its_total() {
+    // A producer may state an AC line with a quantity: its total, which
+    // DatiRiepilogo counts, is the charge amount, not the unit price.
+    let engine = Engine::new();
+    let xml = engine
+        .transform(Spoke::UblInvoice, Spoke::Fatturapa, &full_ubl())
+        .expect("well-formed source")
+        .value
+        .expect("written document")
+        .replace(
+            "<Descrizione>Freight</Descrizione><PrezzoUnitario>30.00</PrezzoUnitario>",
+            "<Descrizione>Freight</Descrizione><Quantita>2.00</Quantita><PrezzoUnitario>15.00</PrezzoUnitario>",
+        );
+    assert!(xml.contains("<Quantita>2.00</Quantita>"), "{xml}");
+    let back = engine
+        .transform(Spoke::Fatturapa, Spoke::UblInvoice, xml.as_bytes())
+        .expect("well-formed document");
+    assert!(!back.has_errors(), "{:?}", back.diagnostics);
+    let ubl = back.value.expect("written document");
+    assert!(
+        ubl.contains(r#"<cbc:AllowanceChargeReason>Freight</cbc:AllowanceChargeReason><cbc:Amount currencyID="EUR">30.00</cbc:Amount>"#),
+        "{ubl}"
+    );
+}
+
+#[test]
+fn test_fatturapa_numbers_no_line_twice_at_the_largest_line_number() {
+    // An invoice line numbered u64::MAX leaves no number after it: the SC / AC
+    // lines get none rather than all the same one.
+    let max = u64::MAX.to_string();
+    let ubl = String::from_utf8(full_ubl())
+        .expect("UTF-8 sample")
+        .replacen("<cbc:ID>3</cbc:ID>", &format!("<cbc:ID>{max}</cbc:ID>"), 1);
+    let out = Engine::new()
+        .transform(Spoke::UblInvoice, Spoke::Fatturapa, ubl.as_bytes())
+        .expect("well-formed source");
+    let xml = out.value.expect("written document");
+    let numbered = format!("<NumeroLinea>{max}</NumeroLinea>");
+    assert_eq!(xml.matches(&numbered).count(), 1, "{xml}");
+}

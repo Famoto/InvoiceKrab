@@ -55,8 +55,16 @@ for src in "${sources[@]}"; do
         checked+=("$src")
     fi
 done
+# Exit 1 says a source is invalid (skipped below); beyond that the run failed.
+rc=0
+einvoice-validate "${checked[@]}" >"$work/sources" || rc=$?
+if [ "$rc" -gt 1 ]; then
+    cat "$work/sources"
+    echo "einvoice-validate exited with $rc on the sources" >&2
+    exit 1
+fi
 while IFS= read -r src; do valid+=("$src"); done \
-    < <(einvoice-validate "${checked[@]}" | sed -n 's/^\([^ ].*\): valid.*$/\1/p' || true)
+    < <(sed -n 's/^\([^ ].*\): valid.*$/\1/p' "$work/sources")
 echo "${#sources[@]} sources, $((${#sources[@]} - ${#valid[@]})) skipped as invalid themselves"
 
 status=0

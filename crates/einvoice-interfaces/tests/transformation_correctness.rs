@@ -236,53 +236,36 @@ struct Doc {
     values: BTreeMap<String, Vec<String>>,
 }
 
-/// FatturaPA states the document-level allowances and charges (BG-20/21) as
-/// `DettaglioLinee` lines with `TipoCessionePrestazione` `SC` / `AC`. The
-/// oracle sees those under the name [`FPA_SC_AC`], so the line terms (BG-25)
-/// see only invoice lines; FatturaPA's 00422 rule counts both.
-fn fatturapa_view(xml: &str) -> std::borrow::Cow<'_, str> {
-    const OPEN: &str = "<DettaglioLinee>";
-    const CLOSE: &str = "</DettaglioLinee>";
-    if !xml.contains("<TipoCessionePrestazione>") {
-        return xml.into();
-    }
-    let mut out = String::with_capacity(xml.len());
-    let mut rest = xml;
-    while let Some(start) = rest.find(OPEN) {
-        let Some(len) = rest[start..].find(CLOSE) else {
-            break;
-        };
-        let end = start + len + CLOSE.len();
-        let line = &rest[start..end];
-        out.push_str(&rest[..start]);
-        if ["SC", "AC"]
-            .iter()
-            .any(|code| line.contains(&format!("<TipoCessionePrestazione>{code}<")))
-        {
-            out.push_str(&format!(
-                "<{FPA_SC_AC}>{}</{FPA_SC_AC}>",
-                &line[OPEN.len()..line.len() - CLOSE.len()]
-            ));
-        } else {
-            out.push_str(line);
-        }
-        rest = &rest[end..];
-    }
-    out.push_str(rest);
-    out.into()
-}
-
-/// The oracle's name for a FatturaPA `SC` / `AC` line (see [`fatturapa_view`]).
+/// The oracle's name for a FatturaPA `SC` / `AC` line. FatturaPA states the
+/// document-level allowances and charges (BG-20/21) as `DettaglioLinee` lines
+/// whose `TipoCessionePrestazione` is `SC` / `AC`; [`Doc::parse`] files their
+/// values under this name instead, so the line terms (BG-25) see only invoice
+/// lines. FatturaPA's 00422 rule counts both.
 const FPA_SC_AC: &str = "DettaglioLineeScontoAccessorio";
+
+/// Records `value` at `path`, or holds it with the open `DettaglioLinee`.
+fn put(
+    values: &mut BTreeMap<String, Vec<String>>,
+    line: &mut Option<(usize, Vec<(String, String)>)>,
+    path: String,
+    value: String,
+) {
+    match line {
+        Some((_, held)) => held.push((path, value)),
+        None => values.entry(path).or_default().push(value),
+    }
+}
 
 impl Doc {
     fn parse(xml: &str) -> Result<Doc, String> {
-        let xml = fatturapa_view(xml);
-        let mut reader = Reader::from_str(&xml);
+        let mut reader = Reader::from_str(xml);
         let mut values: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut stack: Vec<String> = Vec::new();
         let mut texts: Vec<String> = Vec::new();
         let mut root = None;
+        // The open `DettaglioLinee`'s depth and values: held until its end,
+        // where its `TipoCessionePrestazione` tells an SC / AC line apart.
+        let mut line: Option<(usize, Vec<(String, String)>)> = None;
         let path = |stack: &[String]| format!("/{}", stack.join("/"));
         loop {
             match reader.read_event().map_err(|e| e.to_string())? {
@@ -292,6 +275,9 @@ impl Doc {
                     };
                     let name = e.local_name().as_ref().to_string();
                     root.get_or_insert_with(|| name.clone());
+                    if name == "DettaglioLinee" && line.is_none() && matches!(ev, Event::Start(_)) {
+                        line = Some((stack.len() + 1, Vec::new()));
+                    }
                     stack.push(name);
                     for attr in e.attributes() {
                         let attr = attr.map_err(|e| e.to_string())?;
@@ -302,10 +288,12 @@ impl Doc {
                         let value = attr
                             .normalized_value(XmlVersion::Implicit1_0)
                             .map_err(|e| e.to_string())?;
-                        values
-                            .entry(format!("{}/@{key}", path(&stack)))
-                            .or_default()
-                            .push(value.into_owned());
+                        put(
+                            &mut values,
+                            &mut line,
+                            format!("{}/@{key}", path(&stack)),
+                            value.into_owned(),
+                        );
                     }
                     if matches!(ev, Event::Empty(_)) {
                         stack.pop();
@@ -340,7 +328,23 @@ impl Doc {
                 Event::End(_) => {
                     let text = texts.pop().unwrap_or_default();
                     if !text.trim().is_empty() {
-                        values.entry(path(&stack)).or_default().push(text);
+                        put(&mut values, &mut line, path(&stack), text);
+                    }
+                    if let Some((_, held)) = line.take_if(|(depth, _)| *depth == stack.len()) {
+                        let here = path(&stack);
+                        let sc_ac = held.iter().any(|(p, v)| {
+                            p.strip_prefix(&here) == Some("/TipoCessionePrestazione")
+                                && matches!(v.trim(), "SC" | "AC")
+                        });
+                        let renamed = format!("{}/{FPA_SC_AC}", path(&stack[..stack.len() - 1]));
+                        for (p, v) in held {
+                            let p = if sc_ac {
+                                format!("{renamed}{}", &p[here.len()..])
+                            } else {
+                                p
+                            };
+                            values.entry(p).or_default().push(v);
+                        }
                     }
                     stack.pop();
                 }
@@ -1012,19 +1016,20 @@ fn test_fatturapa_summary_must_equal_its_lines_per_rate() {
 }
 
 #[test]
-fn test_fatturapa_view_separates_sc_ac_lines_and_00422_counts_them() {
+fn test_oracle_separates_sc_ac_lines_and_00422_counts_them() {
     let xml = "<FatturaElettronica><FatturaElettronicaBody><DatiBeniServizi>\
         <DettaglioLinee><NumeroLinea>1</NumeroLinea><PrezzoTotale>100.00</PrezzoTotale><AliquotaIVA>22.00</AliquotaIVA></DettaglioLinee>\
         <DettaglioLinee><NumeroLinea>2</NumeroLinea><TipoCessionePrestazione>SC</TipoCessionePrestazione><PrezzoTotale>-10.00</PrezzoTotale><AliquotaIVA>22.00</AliquotaIVA></DettaglioLinee>\
         <DettaglioLinee><NumeroLinea>3</NumeroLinea><TipoCessionePrestazione>AB</TipoCessionePrestazione><PrezzoTotale>5.00</PrezzoTotale><AliquotaIVA>22.00</AliquotaIVA></DettaglioLinee>\
-        <DatiRiepilogo><AliquotaIVA>22.00</AliquotaIVA><ImponibileImporto>95.00</ImponibileImporto></DatiRiepilogo>\
+        <DettaglioLinee><NumeroLinea>4</NumeroLinea><TipoCessionePrestazione>\n  AC </TipoCessionePrestazione><PrezzoTotale>2.00</PrezzoTotale><AliquotaIVA>22.00</AliquotaIVA></DettaglioLinee>\
+        <DatiRiepilogo><AliquotaIVA>22.00</AliquotaIVA><ImponibileImporto>97.00</ImponibileImporto></DatiRiepilogo>\
         </DatiBeniServizi></FatturaElettronicaBody></FatturaElettronica>";
     let doc = Doc::parse(xml).expect("parses");
     let ids = doc.by_bt("BT-126").expect("FatturaPA carries line ids");
     assert_eq!(
         ids,
         ["1", "3"],
-        "an SC line is no invoice line; another kind is"
+        "an SC / AC line, its code padded or not, is no invoice line; another kind is"
     );
     let totals = fatturapa_totals(&doc);
     assert!(totals.iter().all(|(_, holds)| *holds), "{totals:?}");

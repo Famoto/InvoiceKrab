@@ -6,7 +6,9 @@
 //! A format that omits a total the others require (FatturaPA states no sum of
 //! line net amounts) would otherwise make every transform out of it fail.
 //! The rules live in `config/derivations.toml`, one `[[derive]]` table each,
-//! applied in file order:
+//! applied in file order. A mapping file may carry `[[derive]]` tables of its
+//! own for the keys only it declares: they are loaded only while the mapping
+//! is compiled, and run before `config/derivations.toml`'s:
 //!
 //! ```toml
 //! [[derive]]
@@ -75,7 +77,8 @@
 //!   root collection that lacks a number, continuing after the largest whole
 //!   number among `Collection`'s `Key` values and the target's own (other
 //!   values are ignored): FatturaPA numbers its allowance and charge lines
-//!   after the invoice lines.
+//!   after the invoice lines. Numbers that would pass `u64::MAX` derive
+//!   nothing, so no number is ever given twice.
 //!
 //! # Diagnostics
 //!
@@ -270,8 +273,17 @@ struct RawDerivation {
 /// value.
 pub fn parse_derivations(src: &str) -> Result<Vec<Derivation>, ConfigError> {
     let file: RawFile = toml::from_str(src)?;
-    file.derive
-        .into_iter()
+    build_all(file.derive)
+}
+
+/// Parses the `[[derive]]` tables of a mapping file (`derive`: its top-level
+/// `derive` array) as [`parse_derivations`] does.
+pub(crate) fn derivations_of(derive: toml::Value) -> Result<Vec<Derivation>, ConfigError> {
+    build_all(Vec::<RawDerivation>::deserialize(derive)?)
+}
+
+fn build_all(raw: Vec<RawDerivation>) -> Result<Vec<Derivation>, ConfigError> {
+    raw.into_iter()
         .map(|raw| {
             let key = raw.key.clone();
             build(raw).map_err(|e| ConfigError::msg(format!("derivation of `{key}`: {e}")))

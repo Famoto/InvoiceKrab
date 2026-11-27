@@ -815,6 +815,30 @@ fn test_copy_and_number_derivations_check_clean_and_generate_valid_rust() {
     syn::parse_file(&hub).expect("generated hub is valid Rust");
 }
 
+#[test]
+fn test_a_mappings_own_rules_run_first_and_only_with_it() {
+    let own = "[[derive]]\nkey = \"Charges/Signed\"\nrule = \"own\"\ncopy = \"Amount\"\n";
+    let shared = "[[derive]]\nkey = \"Charges/Number\"\nrule = \"shared\"\nnumber_after = \"Lines/LineId\"\n";
+    let dir = config_dir(&[
+        ("t.toml".into(), format!("{}{ITEMS}{own}", meta("t", ""))),
+        ("derivations.toml".into(), shared.into()),
+    ]);
+    let rules = |dir: &Path| -> Vec<String> {
+        let loaded = load_config(dir).expect("loads");
+        loaded.derivations.into_iter().map(|d| d.rule).collect()
+    };
+    assert_eq!(rules(&dir), ["own", "shared"]);
+    // Another spoke in its place: the mapping's rules go with it.
+    std::fs::remove_file(dir.join("mappings/t.toml")).unwrap();
+    std::fs::write(
+        dir.join("mappings/u.toml"),
+        format!("{}{ITEMS}", meta("u", "")),
+    )
+    .unwrap();
+    assert_eq!(rules(&dir), ["shared"]);
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
+
 #[rstest]
 #[case::copy_source_not_decimal(
     "E115",
