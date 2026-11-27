@@ -109,9 +109,9 @@ impl Config {
             // Measured per-request peak RSS, idle excluded, over every
             // source x target route (see docs/PERFORMANCE.md). The worst is a
             // dense FatturaPA source written as Factur-X: the output alone is
-            // ~3x the body. For bodies >= 1 MB that peaks at 4.9x (glibc) /
-            // 4.2x (musl, the Docker image); 6 covers it on both allocators.
-            // Every other source stays <= 3.0x from 1 MB, hence the
+            // ~3x the body. For bodies >= 1 MB that peaks at 4.7x (glibc) /
+            // 3.7x (musl, the Docker image); 6 covers it on both allocators.
+            // Every other source stays <= 3.2x from 1 MB, hence the
             // documented `4` for FatturaPA-free deployments. Smaller bodies
             // run higher ratios, a fixed ~3 MB per request in absolute terms,
             // which the budget's half-of-memory default absorbs.

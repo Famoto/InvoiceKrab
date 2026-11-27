@@ -14,63 +14,64 @@ from pathlib import Path
 OUT = Path(__file__).resolve().parent
 
 # --------------------------------------------------------------------------
-# Measurements (release build, 4 vCPU — see docs/PERFORMANCE.md)
+# Measurements (release build, Ryzen 7 3700X, November 2026 — see
+# docs/PERFORMANCE.md). Raw values come from scripts/perf/measure.py.
 # --------------------------------------------------------------------------
 
 # EN 16931 example invoice as UBL, in bytes: 3, 100, 1k, 10k and 100k
-# invoice lines. Re-measured with the compact records and the packed hub
-# (November 2026).
-SIZES = [16_305, 161_931, 1_528_131, 15_199_131, 151_999_131]
+# invoice lines.
+SIZES = [16_305, 165_265, 1_531_466, 15_202_467, 152_002_468]
 
-# Server: invoices per second on 4 workers, 32 connections, by invoice size.
+# Server: invoices per second on 4 workers (4 pinned physical cores),
+# 32 connections, from UBL, by invoice size.
 SERVER_SIZES = SIZES[:3]
 SERVER_RPS = {
-    "To UBL / XRechnung": [11_748, 1_939, 264],
-    "To Factur-X": [11_644, 1_896, 265],
-    "To FatturaPA": [14_336, 2_195, 304],
+    "To UBL / XRechnung": [17_879, 2_429, 286],
+    "To Factur-X": [18_589, 2_435, 291],
+    "To FatturaPA": [20_628, 2_677, 317],
 }
 
-# Server: invoices per second by worker count (= CPU cores), 16 connections,
-# UBL → XRechnung (typical invoice at 3 and 4 cores: median of three runs).
-# The load generator shares the 4 cores, so the 4-core point understates
-# the server (most visibly for the small invoice).
-CORES = [1, 2, 3, 4]
+# Server: invoices per second by worker count (= pinned physical cores),
+# 32 connections, UBL → XRechnung, median of three runs. From 5 cores the
+# load generator (on the remaining cores) can't keep the server busy with
+# the typical invoice; at 8 it shares the server's cores.
+CORES = [1, 2, 3, 4, 5, 6, 7, 8]
 CORE_RPS = {
-    "Typical invoice (16 KB)": [4_076, 8_528, 12_582, 10_949],
-    "100-line invoice (160 KB)": [606, 1_115, 1_778, 1_947],
+    "Typical invoice (16 KB)": [4_416, 8_813, 13_235, 17_173, 19_005, 21_755, 24_873, 29_860],
+    "100-line invoice (165 KB)": [638, 1_254, 1_829, 2_422, 2_944, 3_527, 4_101, 4_553],
 }
 
 # Single invoice, end-to-end time (command line, includes start-up), ms.
 ONE_MS = {
-    "To UBL": [2.52, 4.47, 16.18, 161.92, 1443.11],
-    "To Factur-X": [2.06, 3.50, 17.63, 147.06, 1445.40],
-    "To FatturaPA": [2.06, 4.42, 14.18, 131.48, 1146.78],
+    "To UBL": [1.43, 2.88, 15.78, 138.18, 1282.68],
+    "To Factur-X": [1.36, 2.88, 15.21, 138.82, 1246.56],
+    "To FatturaPA": [1.32, 2.74, 14.33, 126.01, 1147.43],
 }
 
 # Single invoice, peak memory (command line), MB.
 ONE_MB = {
-    "To UBL": [4.3, 4.5, 6.0, 22.3, 170.6],
-    "To Factur-X": [4.1, 4.3, 6.3, 27.5, 219.2],
-    "To FatturaPA": [4.2, 4.3, 5.0, 20.0, 170.6],
+    "To UBL": [5.0, 5.2, 7.9, 27.0, 172.2],
+    "To Factur-X": [4.9, 5.2, 7.7, 28.8, 223.2],
+    "To FatturaPA": [4.7, 4.8, 7.1, 20.6, 172.1],
 }
 
-# Server peak memory (MB) with N large (15 MB) invoices sent at once,
-# 4 workers, UBL -> XRechnung, Linux build. Idle: 3 MB.
-CONCURRENT = [(1, 23), (2, 38), (4, 71), (8, 132)]
+# Server peak memory above idle (MB) with N large (15 MB) invoices sent at
+# once, 4 workers, UBL -> XRechnung, Linux build. Idle: 5 MB.
+CONCURRENT = [(1, 22), (2, 41), (4, 83), (8, 142), (16, 244)]
 
 # Server peak memory per request as a multiple of the invoice's file size,
 # worst output format, invoices of 1 MB and up, one request on a fresh
 # server (idle memory excluded). glibc = Linux build, musl = Docker image.
 FORMAT_BLOWUP = {
-    "glibc (Linux build)": {"FatturaPA": 4.9, "UBL, XRechnung, Peppol": 3.0, "Factur-X": 1.9},
-    "musl (Docker image)": {"FatturaPA": 4.2, "UBL, XRechnung, Peppol": 2.5, "Factur-X": 1.6},
+    "glibc (Linux build)": {"FatturaPA": 4.7, "UBL, XRechnung, Peppol": 3.2, "Factur-X": 2.5},
+    "musl (Docker image)": {"FatturaPA": 3.7, "UBL, XRechnung, Peppol": 2.3, "Factur-X": 2.2},
 }
 BLOWUP_DEFAULT = 6
 
 # Typical invoice latency (ms), alone vs. while large invoices are processed.
 HOL = {
-    "Typical invoices only": {"Median": 0.79, "Slowest 1%": 2.05},
-    "While large invoices run": {"Median": 159.38, "Slowest 1%": 190.63},
+    "Typical invoices only": {"Median": 0.48, "Slowest 1%": 1.57},
+    "While large invoices run": {"Median": 136.31, "Slowest 1%": 150.31},
 }
 
 # --------------------------------------------------------------------------
@@ -219,13 +220,13 @@ def scaling():
     line_chart(
         "scaling-cores.svg",
         "Throughput grows with CPU cores",
-        "Speed-up vs. one core. Dashed line = perfect scaling. At 4 cores the load generator shared the machine.",
+        "Speed-up vs. one core. Dashed line = perfect scaling. Typical invoice from 5 cores: load generator limit.",
         speedup, CORES, xlog=False, ylog=False,
-        xticks=[1, 2, 3, 4], yticks=[0, 1, 2, 3, 4],
+        xticks=CORES, yticks=[0, 2, 4, 6, 8],
         xfmt=lambda v: f"{v:g} core" + ("s" if v > 1 else ""),
         yfmt=lambda v: f"{v:.1f}×" if v % 1 else f"{v:g}×",
         xlab="CPU cores (workers)", ylab="Throughput vs. 1 core",
-        ref=([(1, 1), (4, 4)], "perfect scaling", (3.05, 3.6)),
+        ref=([(1, 1), (8, 8)], "perfect scaling", (6.1, 7.2)),
     )
 
 
@@ -233,7 +234,7 @@ def single_invoice_time():
     line_chart(
         "invoice-time.svg",
         "Time to convert one invoice",
-        "End to end, command line, from a UBL invoice. Small invoices are dominated by the ~2 ms program start.",
+        "End to end, command line, from a UBL invoice. Small invoices are dominated by the ~1.3 ms program start.",
         ONE_MS, SIZES, xlog=True, ylog=True,
         xticks=[5e3, 1e4, 1e5, 1e6, 1e7, 1e8, 2e8], yticks=[1, 10, 100, 1_000, 10_000],
         xfmt=lambda v: fmt_bytes(int(v)) if v in (1e4, 1e5, 1e6, 1e7, 1e8) else "",
@@ -259,7 +260,7 @@ def single_invoice_memory():
 def concurrency_memory():
     L, R, T, h = 80, 32, 96, 380
     B = h - 60
-    ymax = 200
+    ymax = 250
     sy = lambda v: B - v / ymax * (B - T)
     b = []
     for t in range(0, ymax + 1, 50):
