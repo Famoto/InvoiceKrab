@@ -39,27 +39,27 @@
 <line class="base" x1="80" x2="560" y1="360" y2="360"/>
 <text class="axlab" x="320.0" y="400" text-anchor="middle">Invoice file size (log scale)</text>
 <text class="axlab" transform="translate(18 228.0) rotate(-90)" text-anchor="middle">Invoices per second (log scale)</text>
-<polyline points="174.7,177.8 358.6,246.7 538.4,322.9" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"/>
-<circle cx="174.7" cy="177.8" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL / XRechnung, : 11,748/s</title></circle>
-<circle cx="358.6" cy="246.7" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL / XRechnung, : 1,939/s</title></circle>
-<circle cx="538.4" cy="322.9" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL / XRechnung, : 264/s</title></circle>
-<polyline points="174.7,178.2 358.6,247.6 538.4,322.8" fill="none" stroke="var(--s2)" stroke-width="2" stroke-linejoin="round"/>
-<circle cx="174.7" cy="178.2" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 11,644/s</title></circle>
-<circle cx="358.6" cy="247.6" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 1,896/s</title></circle>
-<circle cx="538.4" cy="322.8" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 265/s</title></circle>
-<polyline points="174.7,170.2 358.6,242.0 538.4,317.5" fill="none" stroke="var(--s3)" stroke-width="2" stroke-linejoin="round"/>
-<circle cx="174.7" cy="170.2" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 14,336/s</title></circle>
-<circle cx="358.6" cy="242.0" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 2,195/s</title></circle>
-<circle cx="538.4" cy="317.5" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 304/s</title></circle>
-<rect x="572" y="305.5" width="10" height="10" rx="2" fill="var(--s3)"/>
-<text class="lab" x="588" y="314.5">To FatturaPA</text>
-<text class="val" x="588" y="328.5">304/s</text>
-<rect x="572" y="335.5" width="10" height="10" rx="2" fill="var(--s2)"/>
-<text class="lab" x="588" y="344.5">To Factur-X</text>
-<text class="val" x="588" y="358.5">265/s</text>
-<rect x="572" y="365.5" width="10" height="10" rx="2" fill="var(--s1)"/>
-<text class="lab" x="588" y="374.5">To UBL / XRechnung</text>
-<text class="val" x="588" y="388.5">264/s</text>
+<polyline points="174.7,161.8 360.2,238.1 538.6,319.8" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"/>
+<circle cx="174.7" cy="161.8" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL / XRechnung, : 17,879/s</title></circle>
+<circle cx="360.2" cy="238.1" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL / XRechnung, : 2,429/s</title></circle>
+<circle cx="538.6" cy="319.8" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"><title>To UBL / XRechnung, : 286/s</title></circle>
+<polyline points="174.7,160.3 360.2,238.0 538.6,319.2" fill="none" stroke="var(--s2)" stroke-width="2" stroke-linejoin="round"/>
+<circle cx="174.7" cy="160.3" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 18,589/s</title></circle>
+<circle cx="360.2" cy="238.0" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 2,435/s</title></circle>
+<circle cx="538.6" cy="319.2" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"><title>To Factur-X, : 291/s</title></circle>
+<polyline points="174.7,156.3 360.2,234.4 538.6,315.9" fill="none" stroke="var(--s3)" stroke-width="2" stroke-linejoin="round"/>
+<circle cx="174.7" cy="156.3" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 20,628/s</title></circle>
+<circle cx="360.2" cy="234.4" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 2,677/s</title></circle>
+<circle cx="538.6" cy="315.9" r="4" fill="var(--s3)" stroke="var(--surface)" stroke-width="2"><title>To FatturaPA, : 317/s</title></circle>
+<rect x="572" y="303.9" width="10" height="10" rx="2" fill="var(--s3)"/>
+<text class="lab" x="588" y="312.9">To FatturaPA</text>
+<text class="val" x="588" y="326.9">317/s</text>
+<rect x="572" y="333.9" width="10" height="10" rx="2" fill="var(--s2)"/>
+<text class="lab" x="588" y="342.9">To Factur-X</text>
+<text class="val" x="588" y="356.9">291/s</text>
+<rect x="572" y="363.9" width="10" height="10" rx="2" fill="var(--s1)"/>
+<text class="lab" x="588" y="372.9">To UBL / XRechnung</text>
+<text class="val" x="588" y="386.9">286/s</text>
 <rect x="24" y="69" width="10" height="10" rx="2" fill="var(--s1)"/>
 <text class="lab" x="40" y="78">To UBL / XRechnung</text>
 <rect x="193.6" y="69" width="10" height="10" rx="2" fill="var(--s2)"/>

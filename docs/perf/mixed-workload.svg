@@ -22,7 +22,7 @@
 </style>
 <rect width="760" height="348" rx="8" fill="var(--surface)"/>
 <text class="title" x="24" y="32">Small invoices beside large ones</text>
-<text class="sub" x="24" y="52">4-core server. Typical invoices alone vs. while eight 15 MB invoices are being converted.</text>
+<text class="sub" x="24" y="52">4 workers, 4 vCPU container. Typical invoices alone vs. beside eight 15 MB invoices, before and after.</text>
 <line class="grid" x1="150.0" x2="150.0" y1="90" y2="292"/>
 <text class="tick" x="150.0" y="308" text-anchor="middle">0.1 ms</text>
 <line class="grid" x1="292.5" x2="292.5" y1="90" y2="292"/>
