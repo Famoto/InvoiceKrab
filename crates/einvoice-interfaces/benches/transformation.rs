@@ -65,7 +65,11 @@ fn fixture(engine: &Engine, spoke: Spoke, lines: usize) -> Vec<u8> {
 
 /// Short benchmark label: the format name without its version.
 fn label(spoke: Spoke) -> &'static str {
-    spoke.name().split(':').next().expect("split yields one part")
+    spoke
+        .name()
+        .split(':')
+        .next()
+        .expect("split yields one part")
 }
 
 /// Reads `bytes` into a hub via `spoke`, panicking if it does not parse
