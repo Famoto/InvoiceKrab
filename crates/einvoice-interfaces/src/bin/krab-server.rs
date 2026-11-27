@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use einvoice_interfaces::server::{self, Config, MemGate, Timeouts};
+use einvoice_interfaces::server::{self, Config, Lanes, MemGate, Timeouts};
 
 fn main() -> ExitCode {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
@@ -63,14 +63,15 @@ fn main() -> ExitCode {
     eprint!("{}", einvoice_interfaces::cli::version_text("krab-server"));
     eprintln!(
         "krab-server listening on {} — {} workers, {} bytes memory budget, x{} reservation, \
-         {}s body timeout, {}s request timeout, {}s queue timeout",
+         {}s body timeout, {}s request timeout, {}s queue timeout, large from {} bytes",
         config.addr,
         config.workers,
         config.mem_budget_bytes,
         config.mem_blowup,
         config.body_timeout_secs,
         config.request_timeout_secs,
-        config.queue_timeout_secs
+        config.queue_timeout_secs,
+        config.small_bytes
     );
     runtime.block_on(serve(listener, &config))
 }
@@ -97,6 +98,7 @@ async fn serve(listener: std::net::TcpListener, config: &Config) -> ExitCode {
             request: Duration::from_secs(config.request_timeout_secs),
             queue: Duration::from_secs(config.queue_timeout_secs),
         },
+        Lanes::new(config.workers, config.small_bytes),
     );
     if let Err(e) = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

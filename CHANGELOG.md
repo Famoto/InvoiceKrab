@@ -193,6 +193,14 @@ Changes to the mapping DSL are listed under **DSL** in each release.
 
 ### Added
 
+- `krab-server` keeps a worker free for small invoices: bodies of
+  `KRAB_SMALL_BYTES` (default 256 KB) or more take at most `KRAB_WORKERS - 1`
+  transform slots, in arrival order, once their upload is read. Beside eight
+  15 MB uploads on 4 workers, a typical invoice is answered in 3.0 ms
+  (median, 12 ms slowest 1%) instead of 160 ms, at 2,150 instead of 51 per
+  second. While only large invoices arrive one worker idles (15 MB invoices
+  18.6/s instead of 24); setting `KRAB_SMALL_BYTES` above the largest
+  invoice turns this off (#35).
 - `Engine::from_hub_with_capacity` writes into an output buffer reserved
   up front. `Engine::transform` and the server's `/transform` reserve 1.5×
   the input size, so a large output is no longer built by repeated doubling

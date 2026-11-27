@@ -300,7 +300,8 @@ def g_overload(out):
 
 
 def g_mixed(out):
-    """Typical invoices alone, then while eight large ones keep 4 workers busy."""
+    """Typical invoices alone, then while eight large ones keep 4 workers busy,
+    then the large ones alone."""
     scpu, lcpu = split_cpus(4)
     small, large = fixture(out, "ubl", SMALL), fixture(out, "ubl", LARGE)
     with Server(4, scpu) as srv:
@@ -311,7 +312,9 @@ def g_mixed(out):
             time.sleep(3)
             busy = oha(url, small, 8, lcpu, seconds=8)
             bg.result()
-    return {"alone": alone, "busy": busy}
+        # The cost of the worker kept free for small invoices (#35).
+        large_only = oha(url, large, 8, lcpu, seconds=10)
+    return {"alone": alone, "busy": busy, "large_only": large_only}
 
 
 GROUPS = {name[2:]: f for name, f in globals().items() if name.startswith("g_")}

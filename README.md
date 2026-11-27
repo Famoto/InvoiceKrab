@@ -500,6 +500,11 @@ hardware (cgroup-aware, so container limits are respected):
 | `KRAB_BODY_TIMEOUT_SECS` | `30` — longest gap between body frames       |
 | `KRAB_REQUEST_TIMEOUT_SECS` | `300` — deadline for the whole request body |
 | `KRAB_QUEUE_TIMEOUT_SECS` | `60` — longest wait for a memory reservation |
+| `KRAB_SMALL_BYTES`      | `262144` — bodies below it keep a free worker |
+
+Bodies of `KRAB_SMALL_BYTES` or more share at most `KRAB_WORKERS - 1`
+workers, so typical invoices keep being answered in milliseconds while
+multi-MB uploads are converted.
 
 There is no per-document size limit. Instead, each request reserves
 `Content-Length x KRAB_MEM_BLOWUP` bytes from a global budget before its

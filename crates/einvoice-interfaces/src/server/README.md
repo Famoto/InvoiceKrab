@@ -17,7 +17,7 @@ router.
   (async; guards own the gate so they can outlive the handler).
 - `handle.rs` — `handle()`: query + body → `Reply` (status, body, warnings).
 - `router.rs` — `router()`: the axum `Router` wiring routes, per-frame body
-  timeouts, and the gate to the handlers.
+  timeouts, the gate and the large-document slots (`Lanes`) to the handlers.
 - `mod.rs` — module docs and the public re-exports.
 
 ## Configuration
@@ -31,10 +31,16 @@ router.
 | `KRAB_BODY_TIMEOUT_SECS` | `30` — per-frame body read/write timeout      |
 | `KRAB_REQUEST_TIMEOUT_SECS` | `300` — deadline for the whole request body |
 | `KRAB_QUEUE_TIMEOUT_SECS` | `60` — longest wait for a memory reservation |
+| `KRAB_SMALL_BYTES`       | `262144` — bodies below it keep a free worker |
 
 Malformed values are startup errors, never silent fallbacks. `KRAB_WORKERS`
 sets the tokio runtime worker threads and caps the blocking pool that runs
-the CPU-bound transforms, so it bounds transform parallelism.
+the CPU-bound transforms, so it bounds transform parallelism. Bodies of
+`KRAB_SMALL_BYTES` or more are large and share at most `KRAB_WORKERS - 1`
+transform slots, waiting for one in arrival order once the upload is read;
+smaller bodies take any free worker. A typical invoice therefore never waits
+behind multi-MB uploads, at the price of one idle worker while only large
+documents arrive. With one worker nothing is set aside.
 
 ## Endpoints
 

@@ -21,8 +21,9 @@ measured; the test setup is described [at the end](#how-this-was-measured).
 - **Safe under overload.** The service never runs out of memory because of
   traffic. When memory is fully booked, new invoices wait their turn instead
   of failing.
-- **One known limitation.** While very large invoices are being converted,
-  small ones can wait behind them ([details](#known-limitation-mixed-invoice-sizes)).
+- **Small invoices stay fast beside large ones.** One worker is kept free
+  for small invoices, so they are answered in about 3 ms while 15 MB
+  invoices are converted ([details](#mixed-invoice-sizes)).
 
 ## Throughput
 
@@ -276,6 +277,7 @@ override them, set the environment variables below; see the
 | `KRAB_WORKERS` | number of CPU cores | you want to reserve CPU for other processes |
 | `KRAB_MEM_BUDGET_BYTES` | half of the available memory | the container runs other processes, or you want a fixed limit |
 | `KRAB_MEM_BLOWUP` | `6` (memory booked per byte of invoice) | you never receive FatturaPA input: `4` covers every other measured format and allows 1.5 times as many large invoices per GB. Don't go below 4. |
+| `KRAB_SMALL_BYTES` | `262144` (256 KB: larger invoices leave one worker free) | you only convert large invoices in bulk: set it above your largest invoice so they use every worker |
 
 ### Command line or HTTP service?
 
@@ -285,30 +287,42 @@ override them, set the environment variables below; see the
 - **HTTP service (`krab-server`)**: for continuous or high-volume traffic. No
   start-up cost per invoice, all cores used, and bounded memory.
 
-## Known limitation: mixed invoice sizes
+## Mixed invoice sizes
 
-![Large invoices delay small ones](perf/mixed-workload.svg)
+![Small invoices beside large ones](perf/mixed-workload.svg)
 
-| Typical invoice, 4 cores | Invoices per second | Median response | Slowest 1% |
+| Typical invoice, 4 workers, 4 vCPU container | Invoices per second | Median response | Slowest 1% |
 |---|---:|---:|---:|
-| Only typical invoices | 15,100 | 0.5 ms | 1.6 ms |
-| While eight 15 MB invoices are being converted | 59 | 136 ms | 150 ms |
+| Only typical invoices | 8,100 | 0.9 ms | 2.4 ms |
+| While eight 15 MB invoices are being converted, before | 51 | 160 ms | 220 ms |
+| The same, with a worker kept free for small invoices | 2,150 | 3.0 ms | 12 ms |
 
-Each worker converts one invoice at a time, in arrival order. If every
-worker is busy with a large invoice, small invoices wait until one finishes.
-Health checks are not affected.
+Each worker converts one invoice at a time. Invoices of 256 KB or more
+(`KRAB_SMALL_BYTES`) take at most all workers but one, in arrival order, so
+the last worker is always free for smaller invoices. Before, eight 15 MB
+invoices took every worker and a typical invoice waited until one finished
+([#35](https://github.com/Famoto/InvoiceKrab/issues/35)). Health checks were
+never affected.
 
-**Workaround:** if your traffic mixes very large invoices (several MB) with
-time-sensitive small ones, route the large ones to a separate instance.
-**Planned fix:** keep capacity reserved for small invoices
-([#35](https://github.com/Famoto/InvoiceKrab/issues/35)).
+The price is one idle worker while only large invoices arrive: 15 MB
+invoices alone ran at 18.6 per second instead of 24 (−23%, about one worker
+in four). If you only convert large invoices in bulk, set
+`KRAB_SMALL_BYTES` above your largest invoice so they use every worker.
+With a single worker nothing is kept free.
+
+This before/after comparison was measured on a 4 vCPU container (both
+builds alternating on the same machine), not on the 8-core machine of the
+other sections. There, before this change, the same test gave 15,100
+typical invoices per second alone (0.5 ms median) and 59 per second
+(136 ms median, 150 ms slowest 1%) beside the large ones; `measure.py mixed`
+repeats it, including the large-only throughput.
 
 ## How this was measured
 
 | | |
 |---|---|
 | Hardware | AMD Ryzen 7 3700X (8 cores, 16 threads), 31 GB RAM, Linux 7.3; a desktop machine with the default `powersave` governor and boost on, otherwise idle |
-| Build | optimized release build (fat LTO) at commit `a1f82fc`, November 2026; memory per format also measured on the musl build used by the Docker image. The faster XML output comparison is older and was measured on a 4 vCPU / 15 GB Linux container |
+| Build | optimized release build (fat LTO) at commit `a1f82fc`, November 2026; memory per format also measured on the musl build used by the Docker image. The faster XML output comparison is older and, like the mixed-size comparison with a worker kept free, was measured on a 4 vCPU / 15 GB Linux container |
 | Service settings | defaults (memory budget half of RAM) unless stated; `KRAB_WORKERS` set to the number of cores. "4 cores" means the service pinned (`taskset`) to 4 physical cores with their second hardware threads left idle |
 | Test tool | [`oha`](https://github.com/hatoo/oha) HTTP load generator on the same machine, pinned to the cores the service did not use (at 8 cores it shared them), 32 parallel connections (8 for 10,000 lines and for the mixed test), 6–10 s per point after a 1 s warm-up; core scaling is the median of three runs. Command-line times with [`hyperfine`](https://github.com/sharkdp/hyperfine) (median, at least 20 runs); engine times with `criterion` |
 | Invoices | the EN 16931 example invoice (`testfiles/en16931-full-ubl.xml`, 16 KB, 3 lines) and copies with its lines repeated to 100, 1,000, 10,000 and 100,000 lines, each converted by `krab-cli` into the other four formats. Memory: one request on a fresh server, peak minus idle resident memory, every format pair at 1,000 and 10,000 lines |

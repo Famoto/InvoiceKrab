@@ -16,7 +16,8 @@
 //!   [`Reply`] (status, body, warnings); reuses the [`cli`](crate::cli)
 //!   format-resolution and diagnostic-rendering helpers.
 //! - [`router`] — [`router()`](router::router): the axum [`Router`] wiring
-//!   routes, per-frame body timeouts, and the gate to the handlers.
+//!   routes, per-frame body timeouts, the gate, and the large-document slots
+//!   ([`Lanes`]) to the handlers.
 //!
 //! # Behavior
 //!
@@ -29,7 +30,9 @@
 //! Requests without a Content-Length cannot be sized and are refused with
 //! 411. Body reads and writes carry a per-frame timeout and the whole upload
 //! a deadline, so neither a silent nor a trickling peer can pin a
-//! reservation indefinitely.
+//! reservation indefinitely. Once read, a large body waits for one of
+//! `workers - 1` transform slots, so a small document always finds a free
+//! worker instead of queueing behind multi-MB transforms.
 //!
 //! # Testing
 //!
@@ -47,4 +50,4 @@ pub use axum::Router;
 pub use config::{Config, ConfigError};
 pub use gate::{Guard, MemGate, NeverFits};
 pub use handle::{Reply, analyze, formats, handle};
-pub use router::{Timeouts, router};
+pub use router::{Lanes, Timeouts, router};
