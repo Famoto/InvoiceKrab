@@ -41,22 +41,22 @@
 <text class="tick" x="720.0" y="310" text-anchor="middle">14×</text>
 <text class="axlab" x="485.0" y="332" text-anchor="middle">Peak memory per request ÷ invoice file size</text>
 <text class="lab" x="238" y="143" text-anchor="end">FatturaPA input</text>
-<path d="M250.0,120.0 H632.1 Q636.1,120.0 636.1,124.0 V134.0 Q636.1,138.0 632.1,138.0 H250.0 Z" fill="var(--s1)"><title>FatturaPA input, glibc (Linux build): 11.5×</title></path>
-<text class="val" x="642.1" y="133" stroke="var(--surface)" stroke-width="4" paint-order="stroke">11.5×</text>
-<path d="M250.0,140.0 H548.1 Q552.1,140.0 552.1,144.0 V154.0 Q552.1,158.0 548.1,158.0 H250.0 Z" fill="var(--s2)"><title>FatturaPA input, musl (Docker image): 9×</title></path>
-<text class="val" x="558.1" y="153" stroke="var(--surface)" stroke-width="4" paint-order="stroke">9×</text>
+<path d="M250.0,120.0 H403.8 Q407.8,120.0 407.8,124.0 V134.0 Q407.8,138.0 403.8,138.0 H250.0 Z" fill="var(--s1)"><title>FatturaPA input, glibc (Linux build): 4.7×</title></path>
+<text class="val" x="413.8" y="133" stroke="var(--surface)" stroke-width="4" paint-order="stroke">4.7×</text>
+<path d="M250.0,140.0 H370.2 Q374.2,140.0 374.2,144.0 V154.0 Q374.2,158.0 370.2,158.0 H250.0 Z" fill="var(--s2)"><title>FatturaPA input, musl (Docker image): 3.7×</title></path>
+<text class="val" x="380.2" y="153" stroke="var(--surface)" stroke-width="4" paint-order="stroke">3.7×</text>
 <text class="lab" x="238" y="201" text-anchor="end">UBL, XRechnung, Peppol input</text>
-<path d="M250.0,178.0 H444.1 Q448.1,178.0 448.1,182.0 V192.0 Q448.1,196.0 444.1,196.0 H250.0 Z" fill="var(--s1)"><title>UBL, XRechnung, Peppol input, glibc (Linux build): 5.9×</title></path>
-<text class="val" x="454.1" y="191" stroke="var(--surface)" stroke-width="4" paint-order="stroke">5.9×</text>
-<path d="M250.0,198.0 H397.1 Q401.1,198.0 401.1,202.0 V212.0 Q401.1,216.0 397.1,216.0 H250.0 Z" fill="var(--s2)"><title>UBL, XRechnung, Peppol input, musl (Docker image): 4.5×</title></path>
-<text class="val" x="407.1" y="211" stroke="var(--surface)" stroke-width="4" paint-order="stroke">4.5×</text>
+<path d="M250.0,178.0 H353.4 Q357.4,178.0 357.4,182.0 V192.0 Q357.4,196.0 353.4,196.0 H250.0 Z" fill="var(--s1)"><title>UBL, XRechnung, Peppol input, glibc (Linux build): 3.2×</title></path>
+<text class="val" x="363.4" y="191" stroke="var(--surface)" stroke-width="4" paint-order="stroke">3.2×</text>
+<path d="M250.0,198.0 H323.2 Q327.2,198.0 327.2,202.0 V212.0 Q327.2,216.0 323.2,216.0 H250.0 Z" fill="var(--s2)"><title>UBL, XRechnung, Peppol input, musl (Docker image): 2.3×</title></path>
+<text class="val" x="333.2" y="211" stroke="var(--surface)" stroke-width="4" paint-order="stroke">2.3×</text>
 <text class="lab" x="238" y="259" text-anchor="end">Factur-X input</text>
-<path d="M250.0,236.0 H373.6 Q377.6,236.0 377.6,240.0 V250.0 Q377.6,254.0 373.6,254.0 H250.0 Z" fill="var(--s1)"><title>Factur-X input, glibc (Linux build): 3.8×</title></path>
-<text class="val" x="383.6" y="249" stroke="var(--surface)" stroke-width="4" paint-order="stroke">3.8×</text>
-<path d="M250.0,256.0 H350.1 Q354.1,256.0 354.1,260.0 V270.0 Q354.1,274.0 350.1,274.0 H250.0 Z" fill="var(--s2)"><title>Factur-X input, musl (Docker image): 3.1×</title></path>
-<text class="val" x="360.1" y="269" stroke="var(--surface)" stroke-width="4" paint-order="stroke">3.1×</text>
-<line class="ref" x1="652.9" x2="652.9" y1="110" y2="294"/>
-<text class="val" x="652.9" y="104" text-anchor="middle">default booking 12×</text>
+<path d="M250.0,236.0 H329.9 Q333.9,236.0 333.9,240.0 V250.0 Q333.9,254.0 329.9,254.0 H250.0 Z" fill="var(--s1)"><title>Factur-X input, glibc (Linux build): 2.5×</title></path>
+<text class="val" x="339.9" y="249" stroke="var(--surface)" stroke-width="4" paint-order="stroke">2.5×</text>
+<path d="M250.0,256.0 H319.9 Q323.9,256.0 323.9,260.0 V270.0 Q323.9,274.0 319.9,274.0 H250.0 Z" fill="var(--s2)"><title>Factur-X input, musl (Docker image): 2.2×</title></path>
+<text class="val" x="329.9" y="269" stroke="var(--surface)" stroke-width="4" paint-order="stroke">2.2×</text>
+<line class="ref" x1="451.4" x2="451.4" y1="110" y2="294"/>
+<text class="val" x="451.4" y="104" text-anchor="middle">default booking 6×</text>
 <line class="base" x1="250.0" x2="250.0" y1="110" y2="294"/>
 <rect x="24" y="69" width="10" height="10" rx="2" fill="var(--s1)"/>
 <text class="lab" x="40" y="78">glibc (Linux build)</text>

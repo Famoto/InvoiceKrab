@@ -19,7 +19,10 @@
 //!   its embedded [`contract::TransformationContract`], [`Spoke::schema`] and
 //!   [`Spoke::samples`] its schema-conformance declarations, which
 //!   [`conformance::check`] turns into checks.
-//! - [`MainKey`] — the generated typed canonical hub.
+//! - [`MainKey`] — the generated typed canonical hub. A transform keeps it
+//!   packed in between (the generated `CompactHub`: the root collections'
+//!   items as records), and builds a [`MainKey`] only for
+//!   [`Engine::to_hub`] and from [`Engine::from_hub`]'s argument.
 //! - [`EngineError`] — XML (de)serialization failures at the crate boundary.
 //!
 //! Mapping-level outcomes (missing required fields, type errors, fallbacks taken)
@@ -38,6 +41,8 @@
 //!     .expect("well-formed XML");
 //! assert!(!result.has_errors());
 //! ```
+
+use std::borrow::Cow;
 
 use einvoice_transformator::result::{MappingDiagnostic, MappingResult, Severity};
 
@@ -67,6 +72,7 @@ mod generated {
 }
 
 pub use generated::Spoke;
+use generated::hub::CompactHub;
 pub use generated::hub::MainKey;
 
 /// A failure at the crate boundary: the bytes are not a document of the source
@@ -145,11 +151,49 @@ impl Engine {
         spoke: Spoke,
         bytes: &[u8],
     ) -> Result<MappingResult<MainKey>, EngineError> {
-        let bytes = encoding::to_utf8(bytes)?;
-        let bytes = bytes.as_ref();
+        Ok(into_main(self.read(spoke, encoding::to_utf8(bytes)?)?))
+    }
+
+    /// [`Engine::to_hub`] taking the document by value: its bytes are freed
+    /// as soon as they are parsed, before the reader builds the hub, so the
+    /// raw document and the hub are never in memory together.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::to_hub`].
+    pub fn to_hub_owned(
+        &self,
+        spoke: Spoke,
+        bytes: Vec<u8>,
+    ) -> Result<MappingResult<MainKey>, EngineError> {
+        Ok(into_main(self.read_owned(spoke, bytes)?))
+    }
+
+    /// [`Engine::to_hub_owned`] into the packed hub.
+    fn read_owned(
+        &self,
+        spoke: Spoke,
+        bytes: Vec<u8>,
+    ) -> Result<MappingResult<CompactHub>, EngineError> {
+        let utf8 = match encoding::to_utf8(&bytes)? {
+            Cow::Owned(transcoded) => {
+                drop(bytes);
+                transcoded
+            }
+            Cow::Borrowed(_) => bytes,
+        };
+        self.read(spoke, Cow::Owned(utf8))
+    }
+
+    /// [`Engine::to_hub`] into the packed hub.
+    fn read(
+        &self,
+        spoke: Spoke,
+        bytes: Cow<'_, [u8]>,
+    ) -> Result<MappingResult<CompactHub>, EngineError> {
         spoke
             .identity()
-            .check(bytes)
+            .check(&bytes)
             .map_err(|error| EngineError::Identity {
                 format: spoke.name(),
                 error,
@@ -191,7 +235,17 @@ impl Engine {
     pub fn from_hub_with_capacity(
         &self,
         spoke: Spoke,
-        mut hub: MainKey,
+        hub: MainKey,
+        capacity: usize,
+    ) -> Result<MappingResult<String>, EngineError> {
+        self.write(spoke, hub.into(), capacity)
+    }
+
+    /// [`Engine::from_hub_with_capacity`] from the packed hub.
+    fn write(
+        &self,
+        spoke: Spoke,
+        mut hub: CompactHub,
         capacity: usize,
     ) -> Result<MappingResult<String>, EngineError> {
         // EN 16931 totals the hub lacks are computed by their calculation
@@ -258,15 +312,47 @@ impl Engine {
         to: Spoke,
         bytes: &[u8],
     ) -> Result<MappingResult<String>, EngineError> {
-        let read = self.to_hub(from, bytes)?;
+        let hint = output_hint(bytes.len());
+        self.write_read(to, self.read(from, encoding::to_utf8(bytes)?)?, hint)
+    }
+
+    /// [`Engine::transform`] taking the document by value, freed once parsed
+    /// ([`Engine::to_hub_owned`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::transform`].
+    pub fn transform_owned(
+        &self,
+        from: Spoke,
+        to: Spoke,
+        bytes: Vec<u8>,
+    ) -> Result<MappingResult<String>, EngineError> {
+        let hint = output_hint(bytes.len());
+        self.write_read(to, self.read_owned(from, bytes)?, hint)
+    }
+
+    /// The write half of a transform: writes the hub `read` produced as `to`,
+    /// after the read half's diagnostics.
+    fn write_read(
+        &self,
+        to: Spoke,
+        read: MappingResult<CompactHub>,
+        hint: usize,
+    ) -> Result<MappingResult<String>, EngineError> {
         let Some(hub) = read.value else {
             return Ok(MappingResult::new(None, read.diagnostics));
         };
-        let written = self.from_hub_with_capacity(to, hub, output_hint(bytes.len()))?;
+        let written = self.write(to, hub, hint)?;
         let mut diagnostics = read.diagnostics;
         diagnostics.extend(written.diagnostics);
         Ok(MappingResult::new(written.value, diagnostics))
     }
+}
+
+/// A read into the packed hub as the public [`MainKey`].
+fn into_main(read: MappingResult<CompactHub>) -> MappingResult<MainKey> {
+    MappingResult::new(read.value.map(MainKey::from), read.diagnostics)
 }
 
 /// The output buffer to reserve for a document read from `input_len` bytes:
@@ -619,14 +705,23 @@ mod tests {
                 .bytes()
                 .map(|b| if b == b'@' { 0xE8 } else { b }),
         );
-        let result = Engine::new()
+        let engine = Engine::new();
+        let borrowed = engine
             .to_hub(Spoke::UblInvoice, &xml)
             .expect("Latin-1 is decoded");
-        assert!(!result.has_errors(), "{:?}", result.diagnostics);
+        assert!(!borrowed.has_errors(), "{:?}", borrowed.diagnostics);
         assert_eq!(
-            result.value.expect("hub").invoice_note.as_deref(),
+            borrowed.value.expect("hub").invoice_note.as_deref(),
             Some("Caff\u{E8}")
         );
+        // The owned path reads the same, transcoded or not.
+        for doc in [xml, UBL.to_vec()] {
+            let owned = engine
+                .to_hub_owned(Spoke::UblInvoice, doc.clone())
+                .expect("owned");
+            let borrowed = engine.to_hub(Spoke::UblInvoice, &doc).expect("borrowed");
+            assert_eq!(owned.value, borrowed.value);
+        }
     }
 
     #[test]
@@ -792,5 +887,107 @@ mod tests {
             .to_hub(Spoke::UblInvoice, versioned("9.9").as_bytes())
             .unwrap_err();
         assert!(err.to_string().contains("unsupported version"), "{err}");
+    }
+
+    /// Markup characters in free-text values survive the generated writers
+    /// and readers: every sample read, its free-text fields spiced, written
+    /// as every target and read back as that target.
+    #[test]
+    fn test_markup_round_trips_through_every_writer_and_reader() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let engine = Engine::new();
+        let raw = "a & b < c > d \"e\" 'f'\r\n\tü";
+        let mut pairs = 0;
+        for &reader in Spoke::ALL {
+            for &file in reader.samples() {
+                let bytes = std::fs::read(root.join(file)).expect(file);
+                let mut hub = engine
+                    .to_hub(reader, &bytes)
+                    .expect(file)
+                    .value
+                    .expect(file);
+                hub.invoice_note = Some(raw.into());
+                hub.seller_name = Some(raw.into());
+                hub.buyer_name = Some(raw.into());
+                if let Some(line) = hub.invoice_lines.first_mut() {
+                    line.item_name = Some(raw.into());
+                }
+                for &target in Spoke::ALL {
+                    let xml = generated::write(target, hub.clone().into(), 0)
+                        .expect(file)
+                        .value
+                        .expect(file);
+                    let back = engine
+                        .to_hub(target, xml.as_bytes())
+                        .unwrap_or_else(|e| panic!("{file} as {}: {e}", target.name()))
+                        .value
+                        .expect(file);
+                    let line = back.invoice_lines.first().and_then(|l| l.item_name.clone());
+                    for value in [back.seller_name, back.buyer_name, line] {
+                        assert_eq!(value.as_deref(), Some(raw), "{file} as {}", target.name());
+                    }
+                    pairs += 1;
+                }
+            }
+        }
+        assert!(pairs > 0);
+    }
+
+    /// The generated reader on edge cases of XML, each a UBL document
+    /// changed in one place. The outcomes are quick-xml's serde
+    /// deserializer's, recorded when it was replaced.
+    #[test]
+    fn test_reader_edge_cases_read_as_serde_read_them() {
+        let ubl = std::str::from_utf8(UBL).expect("utf-8");
+        let id = "<ID>INV-42</ID>";
+        let amount = r#"<TaxAmount currencyID="EUR">19.00</TaxAmount><TaxSubtotal>"#;
+        let xsi = r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance""#;
+        let ok = r#"Some("INV-42") None []"#;
+        let missing = r#"None None ["REQUIRED_MISSING"]"#;
+        let empty_root = format!("None None {:?}", ["REQUIRED_MISSING"; 14]);
+        let cases: Vec<(&str, String, &str)> = vec![
+            ("references", ubl.replace(id, "<ID>A&amp;B &#x41;&#65; &lt;x&gt;</ID>"), r#"Some("A&B AA <x>") None []"#),
+            ("CDATA", ubl.replace(id, "<ID>INV<![CDATA[<42>]]> x</ID>"), r#"Some("INV<42> x") None []"#),
+            ("comment and PI in text", ubl.replace(id, "<ID>INV<!-- c -->-4<?pi x?>2</ID>"), ok),
+            ("whitespace in text", ubl.replace(id, "<ID>\r\n  INV-42 \t</ID>"), ok),
+            ("empty element", ubl.replace(id, "<ID/>"), missing),
+            ("empty pair", ubl.replace(id, "<ID></ID>"), missing),
+            ("nil", ubl.replace(id, &format!(r#"<ID {xsi} xsi:nil="true">x</ID>"#)), missing),
+            ("nil optional", ubl.replace(id, &format!(r#"{id}<Note {xsi} xsi:nil="true"/>"#)), ok),
+            ("duplicate element", ubl.replace(id, "<ID>A</ID><ID>B</ID>"), "duplicate field `ID`"),
+            ("repeat after another element", ubl.replace("<InvoiceLine><ID>2</ID>", "<Note>x</Note><InvoiceLine><ID>2</ID>"), "duplicate field `InvoiceLine`"),
+            ("unknown elements", ubl.replace(id, &format!(r#"<Unknown a="1"><Deep>{id}</Deep></Unknown><Other/>{id}"#)), ok),
+            ("other prefix", ubl.replace(id, r#"<x:ID xmlns:x="urn:x">INV-42</x:ID>"#), ok),
+            ("attribute references", ubl.replacen(amount, r#"<TaxAmount currencyID="E&amp;U&#x52;">19.00</TaxAmount><TaxSubtotal>"#, 1), r#"Some("INV-42") None ["TYPE_INVALID"]"#),
+            ("prefixed attribute twice", ubl.replacen(amount, r#"<TaxAmount currencyID="EUR" x:currencyID="USD" xmlns:x="urn:x">19.00</TaxAmount><TaxSubtotal>"#, 1), "duplicate field `@currencyID`"),
+            ("prolog", format!("<?xml version=\"1.0\"?>\n<!DOCTYPE Invoice>\n<!-- c -->\n{ubl}"), ok),
+            ("BOM", format!("\u{feff}{ubl}"), ok),
+            ("CRLF", ubl.replace('\n', "\r\n"), ok),
+            ("empty root", "<Invoice/>".to_string(), &empty_root),
+            ("element in text", ubl.replace(id, "<ID>INV<b>42</b></ID>"), "cannot deserialize primitive type from mixed content, found unexpected tag <b>"),
+            ("unknown entity", ubl.replace(id, "<ID>&foo;</ID>"), "at 0..3: unrecognized entity `foo`"),
+            ("truncated", ubl[..ubl.len() / 2].to_string(), "ill-formed document: start tag not closed: `</Invoice>` not found before end of input"),
+            ("text before the root", format!("garbage{ubl}"), r#"invalid type: string "garbage", expected struct Invoice"#),
+            ("blank before the root", format!("\n \t{ubl}"), ok),
+            ("repeat under one prefix", ubl.replace(id, &format!(r#"{id}<x:Note xmlns:x="urn:x">a</x:Note><x:Note xmlns:x="urn:x">b</x:Note>"#)), r#"Some("INV-42") Some("a\nb") []"#),
+            ("repeat under another prefix", ubl.replace(id, &format!(r#"{id}<Note>a</Note><x:Note xmlns:x="urn:x">b</x:Note>"#)), "duplicate field `Note`"),
+            ("unknown entity in an ignored attribute", ubl.replacen(amount, r#"<TaxAmount currencyID="EUR" x="&foo;">19.00</TaxAmount><TaxSubtotal>"#, 1), ok),
+        ];
+        for (name, doc, want) in cases {
+            assert!(doc != ubl, "edge case `{name}` changed nothing");
+            let got = match generated::read(Spoke::UblInvoice, doc.as_bytes().into()) {
+                Ok(read) => {
+                    let hub = read.value.expect("reader always yields a hub");
+                    let codes: Vec<_> = read
+                        .diagnostics
+                        .iter()
+                        .map(|d| d.code.to_string())
+                        .collect();
+                    format!("{:?} {:?} {codes:?}", hub.invoice_number, hub.invoice_note)
+                }
+                Err(e) => e.to_string(),
+            };
+            assert_eq!(got, want, "edge case `{name}`");
+        }
     }
 }

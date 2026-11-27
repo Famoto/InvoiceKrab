@@ -66,6 +66,80 @@ Changes to the mapping DSL are listed under **DSL** in each release.
 
 ### Changed
 
+- Every target format's XML is written by a generated writer: each source
+  struct gets a `write_xml` (`einvoice-dsl` `codegen/source.rs`, escapes in
+  `einvoice_transformator::xml`) that writes straight into the output, in
+  place of quick-xml's serde serializer, which copied the document once per
+  nesting level. The output is byte for byte the same (tested against the
+  serializer on every sample and target). A conversion takes 18–33% less
+  server CPU, and peak memory drops most where the output is large:
+  FatturaPA → Factur-X from 14.7× to 9.3× of the body (glibc, 1 MB). That
+  route could exceed the default 12× reservation before; it now stays
+  inside it. A FatturaPA-free deployment can now set `KRAB_MEM_BLOWUP=6`
+  (was 9).
+- Every source format's XML is read by a generated reader too: each source
+  struct gets a `read_xml`, a pull reader over quick-xml's events, in place
+  of quick-xml's serde deserializer. It reads what the deserializer read
+  (tested against it on every sample, the corpus and edge cases) about
+  twice as fast: a document round trip takes 28–39% fewer instructions. A
+  mapping edit rebuilds the binaries in about a fifth less time (perf
+  profile), and each binary is 2.5 MB smaller.
+- The XML of a source format is read into, and written from, a compact
+  record instead of one struct per element: the values side by side in one
+  buffer, each tagged with a number the generated code gives the node from
+  the mapping (`einvoice_transformator::record`). Absent elements, empty
+  containers and the struct and `Vec` headers no longer take memory. For a
+  UBL invoice of 10,000 lines the source record is 2.2 MB instead of
+  10.7 MB, the target record 4.3 MB instead of 9.8 MB, and a conversion
+  makes 18 allocations per line instead of 44. The serde derives are gone
+  from the generated code (quick-xml stays for parsing); refusals of
+  malformed XML are worded as quick-xml's deserializer worded them, which
+  a test records on 26 edge cases.
+- The server and the CLI free the uploaded document as soon as it is
+  parsed, before the hub is built (`Engine::to_hub_owned`,
+  `Engine::transform_owned`), so the raw upload and the hub are never in
+  memory together. With the compact records, peak memory per request
+  (fresh server, idle excluded) for a UBL invoice of 10,000 lines (14.5 MB)
+  is 24.8 MB instead of 33.5 MB (glibc) and 16.8 MB in the Docker image
+  (musl), 1.2× the upload. From 1 MB the worst route, FatturaPA →
+  Factur-X, peaks at 6.7× the upload (glibc) and 3.9× (musl), every other
+  source at 3.4× and 2.2× at most; the command line needs 103–164 MB
+  instead of 255–298 MB for an invoice of 100,000 lines. The default
+  `KRAB_MEM_BLOWUP=12` is unchanged; a FatturaPA-free deployment can now
+  set `KRAB_MEM_BLOWUP=4` (was 6). docs/PERFORMANCE.md, its charts and the
+  blowup guidance are updated.
+- A conversion keeps the canonical hub's repeated items (invoice lines, VAT
+  breakdown, allowances and charges, …) packed between the reader and the
+  writer, as the source records keep a document's values: one buffer per
+  collection instead of a struct per item (`einvoice_transformator::record::Packed`).
+  The hub of a UBL invoice of 10,000 lines takes 2.0 MB instead of 9.4 MB,
+  of a FatturaPA one 0.8 MB instead of 7.7 MB. `MainKey` is unchanged, its
+  keys included: `Engine::to_hub` returns it and `Engine::from_hub` takes it,
+  converting to and from the packed form; `Engine::transform`,
+  `Engine::transform_owned` and the server (which now calls
+  `transform_owned`) never build it. The derivation rules read the packed
+  items and decode only those they fill. Peak memory per request (fresh
+  server, idle excluded), 10,000 lines: glibc 18–28% lower on every route
+  but those into FatturaPA (UBL → UBL 24.8 → 19.2 MB, FatturaPA → UBL 16.7
+  → 12.1 MB); musl (Docker image) unchanged except FatturaPA → FatturaPA,
+  8.9 → 5.1 MB. From 1 MB the worst route peaks at 4.9× the upload (glibc,
+  was 6.7×); four 15 MB invoices at once take 73 MB instead of 81 MB. The
+  server's CPU per request rises 4–9% for UBL and up to 15% for a 1 MB
+  FatturaPA invoice whose lines the rules fill. Outputs and diagnostics are
+  byte-identical to the build before on every sample, the corpus and the
+  edge cases, for every target.
+- The default `KRAB_MEM_BLOWUP` is 6 instead of 12. With the packed hub the
+  worst measured route peaks at 4.9× the upload (glibc, 4.2× in the Docker
+  image), so the server books half as much memory per request: twice as many
+  large invoices run at once from the same budget, and the largest invoice
+  accepted is 1/12 of the container's memory instead of 1/24 (about 170 MB
+  for 2 GB). `KRAB_MEM_BLOWUP=4` still suits a FatturaPA-free deployment;
+  every other source peaks at 3.0× at most. docs/PERFORMANCE.md is
+  re-measured: throughput, scaling, single-invoice time and memory, under
+  load and overload, on copies of the EN 16931 example invoice (the OASIS
+  example lacks fields that XRechnung, Peppol and FatturaPA require). One
+  core converts about 4,100 typical invoices per second; a 100,000-line
+  invoice (152 MB) takes 1.4 s and 170–220 MB on the command line.
 - The bundled mappings read repeated payment means: UBL `PaymentMeans`, CII
   `SpecifiedTradeSettlementPaymentMeans` and FatturaPA `DettaglioPagamento`
   are the new hub collection `CreditTransfers` (BG-17, one item per

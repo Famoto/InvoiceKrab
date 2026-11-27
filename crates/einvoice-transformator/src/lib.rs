@@ -20,6 +20,9 @@
 //!   forms.
 //! - [`result`] — [`MappingResult`] and [`MappingDiagnostic`], the structured
 //!   mapper output and runtime diagnostic model.
+//! - [`xml`] — the escapes the generated XML writers call.
+//! - [`record`] — packed records: a source document's values in one buffer,
+//!   and the hub's collections kept packed ([`record::Packed`]).
 //!
 //! # Behavior
 //!
@@ -35,8 +38,10 @@
 
 pub mod codec;
 pub mod normalize;
+pub mod record;
 pub mod result;
 pub mod validate;
+pub mod xml;
 
 pub use codec::{
     decode_bool, decode_date, decode_datetime, encode_bool, encode_date, encode_datetime,

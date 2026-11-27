@@ -21,6 +21,8 @@ references the exact type and function names exported here.
   `empty_as_missing`) emitted as direct function calls.
 - `validate.rs` — lexical shape checks (`is_currency`, `is_date`, `is_datetime`,
   `is_unit_code`) the generated reader calls before building a field.
+- `xml.rs` — the escapes (`text`, `attr`, `element`) the generated XML
+  writers call, byte-for-byte those of quick-xml's serializer.
 
 ## Behavior
 

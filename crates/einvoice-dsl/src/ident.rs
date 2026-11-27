@@ -74,6 +74,9 @@ pub(crate) const RESERVED_TYPE_NAMES: &[&str] = &[
     "MappingResult",
     "Severity",
     "MainKey",
+    "CompactHub",
+    "Index",
+    "Draft",
 ];
 
 /// Whether `s` is a Rust keyword.
@@ -176,6 +179,8 @@ mod tests {
     #[case("my-root", false)]
     #[case("Self", false)]
     #[case("Option", false)]
+    #[case("Index", false)]
+    #[case("Draft", false)]
     #[case("1Root", false)]
     fn test_is_root_type_name(#[case] s: &str, #[case] ok: bool) {
         assert_eq!(is_root_type_name(s), ok, "{s:?}");

@@ -21,7 +21,8 @@
 //! the whole compiler, not a partial reimplementation of it. The result is
 //! emitted, into `OUT_DIR`, as:
 //!
-//! - `hub.rs` — the typed `MainKey` hub, derived from the union of every spoke's
+//! - `hub.rs` — the typed `MainKey` hub (and `CompactHub`, its packed form the
+//!   mappers run on), derived from the union of every spoke's
 //!   canonical keys.
 //! - `<slug>.rs` — one per spoke: its typed source structs, `from_xml`/`to_xml`,
 //!   and the `read`/`write` mappers. Spokes generating identical struct text
@@ -258,7 +259,7 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
     );
 
     out.push_str("use einvoice_transformator::result::MappingResult;\n");
-    out.push_str("use hub::MainKey;\n\n");
+    out.push_str("use hub::CompactHub;\n\n");
 
     // Structs modules shared by spokes with identical synthesized source models.
     for (name, _) in &plan.shared_modules {
@@ -450,16 +451,19 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
         );
     }
 
-    // read dispatch: source bytes -> MainKey.
-    out.push_str("/// Deserializes `bytes` for `spoke` and runs its generated reader.\n");
+    // read dispatch: source bytes -> CompactHub.
+    // The bytes are dropped once parsed: an owned input is freed before the
+    // reader builds the hub, and the source record holds the values alone.
+    out.push_str("/// Deserializes `bytes` for `spoke` and runs its generated reader; owned\n");
+    out.push_str("/// bytes are freed as soon as they are parsed.\n");
     out.push_str(
-        "pub fn read(spoke: Spoke, bytes: &[u8]) -> Result<MappingResult<MainKey>, quick_xml::DeError> {\n",
+        "pub fn read(spoke: Spoke, bytes: std::borrow::Cow<'_, [u8]>) -> Result<MappingResult<CompactHub>, quick_xml::DeError> {\n",
     );
     out.push_str("    match spoke {\n");
     for spoke in spokes {
         let _ = writeln!(
             out,
-            "        Spoke::{v} => {{\n            let source = {s}::from_xml(bytes)?;\n            Ok({s}::read(source))\n        }}",
+            "        Spoke::{v} => {{\n            let source = {s}::from_xml(&bytes)?;\n            drop(bytes);\n            Ok({s}::read(source))\n        }}",
             v = spoke.variant,
             s = spoke.slug
         );
@@ -467,12 +471,12 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
     out.push_str("    }\n");
     out.push_str("}\n\n");
 
-    // write dispatch: MainKey -> source XML. The hub is consumed: the writers
+    // write dispatch: CompactHub -> source XML. The hub is consumed: the writers
     // move its values into the target struct instead of cloning them.
     out.push_str("/// Runs `spoke`'s generated writer over `hub` and serializes to XML, into a\n");
     out.push_str("/// buffer reserved for `capacity` bytes.\n");
     out.push_str(
-        "pub fn write(spoke: Spoke, hub: MainKey, capacity: usize) -> Result<MappingResult<String>, quick_xml::SeError> {\n",
+        "pub fn write(spoke: Spoke, hub: CompactHub, capacity: usize) -> Result<MappingResult<String>, quick_xml::SeError> {\n",
     );
     out.push_str("    match spoke {\n");
     for spoke in spokes {
@@ -484,7 +488,7 @@ fn generate_dispatch(spokes: &[Spoke], plan: &SpokeDedupPlan) -> String {
         );
     }
     out.push_str("    }\n");
-    out.push_str("}\n");
+    out.push_str("}\n\n");
 
     out
 }

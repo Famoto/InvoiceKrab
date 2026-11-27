@@ -496,7 +496,7 @@ hardware (cgroup-aware, so container limits are respected):
 | `KRAB_ADDR`             | `0.0.0.0:8080`                                |
 | `KRAB_WORKERS`          | available parallelism                         |
 | `KRAB_MEM_BUDGET_BYTES` | detected memory x 1/2 (cgroup v2 limit first) |
-| `KRAB_MEM_BLOWUP`       | `12` — reservation = Content-Length x blowup  |
+| `KRAB_MEM_BLOWUP`       | `6` — reservation = Content-Length x blowup   |
 | `KRAB_BODY_TIMEOUT_SECS` | `30` — longest gap between body frames       |
 | `KRAB_REQUEST_TIMEOUT_SECS` | `300` — deadline for the whole request body |
 | `KRAB_QUEUE_TIMEOUT_SECS` | `60` — longest wait for a memory reservation |
@@ -508,11 +508,11 @@ it is exhausted, so request traffic can never drive the process out of
 memory. A queued request is shed with `503` after `KRAB_QUEUE_TIMEOUT_SECS`,
 and an admitted one must deliver its whole body within
 `KRAB_REQUEST_TIMEOUT_SECS`, so a slow or stalled client cannot hold the
-budget indefinitely. The default blowup of 12 is the worst measured peak (a FatturaPA
-source written as Factur-X) rounded up; `KRAB_MEM_BLOWUP=9` is safe when
+budget indefinitely. The default blowup of 6 covers the worst measured peak (a
+FatturaPA source written as Factur-X, 4.7x); `KRAB_MEM_BLOWUP=4` is safe when
 FatturaPA is never an input. A request larger than budget / blowup is
-refused with `413` — with the defaults, about 1/24 of the memory limit (e.g.
-~85 MB for a 2 GB container). See
+refused with `413` — with the defaults, about 1/12 of the memory limit (e.g.
+~170 MB for a 2 GB container). See
 [crates/einvoice-interfaces/src/server/README.md](crates/einvoice-interfaces/src/server/README.md)
 and the measurements in [docs/PERFORMANCE.md](docs/PERFORMANCE.md#memory).
 
@@ -531,11 +531,11 @@ docker build --target server -t krab-server .
 # memory budget = half of --memory (cgroup v2).
 docker run --rm -p 8080:8080 --cpus 4 --memory 2g krab-server
 
-# Explicit overrides win over detection (blowup 9: no FatturaPA input).
+# Explicit overrides win over detection (blowup 4: no FatturaPA input).
 docker run --rm -p 8080:8080 \
     -e KRAB_WORKERS=8 \
     -e KRAB_MEM_BUDGET_BYTES=1000000000 \
-    -e KRAB_MEM_BLOWUP=9 \
+    -e KRAB_MEM_BLOWUP=4 \
     krab-server
 ```
 
@@ -690,12 +690,12 @@ the **build fails** with a diagnostic pointing at the offending node.
 
 ## Performance
 
-KrabInvoice converts a typical invoice in about 1 ms. One CPU core handles
-roughly 4,400 typical invoices per second, throughput grows almost linearly
-with CPU cores, and the stateless service scales out across instances.
-There is no fixed invoice size limit (100,000-line, 89 MB invoices convert
-in about 2 s), and memory stays bounded under any load: invoices queue
-instead of failing.
+KrabInvoice converts a typical invoice in well under 1 ms. One CPU core
+handles roughly 4,400 typical invoices per second, throughput grows almost
+linearly with CPU cores, and the stateless service scales out across
+instances. There is no fixed invoice size limit (100,000-line, 152 MB
+invoices convert in about 1.3 s), and memory stays bounded under any load:
+invoices queue instead of failing.
 
 See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for throughput and scaling
 charts, memory needs per invoice size, and a deployment sizing guide.
