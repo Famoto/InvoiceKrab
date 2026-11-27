@@ -217,8 +217,9 @@ fn push_values_fn(out: &mut String, hub: &CanonicalModel, scope: &CanonicalScope
 /// labels it needs.
 fn derivations_const(out: &mut String, derivations: &[Derivation]) {
     out.push_str(
-        "    /// The derivation rules (`config/derivations.toml`), in order: target\n\
-         \x20\x20\x20\x20/// label, rule reference, and the labels the rule cannot derive without.\n",
+        "    /// The derivation rules (the mappings' own, then `config/derivations.toml`'s),\n\
+         \x20\x20\x20\x20/// in order: target label, rule reference, and the labels the rule cannot\n\
+         \x20\x20\x20\x20/// derive without.\n",
     );
     out.push_str(
         "    pub const DERIVATIONS: &'static [(&'static str, &'static str, &'static [&'static str])] = &[\n",
@@ -393,13 +394,14 @@ fn derive_fns(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]
             }
             DerivationKind::Number { collection, item } => {
                 // Whole numbers only: a value that is not one (a UBL line id
-                // `A-1`) neither takes part nor stops the numbering.
+                // `A-1`) neither takes part nor stops the numbering. Numbers
+                // past `u64::MAX` derive nothing, never a repeated number.
                 let (collections, key) = d.target_path();
                 let target_coll = snake_case(collections[0]);
                 let target = snake_case(key);
                 let target_scope = CanonicalScope::Root.child(collections[0]);
                 let target_id = field_id(hub, &target_scope, key);
-                out.push_str("        {\n            let mut next: u64 = 1;\n");
+                out.push_str("        {\n            let mut next: Option<u64> = Some(1);\n");
                 for (coll, id) in [
                     (
                         snake_case(collection),
@@ -409,12 +411,12 @@ fn derive_fns(out: &mut String, hub: &CanonicalModel, derivations: &[Derivation]
                 ] {
                     let _ = writeln!(
                         out,
-                        "            for r0 in self.{coll}.records() {{\n                if let Some(n) = r0.get({id}).and_then(|v| v.trim().parse::<u64>().ok()) {{\n                    next = next.max(n.saturating_add(1));\n                }}\n            }}"
+                        "            for r0 in self.{coll}.records() {{\n                if let Some(n) = r0.get({id}).and_then(|v| v.trim().parse::<u64>().ok()) {{\n                    next = next.zip(n.checked_add(1)).map(|(a, b)| a.max(b));\n                }}\n            }}"
                     );
                 }
                 let _ = writeln!(
                     out,
-                    "            let mut filled = false;\n            self.{target_coll}.update(|r0| r0.get({target_id}).is_none(), |i0| {{\n                if i0.{target}.is_none() {{\n                    i0.{target} = Some(CompactString::from(next.to_string()));\n                    next = next.saturating_add(1);\n                    filled = true;\n                }}\n            }});\n            if filled {{\n                {push}\n            }}\n        }}"
+                    "            let missing = self.{target_coll}.records().filter(|r0| r0.get({target_id}).is_none()).count() as u64;\n            if missing > 0 && let Some(mut next) = next.filter(|n| n.checked_add(missing).is_some()) {{\n                self.{target_coll}.update(|r0| r0.get({target_id}).is_none(), |i0| {{\n                    if i0.{target}.is_none() {{\n                        i0.{target} = Some(CompactString::from(next.to_string()));\n                        next += 1;\n                    }}\n                }});\n                {push}\n            }}\n        }}"
                 );
             }
         }

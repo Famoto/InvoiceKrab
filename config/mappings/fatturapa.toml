@@ -359,7 +359,7 @@ default = "S"
 # document-level element that DatiRiepilogo counts, so each one is a
 # DettaglioLinee line of its own, after the invoice lines: a sconto (SC, a
 # negative price) or an altra spesa accessoria (AC). The signed amount and
-# the line number are derived (config/derivations.toml), so they are not
+# the line number are derived (the [[derive]] rules below), so they are not
 # `required` here (W095 sees no other spoke map them); a missing reason is
 # written as a placeholder, which reads back as none.
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge]
@@ -384,14 +384,16 @@ canonical_key = "AllowanceChargeReason"
 codec = "fatturapa-text-1000"
 placeholder = "Sconto o maggiorazione"
 
+# The amount is the line total, which DatiRiepilogo counts; written without
+# a quantity, the unit price is the same amount.
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge.PrezzoUnitario]
 type = "decimal"
-canonical_key = "AllowanceChargeSignedAmount"
+clone_of = "AllowanceChargeSignedAmount"
 codec = "fatturapa-amount-8"
 
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge.PrezzoTotale]
 type = "decimal"
-clone_of = "AllowanceChargeSignedAmount"
+canonical_key = "AllowanceChargeSignedAmount"
 codec = "fatturapa-amount-8"
 
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DocumentAllowanceCharge.AliquotaIVA]
@@ -405,6 +407,29 @@ type = "string"
 canonical_key = "AllowanceChargeVatCategoryCode"
 codec = "fatturapa-natura"
 default = "S"
+
+# The rules for the SC / AC lines' keys, which only this mapping declares, so
+# they come and go with it. They derive the signed amount and the line number
+# the hub lacks when it comes from another format, and the unsigned amount
+# when it comes from FatturaPA. A mapping's rules run before those of
+# config/derivations.toml, where BR-CO-11 and BR-CO-12 sum the unsigned
+# amounts.
+[[derive]]
+key = "DocumentAllowanceCharges/AllowanceChargeSignedAmount"
+rule = "FatturaPA SC/AC"
+copy = "AllowanceChargeAmount"
+negate_where = { ChargeIndicator = "false" }
+
+[[derive]]
+key = "DocumentAllowanceCharges/AllowanceChargeAmount"
+rule = "FatturaPA SC/AC"
+copy = "AllowanceChargeSignedAmount"
+negate_where = { ChargeIndicator = "false" }
+
+[[derive]]
+key = "DocumentAllowanceCharges/AllowanceChargeLineNumber"
+rule = "FatturaPA SC/AC"
+number_after = "InvoiceLines/LineId"
 
 [FatturaElettronica.FatturaElettronicaBody.DatiBeniServizi.DatiRiepilogo]
 type = "collection"

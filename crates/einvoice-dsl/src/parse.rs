@@ -1,7 +1,8 @@
 //! TOML front end for spoke mapping documents.
 //!
 //! Parses one spoke mapping document and flattens its dotted tables into source
-//! nodes keyed by [`NodeId`]. The reserved `[meta]` table becomes [`MappingMeta`].
+//! nodes keyed by [`NodeId`]. The reserved `[meta]` table becomes [`MappingMeta`],
+//! the reserved `[[derive]]` tables the mapping's own [`Derivation`] rules.
 //!
 //! # What is a source node?
 //!
@@ -18,7 +19,8 @@
 //! - A table's `match` and `when` keys are its conditions (inline tables),
 //!   never child elements: both are reserved node fields.
 //! - Unknown fields inside a node are rejected (E001).
-//! - Stray top-level scalar keys (outside `[meta]` and any table) are rejected.
+//! - Stray top-level scalar keys (outside `[meta]`, `[[derive]]` and any table)
+//!   are rejected.
 //! - Every node records its declaration [`RawNode::position`]: nodes are
 //!   numbered in document order, walking each table's sub-tables in the order
 //!   they first appear (the `toml` crate is built with `preserve_order`). A
@@ -30,6 +32,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use toml::Value;
 
+use crate::derive::{Derivation, derivations_of};
 use crate::error::ConfigError;
 use crate::meta::MappingMeta;
 use crate::node::{NodeId, RawNode};
@@ -45,6 +48,8 @@ pub struct ParsedMapping {
     pub meta: MappingMeta,
     /// Raw nodes keyed by dotted id, in deterministic id order.
     pub nodes: BTreeMap<NodeId, RawNode>,
+    /// The mapping's own `[[derive]]` rules, in file order.
+    pub derivations: Vec<Derivation>,
 }
 
 /// Parses a spoke mapping document.
@@ -70,13 +75,17 @@ pub fn parse_mapping(src: &str) -> Result<ParsedMapping, ConfigError> {
         .get("meta")
         .ok_or_else(|| ConfigError::msg("missing required [meta] table"))?;
     let meta = MappingMeta::deserialize(meta_value.clone())?;
+    let derivations = match root.get("derive") {
+        Some(derive) => derivations_of(derive.clone())?,
+        None => Vec::new(),
+    };
 
     // Step 3: flatten dotted tables into node ids, numbering nodes in document
     // order as they are met.
     let mut nodes = BTreeMap::new();
     let mut next_position = 0usize;
     for (key, value) in &root {
-        if key == "meta" {
+        if key == "meta" || key == "derive" {
             continue;
         }
         match value {
@@ -96,7 +105,11 @@ pub fn parse_mapping(src: &str) -> Result<ParsedMapping, ConfigError> {
         }
     }
 
-    Ok(ParsedMapping { meta, nodes })
+    Ok(ParsedMapping {
+        meta,
+        nodes,
+        derivations,
+    })
 }
 
 /// Recursively flattens `table` (named `id`) into source nodes. Own fields make
