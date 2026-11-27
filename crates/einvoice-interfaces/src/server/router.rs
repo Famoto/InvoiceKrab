@@ -9,7 +9,7 @@
 //! # Structure
 //!
 //! - [`router`] — builds the [`Router`] from a [`MemGate`], the reservation
-//!   blowup factor, and the [`Timeouts`].
+//!   blowup factor, the [`Timeouts`], and the [`Lanes`].
 //! - `transform` — the `POST /transform` handler; the only route that reads
 //!   a body and therefore the only one that touches the gate.
 //! - `GuardedBody` — a response body that owns the request's memory
@@ -33,7 +33,10 @@
 //!
 //! The transformation itself is CPU-bound and runs via `spawn_blocking`; the
 //! runtime caps that pool at the configured worker count, which bounds
-//! transform parallelism the way the old thread-per-worker loop did.
+//! transform parallelism the way the old thread-per-worker loop did. Large
+//! bodies first wait for one of the `workers - 1` slots in [`Lanes`], so
+//! they never fill the pool and a small document always finds a free thread
+//! instead of queueing behind multi-MB transforms.
 //!
 //! Bodies are read manually frame by frame (no extractor), so axum's default
 //! 2 MB body limit never engages — there is deliberately no size limit; the
@@ -43,7 +46,8 @@
 //!
 //! Unit tests drive the router with `oneshot` requests covering every row of
 //! the denial table, the happy path, header placement, timeout firing (under
-//! paused time), and reservation release timing.
+//! paused time), reservation release timing, and a small document passing
+//! while every large slot is taken.
 
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -59,6 +63,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use http_body::{Frame, SizeHint};
 use http_body_util::BodyExt as _;
+use tokio::sync::Semaphore;
 use tower_http::timeout::{RequestBodyTimeoutLayer, ResponseBodyTimeoutLayer};
 
 use super::gate::{Guard, MemGate};
@@ -78,13 +83,35 @@ pub struct Timeouts {
     pub queue: Duration,
 }
 
+/// The transform slots large documents may take: bodies of `small_bytes` or
+/// more share `workers - 1` of them (one with a single worker). The worker
+/// left over is free for small documents whenever large ones fill the rest,
+/// so a typical invoice never waits for a multi-MB transform to finish.
+#[derive(Clone)]
+pub struct Lanes {
+    small_bytes: u64,
+    large: Arc<Semaphore>,
+}
+
+impl Lanes {
+    /// Slots for `workers` transform threads; bodies of `small_bytes` or
+    /// more count as large.
+    pub fn new(workers: usize, small_bytes: u64) -> Self {
+        Lanes {
+            small_bytes,
+            large: Arc::new(Semaphore::new(workers.saturating_sub(1).max(1))),
+        }
+    }
+}
+
 /// Shared per-request context: the admission gate, the reservation
-/// multiplier, and the time limits.
+/// multiplier, the time limits, and the large-document slots.
 #[derive(Clone)]
 struct AppState {
     gate: Arc<MemGate>,
     blowup: u64,
     timeouts: Timeouts,
+    lanes: Lanes,
 }
 
 /// The usage text served on unknown routes.
@@ -92,8 +119,9 @@ const USAGE: &str = "POST /transform?to=<format>[&from=<format>] | GET /formats 
 
 /// Builds the complete `krab-server` service. `blowup` is the reservation
 /// multiplier (`Content-Length x blowup` bytes are reserved per transform);
-/// `timeouts` bound frame gaps, the whole upload, and the queue wait.
-pub fn router(gate: Arc<MemGate>, blowup: u64, timeouts: Timeouts) -> Router {
+/// `timeouts` bound frame gaps, the whole upload, and the queue wait; `lanes`
+/// keeps a worker free for small documents.
+pub fn router(gate: Arc<MemGate>, blowup: u64, timeouts: Timeouts, lanes: Lanes) -> Router {
     // Render every `/analyze` report now, before a connection is served.
     LazyLock::force(&handle::ANALYSES);
     Router::new()
@@ -112,6 +140,7 @@ pub fn router(gate: Arc<MemGate>, blowup: u64, timeouts: Timeouts) -> Router {
             gate,
             blowup,
             timeouts,
+            lanes,
         })
 }
 
@@ -200,10 +229,25 @@ async fn transform(State(state): State<AppState>, request: Request) -> Response 
         }
     };
 
+    // A large body waits (FIFO) for a large slot, so large transforms never
+    // take the last worker. Taken only now, so a slow upload holds no slot;
+    // moved into the task, so it is held exactly while the transform runs,
+    // even if the client disconnects. The semaphore is never closed.
+    let slot = if length >= state.lanes.small_bytes {
+        state.lanes.large.clone().acquire_owned().await.ok()
+    } else {
+        None
+    };
+
     // The transform is pure CPU for up to hundreds of ms: off the reactor.
     // The runtime caps the blocking pool at the worker count, bounding
     // transform parallelism. A panic is our bug: report 500, keep serving.
-    let reply = match tokio::task::spawn_blocking(move || handle::handle(&query, body)).await {
+    let reply = match tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        handle::handle(&query, body)
+    })
+    .await
+    {
         Ok(reply) => reply,
         Err(_) => {
             eprintln!("krab-server: recovered from a panic while transforming a request");
@@ -375,12 +419,17 @@ mod tests {
         queue: Duration::from_secs(60),
     };
 
+    fn lanes() -> Lanes {
+        Lanes::new(4, 256 * 1024)
+    }
+
     fn app(budget: u64) -> Router {
-        router(Arc::new(MemGate::new(budget)), 7, TIMEOUTS)
+        router(Arc::new(MemGate::new(budget)), 7, TIMEOUTS, lanes())
     }
 
     /// A POST /transform request with an explicit Content-Length.
-    fn transform_request(body: &'static [u8], query: &str) -> HttpRequest<Body> {
+    fn transform_request(body: impl Into<Bytes>, query: &str) -> HttpRequest<Body> {
+        let body = body.into();
         HttpRequest::post(format!("/transform?{query}"))
             .header(header::CONTENT_LENGTH, body.len())
             .body(Body::from(body))
@@ -602,7 +651,7 @@ mod tests {
     #[tokio::test]
     async fn test_reservation_released_only_after_response_body_is_read() {
         let gate = Arc::new(MemGate::new(BIG_BUDGET));
-        let app = router(gate.clone(), 7, TIMEOUTS);
+        let app = router(gate.clone(), 7, TIMEOUTS, lanes());
         let response = app
             .oneshot(transform_request(UBL, "to=ubl-invoice&from=ubl-invoice"))
             .await
@@ -652,7 +701,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_transform_trickling_upload_hits_request_timeout_with_408_close() {
         let gate = Arc::new(MemGate::new(BIG_BUDGET));
-        let app = router(gate.clone(), 7, TIMEOUTS);
+        let app = router(gate.clone(), 7, TIMEOUTS, lanes());
         let request = HttpRequest::post("/transform?to=ubl-invoice")
             .header(header::CONTENT_LENGTH, 1024 * 1024)
             .body(Body::new(TricklingBody {
@@ -678,7 +727,7 @@ mod tests {
             .acquire(BIG_BUDGET)
             .await
             .expect("whole budget fits");
-        let app = router(gate.clone(), 7, TIMEOUTS);
+        let app = router(gate.clone(), 7, TIMEOUTS, lanes());
         let response = app
             .oneshot(transform_request(UBL, "to=ubl-invoice"))
             .await
@@ -692,6 +741,46 @@ mod tests {
             BIG_BUDGET,
             "the shed waiter reserved nothing"
         );
+    }
+
+    #[tokio::test]
+    async fn test_small_transform_passes_while_every_large_slot_is_taken() {
+        // Two workers leave one large slot. UBL is just below the threshold,
+        // UBL plus a trailing newline reaches it.
+        let lanes = Lanes::new(2, UBL.len() as u64 + 1);
+        let app = router(
+            Arc::new(MemGate::new(BIG_BUDGET)),
+            7,
+            TIMEOUTS,
+            lanes.clone(),
+        );
+        let held = lanes
+            .large
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("one large slot");
+        let query = "to=ubl-invoice&from=ubl-invoice";
+        let mut large = tokio::spawn(
+            app.clone()
+                .oneshot(transform_request([UBL, b"\n"].concat(), query)),
+        );
+
+        let small = app
+            .oneshot(transform_request(UBL, query))
+            .await
+            .expect("infallible");
+        assert_eq!(small.status(), StatusCode::OK);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut large)
+                .await
+                .is_err(),
+            "a large body must wait while every large slot is taken"
+        );
+
+        drop(held);
+        let large = large.await.expect("task joins").expect("infallible");
+        assert_eq!(large.status(), StatusCode::OK);
     }
 
     #[tokio::test]

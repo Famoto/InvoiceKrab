@@ -13,6 +13,7 @@
 //! | `KRAB_BODY_TIMEOUT_SECS` | `30` (per-frame body read/write timeout)       |
 //! | `KRAB_REQUEST_TIMEOUT_SECS` | `300` (whole request-body read deadline)    |
 //! | `KRAB_QUEUE_TIMEOUT_SECS` | `60` (longest wait for a memory reservation)  |
+//! | `KRAB_SMALL_BYTES`       | `262144` (bodies below it keep a free worker)  |
 //!
 //! # Structure
 //!
@@ -59,6 +60,10 @@ pub struct Config {
     /// Longest wait (seconds) for a memory reservation before the request is
     /// shed with `503` instead of parking its connection indefinitely.
     pub queue_timeout_secs: u64,
+    /// Bodies of at least this many bytes are large: together they take at
+    /// most `workers - 1` transform slots, so a small document never waits
+    /// behind large ones for a free worker.
+    pub small_bytes: u64,
 }
 
 /// A configuration problem that must stop startup.
@@ -136,6 +141,13 @@ impl Config {
             // connection whose client has already given up.
             None => 60,
         };
+        let small_bytes = match lookup("KRAB_SMALL_BYTES") {
+            Some(v) => parse_nonzero("KRAB_SMALL_BYTES", &v)?,
+            // A 256 KB invoice converts in a few ms, so the requests that
+            // share the reserved worker stay short; typical invoices (16 KB)
+            // are far below it, multi-MB uploads far above.
+            None => 256 * 1024,
+        };
         Ok(Config {
             addr: lookup("KRAB_ADDR").unwrap_or_else(|| "0.0.0.0:8080".into()),
             workers,
@@ -144,6 +156,7 @@ impl Config {
             body_timeout_secs,
             request_timeout_secs,
             queue_timeout_secs,
+            small_bytes,
         })
     }
 
@@ -248,6 +261,7 @@ mod tests {
                 body_timeout_secs: 30,
                 request_timeout_secs: 300,
                 queue_timeout_secs: 60,
+                small_bytes: 256 * 1024,
             }
         );
     }
@@ -261,6 +275,7 @@ mod tests {
                 ("KRAB_MEM_BUDGET_BYTES", "1000000"),
                 ("KRAB_MEM_BLOWUP", "3"),
                 ("KRAB_BODY_TIMEOUT_SECS", "5"),
+                ("KRAB_SMALL_BYTES", "1000"),
             ]),
             Some(64 * GIB),
             16,
@@ -276,6 +291,7 @@ mod tests {
                 body_timeout_secs: 5,
                 request_timeout_secs: 300,
                 queue_timeout_secs: 60,
+                small_bytes: 1000,
             }
         );
     }

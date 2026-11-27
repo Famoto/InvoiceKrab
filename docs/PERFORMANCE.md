@@ -21,8 +21,9 @@ measured; the test setup is described [at the end](#how-this-was-measured).
 - **Safe under overload.** The service never runs out of memory because of
   traffic. When memory is fully booked, new invoices wait their turn instead
   of failing.
-- **One known limitation.** While very large invoices are being converted,
-  small ones can wait behind them ([details](#known-limitation-mixed-invoice-sizes)).
+- **Small invoices stay fast beside large ones.** One worker is kept free
+  for small invoices, so they are answered in about 3 ms while 15 MB
+  invoices are converted ([details](#mixed-invoice-sizes)).
 
 ## Throughput
 
@@ -210,6 +211,7 @@ override them, set the environment variables below; see the
 | `KRAB_WORKERS` | number of CPU cores | you want to reserve CPU for other processes |
 | `KRAB_MEM_BUDGET_BYTES` | half of the available memory | the container runs other processes, or you want a fixed limit |
 | `KRAB_MEM_BLOWUP` | `6` (memory booked per byte of invoice) | you never receive FatturaPA input: `4` covers every other measured format and allows 1.5 times as many large invoices per GB. Don't go below 4. |
+| `KRAB_SMALL_BYTES` | `262144` (256 KB: larger invoices leave one worker free) | you only convert large invoices in bulk: set it above your largest invoice so they use every worker |
 
 ### Command line or HTTP service?
 
@@ -219,23 +221,28 @@ override them, set the environment variables below; see the
 - **HTTP service (`krab-server`)**: for continuous or high-volume traffic. No
   start-up cost per invoice, all cores used, and bounded memory.
 
-## Known limitation: mixed invoice sizes
+## Mixed invoice sizes
 
-![Large invoices delay small ones](perf/mixed-workload.svg)
+![Small invoices beside large ones](perf/mixed-workload.svg)
 
 | Typical invoice, 4-core server | Invoices per second | Median response | Slowest 1% |
 |---|---:|---:|---:|
-| Only typical invoices | 9,200 | 0.8 ms | 2.1 ms |
-| While eight 15 MB invoices are being converted | 52 | 159 ms | 191 ms |
+| Only typical invoices | 8,100 | 0.9 ms | 2.4 ms |
+| While eight 15 MB invoices are being converted, before | 51 | 160 ms | 220 ms |
+| The same, with a worker kept free for small invoices | 2,150 | 3.0 ms | 12 ms |
 
-Each worker converts one invoice at a time, in arrival order. If every
-worker is busy with a large invoice, small invoices wait until one finishes.
-Health checks are not affected.
+Each worker converts one invoice at a time. Invoices of 256 KB or more
+(`KRAB_SMALL_BYTES`) take at most all workers but one, in arrival order, so
+the last worker is always free for smaller invoices. Before, eight 15 MB
+invoices took every worker and a typical invoice waited until one finished
+([#35](https://github.com/Famoto/InvoiceKrab/issues/35)). Health checks were
+never affected.
 
-**Workaround:** if your traffic mixes very large invoices (several MB) with
-time-sensitive small ones, route the large ones to a separate instance.
-**Planned fix:** keep capacity reserved for small invoices
-([#35](https://github.com/Famoto/InvoiceKrab/issues/35)).
+The price is one idle worker while only large invoices arrive: 15 MB
+invoices alone ran at 18.6 per second instead of 24 (−23%, about one worker
+in four). If you only convert large invoices in bulk, set
+`KRAB_SMALL_BYTES` above your largest invoice so they use every worker.
+With a single worker nothing is kept free.
 
 ## How this was measured
 

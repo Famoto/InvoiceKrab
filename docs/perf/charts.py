@@ -69,8 +69,9 @@ BLOWUP_DEFAULT = 6
 
 # Typical invoice latency (ms), alone vs. while large invoices are processed.
 HOL = {
-    "Typical invoices only": {"Median": 0.79, "Slowest 1%": 2.05},
-    "While large invoices run": {"Median": 159.38, "Slowest 1%": 190.63},
+    "Typical invoices only": {"Median": 0.9, "Slowest 1%": 2.4},
+    "Beside large, before": {"Median": 160, "Slowest 1%": 220},
+    "Beside large, worker kept free": {"Median": 3.0, "Slowest 1%": 12},
 }
 
 # --------------------------------------------------------------------------
@@ -326,7 +327,7 @@ def format_memory():
 
 
 def mixed_workload():
-    L, R, T, h = 150, 40, 96, 300
+    L, R, T, h = 150, 40, 96, 348
     vmin, vmax = 0.1, 1000
     sx = lambda v: L + (math.log10(v) - math.log10(vmin)) / (math.log10(vmax) - math.log10(vmin)) * (W - L - R)
     b = []
@@ -336,7 +337,7 @@ def mixed_workload():
     b.append(f'<text class="axlab" x="{(L + W - R) / 2}" y="{h - 18}" text-anchor="middle">Response time for a typical (16 KB) invoice (log scale)</text>')
     y, bh = T + 4, 22
     for metric in ["Median", "Slowest 1%"]:
-        b.append(f'<text class="lab" x="{L - 12}" y="{y + bh + 5}" text-anchor="end">{metric}</text>')
+        b.append(f'<text class="lab" x="{L - 12}" y="{y + len(HOL) * (bh + 2) / 2 + 5:.0f}" text-anchor="end">{metric}</text>')
         for (name, vals), color in zip(HOL.items(), SLOTS):
             v = vals[metric]
             b.append(
@@ -350,7 +351,7 @@ def mixed_workload():
     b.append(legend(list(zip(HOL.keys(), SLOTS)), 24, 78))
     (OUT / "mixed-workload.svg").write_text(
         svg("\n".join(b) + "\n",
-            "Known limitation: large invoices delay small ones",
+            "Small invoices beside large ones",
             "4-core server. Typical invoices alone vs. while eight 15 MB invoices are being converted.",
             h)
     )
